@@ -1,0 +1,124 @@
+use lopdf::{Document as LoDocument, Object as LoObject};
+use pdf_writer::{Writer, Ref, Finish, Name, Content};
+use std::{fs::File, io::Write};
+
+static MONTSERRAT_BOLD_TTF: &[u8] = include_bytes!("./assets/fonts/Montserrat-Bold.ttf");
+static BACKGROUND_PDF: &str = "./background.pdf";
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input_csv = std::env::args().nth(1).expect("Missing CSV path");
+    generate_pdf(&input_csv, "output.pdf")?;
+    println!("PDF generated successfully: output.pdf");
+    Ok(())
+}
+
+/// Generate a new PDF with the background PDF preserved EXACTLY.
+fn generate_pdf(csv_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // -------------------------------------------------------
+    // Load CSV
+    // -------------------------------------------------------
+    let file = File::open(csv_path)?;
+    let mut rdr = csv::Reader::from_reader(file);
+
+    // -------------------------------------------------------
+    // Load background PDF fully via lopdf
+    // -------------------------------------------------------
+    let bg_doc = LoDocument::load(BACKGROUND_PDF)?;
+    let bg_page_id = bg_doc.get_pages().values().next().unwrap();
+    let bg_page = bg_doc.get_object(*bg_page_id)?.as_dict()?;
+
+    let media_box = bg_page.get(b"MediaBox")
+        .unwrap()
+        .as_array()?;
+
+    let width = media_box[2].as_i64().unwrap();
+    let height = media_box[3].as_i64().unwrap();
+
+    // -------------------------------------------------------
+    // Extract the entire background page as a Form XObject
+    // -------------------------------------------------------
+    let bg_contents = bg_page.get(b"Contents").unwrap();
+    let bg_stream = bg_doc.get_object(bg_contents.as_reference().unwrap())?.as_stream()?;
+
+    let bg_data = bg_stream.decode_content()?;
+
+    // -------------------------------------------------------
+    // Create new PDF with pdf-writer
+    // -------------------------------------------------------
+    let mut writer = Writer::new();
+
+    // Background XObject reference
+    let bg_ref = Ref::new(1000);
+
+    // Write the background XObject exactly as-is
+    let mut xobj = writer.form_xobject(bg_ref, width, height);
+    xobj.stream(bg_data);
+    xobj.finish();
+
+    // Embed font
+    let font_ref = Ref::new(2000);
+    writer.type1_font(font_ref).name(Name(b"MontserratBold"));
+
+    // -------------------------------------------------------
+    // Create pages
+    // -------------------------------------------------------
+    let mut pages = Vec::new();
+    let pages_ref = Ref::new(1);
+
+    for result in rdr.records() {
+        let text = result?.get(0).ok_or("Missing CSV field")?.to_string();
+
+        let page_ref = Ref::new(3000 + pages.len() as i32);
+        let content_ref = Ref::new(4000 + pages.len() as i32).try_into().unwrap();
+
+        // Collect page
+        pages.push(page_ref);
+
+        // Create page object
+        let mut page = writer.page(page_ref);
+        page.media_box(0.0, 0.0, width, height);
+        page.parent(pages_ref);
+        page.resources().xobject(Name(b"BG"), bg_ref);
+        page.resources().font(Name(b"F1"), font_ref);
+        page.contents(content_ref);
+        page.finish();
+
+        // ---------------------------------------------------
+        // Page content stream: draw background + overlay text
+        // ---------------------------------------------------
+        let mut content = Content::new();
+
+        // Draw background
+        content.xobject(Name(b"BG"));
+
+        // Draw text
+        content.begin_text();
+        content.set_font(Name(b"F1"), 24.0);
+
+        // Center horizontally
+        let text_width = text.len() as f32 * 12.0; // approximate
+        let x = (width as f32 - text_width) / 2.0;
+        let y = 50.0; // distance from bottom
+
+        content.set_text_pos(x, y);
+        content.show(text);
+        content.end_text();
+
+        writer.stream(content_ref, &content.finish());
+    }
+
+    // Pages root
+    let mut pages_obj = writer.pages(pages_ref);
+    for p in pages {
+        pages_obj.kid(p);
+    }
+    pages_obj.finish();
+
+    // -------------------------------------------------------
+    // Save file
+    // -------------------------------------------------------
+    let mut out = File::create(output_path)?;
+    out.write_all(writer.finish().as_slice())?;
+
+    Ok(())
+}

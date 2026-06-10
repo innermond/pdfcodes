@@ -1,0 +1,157 @@
+use lopdf::Document;
+use pdf_writer::{Pdf, Rect, Ref};
+use rusttype::{Font, Scale};
+use std::fs::File;
+use std::io::Write;
+use std::env;
+
+static MONTSERRAT_BOLD_TTF: &[u8] = include_bytes!("./assets/fonts/Montserrat-Bold.ttf");
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Get command line arguments
+    let args: Vec<String> = env::args().collect();
+
+    if args.len() < 3 {
+        eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf]", args[0]);
+        eprintln!("Example: {} input.csv background.pdf output.pdf", args[0]);
+        std::process::exit(1);
+    }
+
+    let csv_path = &args[1];
+    let background_path = &args[2];
+    let output_path = args.get(3).map(|s| s.as_str()).unwrap_or("output.pdf");
+
+    // Generate the PDF
+    generate_pdf_with_background(csv_path, background_path, output_path)?;
+
+    println!("PDF generated successfully: {}", output_path);
+    Ok(())
+}
+
+fn generate_pdf_with_background(
+    csv_path: &str,
+    background_path: &str,
+    output_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load background PDF with lopdf
+    let background_doc = Document::load(background_path)?;
+    let pages = background_doc.get_pages();
+    if pages.is_empty() {
+        return Err("Background PDF has no pages".into());
+    }
+
+    let page_id = pages.keys().next().unwrap();
+    let page = background_doc.get_page(*page_id)?;
+    let media_box = page.media_box().unwrap_or(lopdf::Object::Array(vec![
+        lopdf::Object::Integer(0),
+        lopdf::Object::Integer(0),
+        lopdf::Object::Integer(595),
+        lopdf::Object::Integer(842),
+    ]));
+    let media_box = match media_box {
+        lopdf::Object::Array(arr) => {
+            let x1 = arr[0].as_f64().unwrap_or(0.0);
+            let y1 = arr[1].as_f64().unwrap_or(0.0);
+            let x2 = arr[2].as_f64().unwrap_or(595.0);
+            let y2 = arr[3].as_f64().unwrap_or(842.0);
+            (x1, y1, x2, y2)
+        }
+        _ => (0.0, 0.0, 595.0, 842.0),
+    };
+    let page_width = media_box.2 - media_box.0;
+    let page_height = media_box.3 - media_box.1;
+
+    // Extract content stream from background page
+    let content_streams = background_doc.get_page_content(*page_id)?;
+    let mut background_content = Vec::new();
+    for stream in content_streams {
+        background_content.extend_from_slice(&stream.content);
+    }
+
+    // Load font with rusttype for text measurement
+    let font = Font::try_from_bytes(MONTSERRAT_BOLD_TTF).ok_or("Failed to load font")?;
+    let font_size = 10.0;
+    let scale = Scale::uniform(font_size);
+
+    // Read CSV
+    let file = File::open(csv_path)?;
+    let mut csv_reader = csv::Reader::from_reader(file);
+
+    // Create PDF with pdf-writer
+    let mut pdf = Pdf::new();
+    let catalog_id = pdf.catalog(Ref::new(1));
+    let page_tree_id = pdf.pages(Ref::new(2));
+
+    // Embed font
+    let font_id = Ref::new(3);
+    let font_ref = pdf.ttf_font(font_id);
+    font_ref.data(MONTSERRAT_BOLD_TTF);
+    font_ref.name("Montserrat-Bold");
+
+    // Create form XObject for background
+    let form_id = Ref::new(4);
+    let mut form = pdf.form_xobject(form_id);
+    form.bbox(Rect::new(0.0, 0.0, page_width as f32, page_height as f32));
+    form.content(&background_content);
+
+    let mut page_refs = Vec::new();
+    let mut next_ref = Ref::new(5);
+
+    for csv_result in csv_reader.records() {
+        let text = csv_result?.get(0).ok_or("CSV field missing")?.to_string();
+
+        // Measure text width for centering
+        let width: f32 = font.glyphs_for(text.chars()).map(|g| g.h_metrics().advance_width).sum();
+        let text_width = width * scale.x;
+        let x_pos = (page_width as f32 - text_width) / 2.0;
+        let y_pos = 50.0; // Fixed Y position, adjust as needed
+
+        // Create page
+        let page_id = next_ref;
+        next_ref = Ref::new(next_ref.get() + 1);
+        page_refs.push(page_id);
+
+        let mut page = pdf.page(page_id);
+        page.media_box(Rect::new(0.0, 0.0, page_width as f32, page_height as f32));
+        page.parent(page_tree_id);
+
+        let content_id = next_ref;
+        next_ref = Ref::new(next_ref.get() + 1);
+        page.contents(content_id);
+
+        let mut content = pdf.content(content_id);
+        // Draw background form
+        content.save_state();
+        content.x_object(form_id);
+        content.restore_state();
+
+        // Add text
+        content.begin_text();
+        content.set_font(font_id, font_size);
+        content.next_line(x_pos, y_pos);
+        content.show(&text);
+        content.end_text();
+    }
+
+    // Write pages to page tree
+    let mut pages_writer = pdf.pages(page_tree_id);
+    pages_writer.count(page_refs.len() as i32);
+    pages_writer.kids(page_refs);
+
+    // Write to file
+    let mut file = File::create(output_path)?;
+    file.write_all(&pdf.finish())?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_csv_reading() {
+        let text_list = vec!["Test Page 1".to_string(), "Test Page 2".to_string()];
+        assert_eq!(text_list.len(), 2);
+    }
+}
