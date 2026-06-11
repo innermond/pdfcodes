@@ -3,7 +3,7 @@ use csv::ReaderBuilder;
 use ttf_parser::{Face, GlyphId};
 use kurbo::{Affine, BezPath, ParamCurveArclen, Point};
 
-static MONTSERRAT_BOLD_TTF: &[u8] = include_bytes!("../Montserrat-Bold.ttf");
+static MONTSERRAT_BOLD_TTF: &[u8] = include_bytes!("assets/fonts/Montserrat-Bold.ttf");
 static MM: f32 = 72.0 / 25.4;
 
 #[derive(Clone)]
@@ -59,6 +59,32 @@ impl Options {
     }
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            host_width_mm: 267.0,
+            host_height_mm: 350.0,
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            circle_diameter_mm: 10.0,
+            contour: false,
+            measure_paths: false,
+            font_sizes: vec![9.0, 14.0],
+            text_y_mm: vec![10.0, 3.0],
+            text_x_mm: Vec::new(),
+            font_data: Vec::new(),
+            align: vec![TextAlign::Center],
+            text_colors: Vec::new(),
+            combine: false,
+            debug: false,
+            safe_margin_mm: 0.0,
+            text_rotations: Vec::new(),
+            text_flip_x: Vec::new(),
+            text_flip_y: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TextAlign {
     Left,
@@ -82,6 +108,7 @@ impl std::str::FromStr for TextAlign {
 // Result of generating a PDF: the document bytes plus, when requested, the
 // stroked-path measurements of the contour background (excluding the 3
 // registration circles, which are added separately).
+#[derive(Debug)]
 pub struct GenerateOutput {
     pub pdf: Vec<u8>,
     pub cards_per_page: usize,
@@ -1020,6 +1047,147 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     doc.save_to(&mut pdf)?;
 
     Ok(GenerateOutput { pdf, cards_per_page, path_length_per_card_mm: None, path_length_total_mm: None })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static BACKGROUND_PDF: &[u8] = include_bytes!("../15x15.pdf");
+
+    #[test]
+    fn parse_color_rgb_hex_with_hash() {
+        match parse_color("#FF0000").unwrap() {
+            TextColor::Rgb(r, g, b) => {
+                assert!((r - 1.0).abs() < 1e-6);
+                assert!((g - 0.0).abs() < 1e-6);
+                assert!((b - 0.0).abs() < 1e-6);
+            }
+            _ => panic!("expected RGB"),
+        }
+    }
+
+    #[test]
+    fn parse_color_rgb_hex_without_hash() {
+        match parse_color("00FF00").unwrap() {
+            TextColor::Rgb(r, g, b) => {
+                assert!((r - 0.0).abs() < 1e-6);
+                assert!((g - 1.0).abs() < 1e-6);
+                assert!((b - 0.0).abs() < 1e-6);
+            }
+            _ => panic!("expected RGB"),
+        }
+    }
+
+    #[test]
+    fn parse_color_cmyk() {
+        match parse_color("0:0:0:1").unwrap() {
+            TextColor::Cmyk(c, m, y, k) => {
+                assert_eq!((c, m, y, k), (0.0, 0.0, 0.0, 1.0));
+            }
+            _ => panic!("expected CMYK"),
+        }
+    }
+
+    #[test]
+    fn parse_color_invalid_hex_length() {
+        assert!(parse_color("#FF00").is_err());
+    }
+
+    #[test]
+    fn parse_color_invalid_hex_digits() {
+        assert!(parse_color("#GGGGGG").is_err());
+    }
+
+    #[test]
+    fn parse_color_invalid_cmyk_component_count() {
+        assert!(parse_color("0:0:0").is_err());
+    }
+
+    #[test]
+    fn parse_color_invalid_cmyk_value() {
+        assert!(parse_color("0:0:0:not-a-number").is_err());
+    }
+
+    #[test]
+    fn text_align_from_str() {
+        assert!(matches!("left".parse::<TextAlign>(), Ok(TextAlign::Left)));
+        assert!(matches!("center".parse::<TextAlign>(), Ok(TextAlign::Center)));
+        assert!(matches!("right".parse::<TextAlign>(), Ok(TextAlign::Right)));
+        assert!("middle".parse::<TextAlign>().is_err());
+    }
+
+    #[test]
+    fn options_as_contour_sets_contour_and_preserves_other_fields() {
+        let opts = Options { host_width_mm: 123.0, ..Options::default() };
+        assert!(!opts.contour);
+
+        let contour_opts = opts.as_contour();
+        assert!(contour_opts.contour);
+        assert_eq!(contour_opts.host_width_mm, 123.0);
+    }
+
+    #[test]
+    fn generate_contour_pdf() {
+        let opts = Options { contour: true, ..Options::default() };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("contour generation should succeed");
+
+        assert!(out.pdf.starts_with(b"%PDF"));
+        assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn generate_print_pdf() {
+        let opts = Options::default();
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts).expect("print generation should succeed");
+
+        assert!(out.pdf.starts_with(b"%PDF"));
+        assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn generate_print_pdf_requires_csv_data_unless_contour() {
+        let opts = Options::default();
+        let err = generate_pdf(None, BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("csv data is required"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words() {
+        let opts = Options { font_sizes: vec![9.0], text_y_mm: vec![10.0], ..Options::default() };
+        let err = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("word(s)"));
+    }
+
+    #[test]
+    fn generate_print_pdf_with_combine_overlay() {
+        let opts = Options { combine: true, ..Options::default() };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(BACKGROUND_PDF), &opts)
+            .expect("combine generation should succeed");
+
+        assert!(out.pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn generate_print_pdf_with_styling_options() {
+        let opts = Options {
+            align: vec![TextAlign::Left, TextAlign::Right],
+            text_colors: vec![
+                parse_color("#FF0000").unwrap(),
+                parse_color("0:0:0:1").unwrap(),
+            ],
+            text_rotations: vec![15.0],
+            text_flip_x: vec![true, false],
+            text_flip_y: vec![false, true],
+            debug: true,
+            safe_margin_mm: 5.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("styled generation should succeed");
+
+        assert!(out.pdf.starts_with(b"%PDF"));
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
