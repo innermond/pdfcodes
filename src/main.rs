@@ -137,6 +137,21 @@ fn generate_pdf(csv_path: &str, background_path: &str, output_path: &str) -> Res
     let catalog = doc.get_object(catalog_id)?;
     let pages_id = catalog.as_dict()?.get(b"Pages").unwrap().as_reference()?;
 
+    // Remove the original background page from the page tree, since its
+    // content is now reused as the BG XObject on every generated page.
+    {
+        let pages_obj = doc.get_object(pages_id)?;
+        let pages_dict_orig = pages_obj.as_dict()?;
+        let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
+        kids.retain(|kid| kid.as_reference().map(|r| r != *bg_page_id).unwrap_or(true));
+        let count = kids.len() as i64;
+        let mut pages_dict = pages_dict_orig.clone();
+        pages_dict.set("Kids", Object::Array(kids));
+        pages_dict.set("Count", Object::Integer(count));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    }
+    doc.objects.remove(bg_page_id);
+
     // Load CSV
     let file = File::open(csv_path)?;
     let mut rdr = ReaderBuilder::new()
