@@ -1,256 +1,260 @@
-use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}};
-use csv::ReaderBuilder;
-use ttf_parser::{Face, GlyphId};
-use std::{fs::File, env};
+use serde::Deserialize;
+use std::env;
+use pdfcodes::{generate_pdf, parse_color, Options, TextAlign};
 
-static MONTSERRAT_BOLD_TTF: &[u8] = include_bytes!("../Montserrat-Bold.ttf");
-static MM: f32 = 72.0 / 25.4;
-static SAFE_MM: f32 = 3.5 * MM;
-
+// Optional JSON config file (--config=path.json) providing defaults for any
+// of the CLI parameters. CLI flags and positional arguments take precedence.
+#[derive(Default, Deserialize)]
+struct Config {
+    csv: Option<String>,
+    background: Option<String>,
+    contour_background: Option<String>,
+    output: Option<String>,
+    contour_output: Option<String>,
+    host_width: Option<f32>,
+    host_height: Option<f32>,
+    offset_x: Option<f32>,
+    offset_y: Option<f32>,
+    circle_diameter: Option<f32>,
+    contour: Option<bool>,
+    with_contour: Option<bool>,
+    measure_paths: Option<bool>,
+    // Per-word text layout: font size in points and baseline y-position in
+    // mm, indexed by the word's position in the (space-separated) CSV field.
+    font_sizes: Option<Vec<f32>>,
+    text_y: Option<Vec<f32>>,
+    // Explicit baseline x-position in mm, indexed by word position. When
+    // set, overrides `align` (and ignores `safe_margin`).
+    text_x: Option<Vec<f32>>,
+    // Paths to TrueType/OpenType font files, one per word position (or a
+    // single entry to use the same font for every word).
+    fonts: Option<Vec<String>>,
+    // Horizontal alignment ("left", "center", or "right"), one per word
+    // position (or a single entry to use the same alignment for every word).
+    align: Option<Vec<String>>,
+    // Text fill color ("#RRGGBB"), one per word position (or a single entry
+    // to use the same color for every word). Defaults to black.
+    text_colors: Option<Vec<String>>,
+    // Overlay the contour grid as a non-printable layer on the print PDF.
+    combineb: Option<bool>,
+    // Outline the bounding box of each text part on the print PDF.
+    debug: Option<bool>,
+    // Margin (in mm) kept clear of left/right-aligned text.
+    safe_margin: Option<f32>,
+    // Rotation in degrees (counterclockwise) around each text part's own
+    // center, one per word position (or a single entry for every word).
+    text_rotations: Option<Vec<f32>>,
+    // Mirror each text part horizontally/vertically around its own center,
+    // one per word position (or a single entry for every word).
+    text_flip_x: Option<Vec<bool>>,
+    text_flip_y: Option<Vec<bool>>,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf]", args[0]);
-        std::process::exit(1);
-    }
-    let csv_path = &args[1];
-    let background_path = &args[2];
-    let output_path = args.get(3).map(|s| s.as_str()).unwrap_or("output.pdf");
+    let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
 
-    generate_pdf(csv_path, background_path, output_path)?;
-    println!("PDF generated successfully: {}", output_path);
-    Ok(())
-}
-
-fn generate_pdf(csv_path: &str, background_path: &str, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Load background PDF
-    let mut doc = Document::load(background_path)?;
-
-    // Get background page
-    let pages = doc.get_pages();
-    let (_, bg_page_id) = pages.iter().next().ok_or("No pages in background PDF")?;
-    let bg_page_obj = doc.get_object(*bg_page_id)?;
-    let bg_page_dict = bg_page_obj.as_dict()?;
-    let media_box_obj = bg_page_dict.get(b"MediaBox")?;
-    let media_box_orig = media_box_obj.as_array()?.clone();
-
-    let width = match &media_box_orig[2] {
-        Object::Integer(w) => *w as f64,
-        Object::Real(w) => (*w).into(),
-        _ => 595.0,
-    };
-    let _height = match &media_box_orig[3] {
-        Object::Integer(h) => *h as f64,
-        Object::Real(h) => (*h).into(),
-        _ => 842.0,
-    };
-
-    // Create MediaBox as Real values for consistency
-    let media_box = vec![
-        Object::Real(0.0),
-        Object::Real(0.0),
-        Object::Real(width as f32),
-        Object::Real(_height as f32),
-    ];
-
-    // Update background page MediaBox to Real
-    let mut bg_page_dict = bg_page_dict.clone();
-    bg_page_dict.set("MediaBox", Object::Array(media_box.clone()));
-
-    doc.objects.insert(*bg_page_id, Object::Dictionary(bg_page_dict));
-
-    // Get background content bytes for XObject
-    let bg_content_bytes = doc.get_page_content(*bg_page_id)?;
-
-    // Create Form XObject for background
-    let mut xobj_dict = Dictionary::new();
-    xobj_dict.set("Type", Object::Name(b"XObject".to_vec()));
-    xobj_dict.set("Subtype", Object::Name(b"Form".to_vec()));
-    xobj_dict.set("BBox", Object::Array(media_box.clone()));
-    let bg_form = Stream::new(xobj_dict, bg_content_bytes);
-    let bg_form_id = doc.add_object(bg_form);
-
-    // Parse font with ttf-parser
-    let face = Face::parse(MONTSERRAT_BOLD_TTF, 0)?;
-    
-    // Extract actual character widths from the font
-    let mut widths = Vec::new();
-    for char_code in 32u8..=126u8 {
-        let ch = char_code as char;
-        let glyph_id = face.glyph_index(ch).unwrap_or(GlyphId(0));
-        let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0);
-        
-        // Convert from font units to PDF font units (typically 1000 units per em)
-        let units_per_em = face.units_per_em() as f32;
-        let width_in_pdf_units = (advance as f32 / units_per_em * 1000.0) as i64;
-        widths.push(Object::Integer(width_in_pdf_units));
-    }
-
-    // Embed Montserrat font with proper descriptor and compression
-    let mut font_stream_dict = Dictionary::new();
-    font_stream_dict.set("Length1", Object::Integer(MONTSERRAT_BOLD_TTF.len() as i64));
-    
-    // Compress the font data
-    let mut font_stream = Stream::new(font_stream_dict, MONTSERRAT_BOLD_TTF.to_vec());
-    let _ = font_stream.compress();
-    let font_stream_id = doc.add_object(font_stream);
-
-    // Extract font metrics
-    let ascender = face.ascender();
-    let descender = face.descender();
-    let units_per_em = face.units_per_em() as i32;
-    let bbox = face.global_bounding_box();
-    
-    let mut fd_dict = Dictionary::new();
-    fd_dict.set("Type", Object::Name(b"FontDescriptor".to_vec()));
-    fd_dict.set("FontName", Object::Name(b"MontserratBold".to_vec()));
-    fd_dict.set("FontFile2", Object::Reference(font_stream_id));
-    fd_dict.set("Flags", Object::Integer(32));
-    fd_dict.set("FontBBox", Object::Array(vec![
-        Object::Integer(bbox.x_min as i64),
-        Object::Integer(bbox.y_min as i64),
-        Object::Integer(bbox.x_max as i64),
-        Object::Integer(bbox.y_max as i64),
-    ]));
-    fd_dict.set("ItalicAngle", Object::Integer(0));
-    fd_dict.set("Ascent", Object::Integer(ascender as i64));
-    fd_dict.set("Descent", Object::Integer(descender as i64));
-    fd_dict.set("CapHeight", Object::Integer((ascender * 7 / 10) as i64)); // Approximation
-    fd_dict.set("StemV", Object::Integer(80));
-    let fd_id = doc.add_object(Object::Dictionary(fd_dict));
-
-    let mut font_dict = Dictionary::new();
-    font_dict.set("Type", Object::Name(b"Font".to_vec()));
-    font_dict.set("Subtype", Object::Name(b"TrueType".to_vec()));
-    font_dict.set("BaseFont", Object::Name(b"MontserratBold".to_vec()));
-    font_dict.set("FontDescriptor", Object::Reference(fd_id));
-    font_dict.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
-    font_dict.set("FirstChar", Object::Integer(32));
-    font_dict.set("LastChar", Object::Integer(126));
-    font_dict.set("Widths", Object::Array(widths));
-    let font_id = doc.add_object(Object::Dictionary(font_dict));
-
-
-    // Get pages root
-    let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
-    let catalog = doc.get_object(catalog_id)?;
-    let pages_id = catalog.as_dict()?.get(b"Pages").unwrap().as_reference()?;
-
-    // Remove the original background page from the page tree, since its
-    // content is now reused as the BG XObject on every generated page.
-    {
-        let pages_obj = doc.get_object(pages_id)?;
-        let pages_dict_orig = pages_obj.as_dict()?;
-        let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
-        kids.retain(|kid| kid.as_reference().map(|r| r != *bg_page_id).unwrap_or(true));
-        let count = kids.len() as i64;
-        let mut pages_dict = pages_dict_orig.clone();
-        pages_dict.set("Kids", Object::Array(kids));
-        pages_dict.set("Count", Object::Integer(count));
-        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
-    }
-    doc.objects.remove(bg_page_id);
-
-    // Load CSV
-    let file = File::open(csv_path)?;
-    let mut rdr = ReaderBuilder::new()
-        .has_headers(false)
-        .from_reader(file);
-
-    let kerning_adjustment = 0.3;
-    let y_positions = vec![9.0 * MM, 4.0 * MM]; // y for each word
-    let font_sizes = vec![9.0, 13.0];
-
-    for result in rdr.records() {
-        let txt = result?.get(0).ok_or("Missing CSV field")?.to_string();
-        // Split text by spaces
-        let texts: Vec<&str> = txt.split(' ').collect();
-
-        // Create new page content: draw XObject background + text
-        let mut operations = Vec::new();
-        for (idx, text) in texts.iter().enumerate() {
-
-        let font_size = font_sizes[idx];
-        // Draw background XObject
-        operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
-
-        // Calculate text width using ttf-parser
-        let mut base_text_width = 0.0f32;
-        for ch in text.chars() {
-            let glyph_id = face.glyph_index(ch).unwrap_or(GlyphId(0));
-            let advance = face.glyph_hor_advance(glyph_id).unwrap_or(0);
-            
-            // Scale to font size: (advance / units_per_em) * font_size
-            let char_width = (advance as f32 / units_per_em as f32) * font_size;
-            base_text_width += char_width;
+    let config = match get_string_flag(&args, "config") {
+        Some(path) => {
+            let data = std::fs::read_to_string(&path)?;
+            serde_json::from_str(&data)?
         }
-        
-        // Account for Tc kerning (0.3 points between each character)
-        let num_chars = text.len() as f32;
-        let text_width = base_text_width + (kerning_adjustment * (num_chars - 1.0));
-        
-        let x = (width as f32 - text_width) / 2.0; // center text horizontally
-        let y = y_positions[idx];
+        None => Config::default(),
+    };
 
-        if x < SAFE_MM {
-          eprintln!("code: {:?}", &text);
-        } 
-        
-        operations.push(Operation::new("q", vec![])); // save
-        operations.push(Operation::new("BT", vec![]));
-        operations.push(Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), Object::Real(font_size)]));
-        operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)])); // add slight kerning
-        operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
-        operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
-        operations.push(Operation::new("ET", vec![]));
-        operations.push(Operation::new("Q", vec![])); // restore
-}
-        // Create content stream
-        let content = Content { operations };
-        let content_data = content.encode()?;
-        let content_stream = Stream::new(Dictionary::new(), content_data);
+    let contour = args.iter().any(|a| a == "--contour") || config.contour.unwrap_or(false);
+    let with_contour = args.iter().any(|a| a == "--with-contour") || config.with_contour.unwrap_or(false);
 
-        // Add content
-        let content_id = doc.add_object(content_stream);
+    let (csv_path, background_path, output_path, contour_output_path) = if contour {
+        let background_path = positional.get(0).map(|s| s.to_string()).or_else(|| config.background.clone());
 
-        // Create page dict
-        let mut page_dict = Dictionary::new();
-        page_dict.set("Type", Object::Name(b"Page".to_vec()));
-        page_dict.set("Parent", Object::Reference(pages_id));
-        page_dict.set("MediaBox", Object::Array(media_box.clone()));
-        page_dict.set("Contents", Object::Reference(content_id));
-        page_dict.set("Resources", Object::Dictionary({
-            let mut res = Dictionary::new();
-            res.set("Font", Object::Dictionary({
-                let mut fonts = Dictionary::new();
-                fonts.set("F1", Object::Reference(font_id));
-                fonts
-            }));
-            res.set("XObject", Object::Dictionary({
-                let mut xobjs = Dictionary::new();
-                xobjs.set("BG", Object::Reference(bg_form_id));
-                xobjs
-            }));
-            res
-        }));
+        let Some(background_path) = background_path else {
+            eprintln!("Usage: {} <background_pdf> [output_pdf] --contour [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--config=config.json]", args[0]);
+            std::process::exit(1);
+        };
+        let output_path = positional.get(1).map(|s| s.to_string()).or_else(|| config.output.clone()).unwrap_or_else(|| default_output_path(&background_path, true));
+        (None, background_path, output_path, None)
+    } else {
+        let csv_path = positional.get(0).map(|s| s.to_string()).or_else(|| config.csv.clone());
+        let background_path = positional.get(1).map(|s| s.to_string()).or_else(|| config.background.clone());
 
-        let page_id = doc.add_object(Object::Dictionary(page_dict));
+        let (Some(csv_path), Some(background_path)) = (csv_path, background_path) else {
+            eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf] [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--font-sizes=9,14] [--text-y=10,3] [--text-x=5,5] [--fonts=path1.ttf,path2.ttf] [--align=left,center,right] [--text-colors=#RRGGBB|c:m:y:k,...] [--text-rotations=0,15] [--text-flip-x=true,false] [--text-flip-y=true,false] [--contour] [--with-contour] [--contour-background=path.pdf] [--combineb] [--debug] [--safe-margin=0] [--config=config.json]", args[0]);
+            std::process::exit(1);
+        };
+        let output_path = if with_contour {
+            default_output_path(&background_path, false)
+        } else {
+            positional.get(2).map(|s| s.to_string()).or_else(|| config.output.clone()).unwrap_or_else(|| default_output_path(&background_path, false))
+        };
+        let contour_output_path = if with_contour {
+            let base = positional.get(2).map(|s| s.to_string()).or_else(|| config.contour_output.clone()).unwrap_or_else(|| default_output_path(&background_path, false));
+            Some(with_suffix(&base, "-contour"))
+        } else {
+            None
+        };
+        (Some(csv_path), background_path, output_path, contour_output_path)
+    };
 
-        // Add to pages tree
-        let pages_obj = doc.get_object(pages_id)?;
-        let pages_dict_orig = pages_obj.as_dict()?;
-        let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
-        kids.push(Object::Reference(page_id));
-        let count = pages_dict_orig.get(b"Count").unwrap().as_i64().unwrap_or(0) + 1;
-        let mut pages_dict = pages_dict_orig.clone();
-        pages_dict.set("Kids", Object::Array(kids));
-        pages_dict.set("Count", Object::Integer(count));
-        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    // Resolve which PDF's first page provides the contour content. Only used
+    // for `--with-contour` (as the contour background) and `--combineb` (as
+    // the non-printable overlay layer drawn on the print PDF).
+    let contour_background_path = get_string_flag(&args, "contour-background")
+        .or_else(|| config.contour_background.clone())
+        .or_else(|| if with_contour { positional.get(2).map(|s| s.to_string()) } else { None })
+        .unwrap_or_else(|| background_path.clone());
+
+    let combine = args.iter().any(|a| a == "--combineb") || config.combineb.unwrap_or(false);
+
+    let opts = Options {
+        host_width_mm: get_flag(&args, "host-width", config.host_width.unwrap_or(267.0)),
+        host_height_mm: get_flag(&args, "host-height", config.host_height.unwrap_or(350.0)),
+        offset_x_mm: get_flag(&args, "offset-x", config.offset_x.unwrap_or(0.0)),
+        offset_y_mm: get_flag(&args, "offset-y", config.offset_y.unwrap_or(0.0)),
+        circle_diameter_mm: get_flag(&args, "circle-diameter", config.circle_diameter.unwrap_or(10.0)),
+        contour,
+        measure_paths: args.iter().any(|a| a == "--measure-paths") || config.measure_paths.unwrap_or(false),
+        font_sizes: get_float_list_flag(&args, "font-sizes")
+            .or_else(|| config.font_sizes.clone())
+            .unwrap_or_else(|| vec![9.0, 14.0]),
+        text_y_mm: get_float_list_flag(&args, "text-y")
+            .or_else(|| config.text_y.clone())
+            .unwrap_or_else(|| vec![10.0, 3.0]),
+        text_x_mm: get_float_list_flag(&args, "text-x")
+            .or_else(|| config.text_x.clone())
+            .unwrap_or_default(),
+        font_data: get_string_list_flag(&args, "fonts")
+            .or_else(|| config.fonts.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|path| std::fs::read(path))
+            .collect::<Result<Vec<Vec<u8>>, _>>()?,
+        align: get_string_list_flag(&args, "align")
+            .or_else(|| config.align.clone())
+            .unwrap_or_else(|| vec!["center".to_string()])
+            .iter()
+            .map(|s| s.parse::<TextAlign>())
+            .collect::<Result<Vec<TextAlign>, String>>()?,
+        text_colors: get_string_list_flag(&args, "text-colors")
+            .or_else(|| config.text_colors.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|s| parse_color(s))
+            .collect::<Result<Vec<pdfcodes::TextColor>, String>>()?,
+        combine,
+        debug: args.iter().any(|a| a == "--debug") || config.debug.unwrap_or(false),
+        safe_margin_mm: get_flag(&args, "safe-margin", config.safe_margin.unwrap_or(0.0)),
+        text_rotations: get_float_list_flag(&args, "text-rotations")
+            .or_else(|| config.text_rotations.clone())
+            .unwrap_or_default(),
+        text_flip_x: get_bool_list_flag(&args, "text-flip-x")
+            .or_else(|| config.text_flip_x.clone())
+            .unwrap_or_default(),
+        text_flip_y: get_bool_list_flag(&args, "text-flip-y")
+            .or_else(|| config.text_flip_y.clone())
+            .unwrap_or_default(),
+    };
+
+    run(csv_path.as_deref(), &background_path, &output_path, &opts, &contour_background_path)?;
+    println!("PDF generated successfully: {}", output_path);
+
+    // When generating the print PDF, optionally also generate the matching
+    // contour PDF using the same dimensional parameters, so both stay in sync.
+    if let Some(contour_output_path) = contour_output_path {
+        let mut contour_opts = opts.as_contour();
+        contour_opts.combine = false;
+        run(None, &contour_background_path, &contour_output_path, &contour_opts, &contour_background_path)?;
+        println!("PDF generated successfully: {}", contour_output_path);
     }
 
-    // Save
-    doc.save(output_path)?;
-
     Ok(())
+}
+
+// Read inputs from disk, run the library's PDF generator, write the result,
+// and print any requested path-length measurements.
+fn run(csv_path: Option<&str>, background_path: &str, output_path: &str, opts: &Options, contour_background_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let csv_data = csv_path.map(std::fs::read_to_string).transpose()?;
+    let background_bytes = std::fs::read(background_path)?;
+    let contour_background_bytes = if opts.combine {
+        Some(std::fs::read(contour_background_path)?)
+    } else {
+        None
+    };
+
+    let out = generate_pdf(csv_data.as_deref(), &background_bytes, contour_background_bytes.as_deref(), opts)?;
+
+    if let (Some(per_card), Some(total)) = (out.path_length_per_card_mm, out.path_length_total_mm) {
+        println!(
+            "Stroked path length per card: {:.2} mm; total across {} cards: {:.2} mm",
+            per_card, out.cards_per_page, total
+        );
+    }
+
+    std::fs::write(output_path, out.pdf)?;
+    Ok(())
+}
+
+fn get_flag(args: &[String], name: &str, default: f32) -> f32 {
+    let prefix = format!("--{}=", name);
+    for a in args {
+        if let Some(v) = a.strip_prefix(prefix.as_str()) {
+            if let Ok(f) = v.parse::<f32>() {
+                return f;
+            }
+        }
+    }
+    default
+}
+
+fn get_string_flag(args: &[String], name: &str) -> Option<String> {
+    let prefix = format!("--{}=", name);
+    args.iter().find_map(|a| a.strip_prefix(prefix.as_str()).map(|v| v.to_string()))
+}
+
+// Parse a comma-separated list of strings, e.g. --fonts=a.ttf,b.ttf -> ["a.ttf", "b.ttf"].
+fn get_string_list_flag(args: &[String], name: &str) -> Option<Vec<String>> {
+    let raw = get_string_flag(args, name)?;
+    Some(raw.split(',').map(|v| v.trim().to_string()).collect())
+}
+
+// Parse a comma-separated list of floats, e.g. --font-sizes=9,14 -> [9.0, 14.0].
+fn get_float_list_flag(args: &[String], name: &str) -> Option<Vec<f32>> {
+    let raw = get_string_flag(args, name)?;
+    Some(raw.split(',').map(|v| v.trim().parse::<f32>()).collect::<Result<Vec<f32>, _>>().unwrap_or_else(|e| {
+        eprintln!("Invalid --{}={}: {}", name, raw, e);
+        std::process::exit(1);
+    }))
+}
+
+// Parse a comma-separated list of booleans, e.g. --text-flip-x=true,false -> [true, false].
+fn get_bool_list_flag(args: &[String], name: &str) -> Option<Vec<bool>> {
+    let raw = get_string_flag(args, name)?;
+    Some(raw.split(',').map(|v| v.trim().parse::<bool>()).collect::<Result<Vec<bool>, _>>().unwrap_or_else(|e| {
+        eprintln!("Invalid --{}={}: {}", name, raw, e);
+        std::process::exit(1);
+    }))
+}
+
+// Default output filename: <background without extension>-print.pdf, or
+// <background without extension>-contour.pdf when --contour is set.
+fn default_output_path(background_path: &str, contour: bool) -> String {
+    let path = std::path::Path::new(background_path);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(background_path);
+    let suffix = if contour { "-contour.pdf" } else { "-print.pdf" };
+    format!("{}{}", stem, suffix)
+}
+
+// Insert `suffix` before the file extension, e.g. with_suffix("foo.pdf", "-contour") -> "foo-contour.pdf".
+// Preserves any directory component of the path.
+fn with_suffix(path: &str, suffix: &str) -> String {
+    let p = std::path::Path::new(path);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(path);
+    let new_name = match p.extension().and_then(|e| e.to_str()) {
+        Some(ext) => format!("{}{}.{}", stem, suffix, ext),
+        None => format!("{}{}", stem, suffix),
+    };
+    match p.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        Some(parent) => parent.join(new_name).to_string_lossy().into_owned(),
+        None => new_name,
+    }
 }
