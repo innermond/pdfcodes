@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::env;
-use pdfcodes::{generate_pdf, parse_color, Options, TextAlign};
+use pdfcodes::{generate_pdf, parse_color, parse_color_or_none, Options, TextAlign};
 
 // Optional JSON config file (--config=path.json) providing defaults for any
 // of the CLI parameters. CLI flags and positional arguments take precedence.
@@ -48,6 +48,19 @@ struct Config {
     // one per word position (or a single entry for every word).
     text_flip_x: Option<Vec<bool>>,
     text_flip_y: Option<Vec<bool>>,
+    // Background fill color drawn behind each text part's bounding box
+    // ("#RRGGBB", "c:m:y:k", or "none"/"-" for no background), one per word
+    // position (or a single entry for every word).
+    text_backgrounds: Option<Vec<String>>,
+    // Padding (in mm) added around the text bounding box for text_backgrounds.
+    text_background_padding: Option<f32>,
+    // Explicit width (in mm) for the text_backgrounds rectangle, one per
+    // word position (or a single entry for every word). Centers the
+    // rectangle on the text part's horizontal center.
+    text_background_widths: Option<Vec<f32>>,
+    // Opacity (0.0-1.0) of the text_backgrounds rectangle, one per word
+    // position (or a single entry for every word).
+    text_background_alphas: Option<Vec<f32>>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -79,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let background_path = positional.get(1).map(|s| s.to_string()).or_else(|| config.background.clone());
 
         let (Some(csv_path), Some(background_path)) = (csv_path, background_path) else {
-            eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf] [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--font-sizes=9,14] [--text-y=10,3] [--text-x=5,5] [--fonts=path1.ttf,path2.ttf] [--align=left,center,right] [--text-colors=#RRGGBB|c:m:y:k,...] [--text-rotations=0,15] [--text-flip-x=true,false] [--text-flip-y=true,false] [--contour] [--with-contour] [--contour-background=path.pdf] [--combineb] [--debug] [--safe-margin=0] [--config=config.json]", args[0]);
+            eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf] [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--font-sizes=9,14] [--text-y=10,3] [--text-x=5,5] [--fonts=path1.ttf,path2.ttf] [--align=left,center,right] [--text-colors=#RRGGBB|c:m:y:k,...] [--text-rotations=0,15] [--text-flip-x=true,false] [--text-flip-y=true,false] [--text-backgrounds=#RRGGBB|c:m:y:k|none,...] [--text-background-padding=0] [--text-backgrounds-widths=20,30] [--text-backgrounds-alphas=0.5,1] [--contour] [--with-contour] [--contour-background=path.pdf] [--combineb] [--debug] [--safe-margin=0] [--config=config.json]", args[0]);
             std::process::exit(1);
         };
         let output_path = if with_contour {
@@ -152,6 +165,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_default(),
         text_flip_y: get_bool_list_flag(&args, "text-flip-y")
             .or_else(|| config.text_flip_y.clone())
+            .unwrap_or_default(),
+        text_backgrounds: get_string_list_flag(&args, "text-backgrounds")
+            .or_else(|| config.text_backgrounds.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|s| parse_color_or_none(s))
+            .collect::<Result<Vec<Option<pdfcodes::TextColor>>, String>>()?,
+        text_background_padding_mm: get_flag(&args, "text-background-padding", config.text_background_padding.unwrap_or(0.0)),
+        text_background_widths_mm: get_float_list_flag(&args, "text-backgrounds-widths")
+            .or_else(|| config.text_background_widths.clone())
+            .unwrap_or_default(),
+        text_background_alphas: get_float_list_flag(&args, "text-backgrounds-alphas")
+            .or_else(|| config.text_background_alphas.clone())
             .unwrap_or_default(),
     };
 
@@ -256,5 +282,74 @@ fn with_suffix(path: &str, suffix: &str) -> String {
     match p.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         Some(parent) => parent.join(new_name).to_string_lossy().into_owned(),
         None => new_name,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        std::iter::once("pdfcodes".to_string())
+            .chain(values.iter().map(|s| s.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn get_flag_parses_value_or_returns_default() {
+        let a = args(&["--host-width=100.5"]);
+        assert_eq!(get_flag(&a, "host-width", 267.0), 100.5);
+        assert_eq!(get_flag(&a, "missing", 267.0), 267.0);
+    }
+
+    #[test]
+    fn get_flag_ignores_unparseable_value() {
+        let a = args(&["--host-width=not-a-number"]);
+        assert_eq!(get_flag(&a, "host-width", 267.0), 267.0);
+    }
+
+    #[test]
+    fn get_string_flag_finds_value() {
+        let a = args(&["--config=path.json"]);
+        assert_eq!(get_string_flag(&a, "config"), Some("path.json".to_string()));
+        assert_eq!(get_string_flag(&a, "missing"), None);
+    }
+
+    #[test]
+    fn get_string_list_flag_splits_and_trims() {
+        let a = args(&["--fonts=a.ttf, b.ttf,c.ttf"]);
+        assert_eq!(
+            get_string_list_flag(&a, "fonts"),
+            Some(vec!["a.ttf".to_string(), "b.ttf".to_string(), "c.ttf".to_string()])
+        );
+        assert_eq!(get_string_list_flag(&a, "missing"), None);
+    }
+
+    #[test]
+    fn get_float_list_flag_parses_values() {
+        let a = args(&["--font-sizes=9, 14.5"]);
+        assert_eq!(get_float_list_flag(&a, "font-sizes"), Some(vec![9.0, 14.5]));
+        assert_eq!(get_float_list_flag(&a, "missing"), None);
+    }
+
+    #[test]
+    fn get_bool_list_flag_parses_values() {
+        let a = args(&["--text-flip-x=true, false"]);
+        assert_eq!(get_bool_list_flag(&a, "text-flip-x"), Some(vec![true, false]));
+        assert_eq!(get_bool_list_flag(&a, "missing"), None);
+    }
+
+    #[test]
+    fn default_output_path_appends_suffix() {
+        assert_eq!(default_output_path("15x15.pdf", false), "15x15-print.pdf");
+        assert_eq!(default_output_path("15x15.pdf", true), "15x15-contour.pdf");
+        assert_eq!(default_output_path("path/to/15x15.pdf", false), "15x15-print.pdf");
+    }
+
+    #[test]
+    fn with_suffix_inserts_before_extension_and_preserves_dir() {
+        assert_eq!(with_suffix("foo.pdf", "-contour"), "foo-contour.pdf");
+        assert_eq!(with_suffix("foo", "-contour"), "foo-contour");
+        assert_eq!(with_suffix("dir/foo.pdf", "-contour"), "dir/foo-contour.pdf");
     }
 }

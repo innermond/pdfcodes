@@ -51,6 +51,23 @@ pub struct Options {
     // defaults to no flip.
     pub text_flip_x: Vec<bool>,
     pub text_flip_y: Vec<bool>,
+    // Background fill color drawn behind each text part's bounding box, one
+    // per word position (or a single entry for every word). `None` means no
+    // background for that word. Empty means no backgrounds at all.
+    pub text_backgrounds: Vec<Option<TextColor>>,
+    // Padding (in mm) added on all sides of the text bounding box when
+    // drawing `text_backgrounds`.
+    pub text_background_padding_mm: f32,
+    // Explicit width (in mm) for the `text_backgrounds` rectangle, one per
+    // word position (or a single entry for every word). When set for a
+    // word, the rectangle is centered on the text part's horizontal center
+    // with this width instead of the text width plus padding. Empty means
+    // no override.
+    pub text_background_widths_mm: Vec<f32>,
+    // Opacity (0.0 transparent - 1.0 opaque) of the `text_backgrounds`
+    // rectangle, one per word position (or a single entry for every word).
+    // Empty means fully opaque.
+    pub text_background_alphas: Vec<f32>,
 }
 
 impl Options {
@@ -81,6 +98,10 @@ impl Default for Options {
             text_rotations: Vec::new(),
             text_flip_x: Vec::new(),
             text_flip_y: Vec::new(),
+            text_backgrounds: Vec::new(),
+            text_background_padding_mm: 0.0,
+            text_background_widths_mm: Vec::new(),
+            text_background_alphas: Vec::new(),
         }
     }
 }
@@ -217,6 +238,15 @@ pub fn parse_color(s: &str) -> Result<TextColor, String> {
         return Err(format!("invalid color {:?} (expected 4 colon-separated CMYK values, e.g. \"0:0:0:1\")", s));
     }
     parse_hex_rgb(s)
+}
+
+// Parse a background color, where "none" or "-" means no background for
+// that word position (used by --text-backgrounds).
+pub fn parse_color_or_none(s: &str) -> Result<Option<TextColor>, String> {
+    match s.trim() {
+        "none" | "-" => Ok(None),
+        s => parse_color(s).map(Some),
+    }
 }
 
 fn parse_hex_rgb(s: &str) -> Result<TextColor, String> {
@@ -692,8 +722,27 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
                 txt, texts.len(), opts.text_flip_y.len()
             ).into());
         }
+        if opts.text_backgrounds.len() > 1 && texts.len() > opts.text_backgrounds.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-backgrounds value(s) configured",
+                txt, texts.len(), opts.text_backgrounds.len()
+            ).into());
+        }
+        if opts.text_background_widths_mm.len() > 1 && texts.len() > opts.text_background_widths_mm.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-backgrounds-widths value(s) configured",
+                txt, texts.len(), opts.text_background_widths_mm.len()
+            ).into());
+        }
+        if opts.text_background_alphas.len() > 1 && texts.len() > opts.text_background_alphas.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-backgrounds-alphas value(s) configured",
+                txt, texts.len(), opts.text_background_alphas.len()
+            ).into());
+        }
 
         let mut operations = Vec::new();
+        let mut ext_gstates: Vec<(String, f32)> = Vec::new();
         for (idx, text) in texts.iter().enumerate() {
             let font_size = opts.font_sizes[idx];
             let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx };
@@ -760,6 +809,24 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
                 let flip_idx = if opts.text_flip_y.len() == 1 { 0 } else { idx };
                 opts.text_flip_y[flip_idx]
             };
+            let background = if opts.text_backgrounds.is_empty() {
+                None
+            } else {
+                let bg_idx = if opts.text_backgrounds.len() == 1 { 0 } else { idx };
+                opts.text_backgrounds[bg_idx]
+            };
+            let background_width = if opts.text_background_widths_mm.is_empty() {
+                None
+            } else {
+                let width_idx = if opts.text_background_widths_mm.len() == 1 { 0 } else { idx };
+                Some(opts.text_background_widths_mm[width_idx] * MM)
+            };
+            let background_alpha = if opts.text_background_alphas.is_empty() {
+                1.0
+            } else {
+                let alpha_idx = if opts.text_background_alphas.len() == 1 { 0 } else { idx };
+                opts.text_background_alphas[alpha_idx]
+            };
 
             operations.push(Operation::new("q", vec![])); // save
             if rotation_deg != 0.0 || flip_x || flip_y {
@@ -781,6 +848,41 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
                     Object::Real(e), Object::Real(f),
                 ]));
             }
+
+            if let Some(bg_color) = background {
+                let pad = opts.text_background_padding_mm * MM;
+                operations.push(Operation::new("q", vec![])); // save
+                if background_alpha < 1.0 {
+                    let gs_name = match ext_gstates.iter().find(|(_, a)| (*a - background_alpha).abs() < 1e-6) {
+                        Some((name, _)) => name.clone(),
+                        None => {
+                            let name = format!("GSAlpha{}", ext_gstates.len());
+                            ext_gstates.push((name.clone(), background_alpha));
+                            name
+                        }
+                    };
+                    operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
+                }
+                match bg_color {
+                    TextColor::Rgb(r, g, b) => {
+                        operations.push(Operation::new("rg", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));
+                    }
+                    TextColor::Cmyk(c, m, y, k) => {
+                        operations.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
+                    }
+                }
+                let (rect_x, rect_w) = match background_width {
+                    Some(w) => (x + text_width / 2.0 - w / 2.0, w),
+                    None => (x - pad, text_width + 2.0 * pad),
+                };
+                operations.push(Operation::new("re", vec![
+                    Object::Real(rect_x), Object::Real(y + descent - pad),
+                    Object::Real(rect_w), Object::Real((ascent - descent) + 2.0 * pad),
+                ]));
+                operations.push(Operation::new("f", vec![]));
+                operations.push(Operation::new("Q", vec![])); // restore
+            }
+
             operations.push(Operation::new("q", vec![])); // save
             match color {
                 TextColor::Rgb(r, g, b) => {
@@ -833,6 +935,20 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
                 xobjs.set("BG", Object::Reference(bg_form_id));
                 xobjs
             }));
+            if !ext_gstates.is_empty() {
+                res.set("ExtGState", Object::Dictionary({
+                    let mut gstates = Dictionary::new();
+                    for (name, alpha) in &ext_gstates {
+                        gstates.set(name.clone(), Object::Dictionary({
+                            let mut gs = Dictionary::new();
+                            gs.set("Type", Object::Name(b"ExtGState".to_vec()));
+                            gs.set("ca", Object::Real(*alpha));
+                            gs
+                        }));
+                    }
+                    gstates
+                }));
+            }
             res
         }));
 
@@ -1110,6 +1226,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_color_or_none_sentinels() {
+        assert!(parse_color_or_none("none").unwrap().is_none());
+        assert!(parse_color_or_none("-").unwrap().is_none());
+        assert!(parse_color_or_none("#FF0000").unwrap().is_some());
+        assert!(parse_color_or_none("not-a-color").is_err());
+    }
+
+    #[test]
     fn text_align_from_str() {
         assert!(matches!("left".parse::<TextAlign>(), Ok(TextAlign::Left)));
         assert!(matches!("center".parse::<TextAlign>(), Ok(TextAlign::Center)));
@@ -1159,6 +1283,95 @@ mod tests {
         assert!(err.to_string().contains("word(s)"));
     }
 
+    // 3-word base options used to test bounds checks for fields configured
+    // with exactly 2 entries (i.e. fewer than the 3 words in the CSV row).
+    fn three_word_options() -> Options {
+        Options {
+            font_sizes: vec![9.0, 9.0, 9.0],
+            text_y_mm: vec![10.0, 10.0, 10.0],
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_fonts() {
+        let opts = Options {
+            font_data: vec![MONTSERRAT_BOLD_TTF.to_vec(), MONTSERRAT_BOLD_TTF.to_vec()],
+            ..three_word_options()
+        };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("font(s)"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_align() {
+        let opts = Options { align: vec![TextAlign::Left, TextAlign::Right], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("alignment(s)"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_x() {
+        let opts = Options { text_x_mm: vec![5.0], ..Options::default() };
+        let err = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("x-position(s)"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_colors() {
+        let opts = Options {
+            text_colors: vec![parse_color("#FF0000").unwrap(), parse_color("#00FF00").unwrap()],
+            ..three_word_options()
+        };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("text color(s)"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_rotations() {
+        let opts = Options { text_rotations: vec![10.0, 20.0], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("text rotation(s)"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_flip_x() {
+        let opts = Options { text_flip_x: vec![true, false], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-flip-x"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_flip_y() {
+        let opts = Options { text_flip_y: vec![true, false], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-flip-y"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_backgrounds() {
+        let opts = Options {
+            text_backgrounds: vec![parse_color_or_none("#FF0000").unwrap(), parse_color_or_none("none").unwrap()],
+            ..three_word_options()
+        };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-backgrounds value"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_background_widths() {
+        let opts = Options { text_background_widths_mm: vec![10.0, 20.0], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-backgrounds-widths"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_background_alphas() {
+        let opts = Options { text_background_alphas: vec![0.5, 1.0], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-backgrounds-alphas"));
+    }
+
     #[test]
     fn generate_print_pdf_with_combine_overlay() {
         let opts = Options { combine: true, ..Options::default() };
@@ -1179,6 +1392,13 @@ mod tests {
             text_rotations: vec![15.0],
             text_flip_x: vec![true, false],
             text_flip_y: vec![false, true],
+            text_backgrounds: vec![
+                parse_color_or_none("#FFFF00").unwrap(),
+                parse_color_or_none("none").unwrap(),
+            ],
+            text_background_padding_mm: 1.0,
+            text_background_widths_mm: vec![40.0, 5.0],
+            text_background_alphas: vec![0.3, 1.0],
             debug: true,
             safe_margin_mm: 5.0,
             ..Options::default()
@@ -1255,6 +1475,10 @@ mod wasm {
         text_rotations: Vec<f32>,
         text_flip_x: Vec<u8>,
         text_flip_y: Vec<u8>,
+        text_backgrounds: Vec<String>,
+        text_background_padding_mm: f32,
+        text_background_widths_mm: Vec<f32>,
+        text_background_alphas: Vec<f32>,
     ) -> Result<WasmGenerateOutput, JsError> {
         let align = align.iter()
             .map(|s| s.parse::<TextAlign>())
@@ -1264,6 +1488,11 @@ mod wasm {
         let text_colors = text_colors.iter()
             .map(|s| parse_color(s))
             .collect::<Result<Vec<TextColor>, String>>()
+            .map_err(|e| JsError::new(&e))?;
+
+        let text_backgrounds = text_backgrounds.iter()
+            .map(|s| parse_color_or_none(s))
+            .collect::<Result<Vec<Option<TextColor>>, String>>()
             .map_err(|e| JsError::new(&e))?;
 
         let opts = Options {
@@ -1286,6 +1515,136 @@ mod wasm {
             text_rotations,
             text_flip_x: text_flip_x.iter().map(|v| *v != 0).collect(),
             text_flip_y: text_flip_y.iter().map(|v| *v != 0).collect(),
+            text_backgrounds,
+            text_background_padding_mm,
+            text_background_widths_mm,
+            text_background_alphas,
+        };
+
+        let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        Ok(WasmGenerateOutput {
+            pdf: out.pdf,
+            cards_per_page: out.cards_per_page,
+            path_length_per_card_mm: out.path_length_per_card_mm,
+            path_length_total_mm: out.path_length_total_mm,
+        })
+    }
+
+    // Layout/styling options accepted as a single JS object by
+    // `generate_with_options`. Any field omitted by the caller falls back to
+    // the same default as `Options::default()`.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", default)]
+    struct JsOptions {
+        host_width_mm: f32,
+        host_height_mm: f32,
+        offset_x_mm: f32,
+        offset_y_mm: f32,
+        circle_diameter_mm: f32,
+        contour: bool,
+        measure_paths: bool,
+        font_sizes: Vec<f32>,
+        text_y_mm: Vec<f32>,
+        text_x_mm: Vec<f32>,
+        align: Vec<String>,
+        combine: bool,
+        debug: bool,
+        safe_margin_mm: f32,
+        text_colors: Vec<String>,
+        text_rotations: Vec<f32>,
+        text_flip_x: Vec<bool>,
+        text_flip_y: Vec<bool>,
+        text_backgrounds: Vec<String>,
+        text_background_padding_mm: f32,
+        text_background_widths_mm: Vec<f32>,
+        text_background_alphas: Vec<f32>,
+    }
+
+    impl Default for JsOptions {
+        fn default() -> Self {
+            let base = Options::default();
+            JsOptions {
+                host_width_mm: base.host_width_mm,
+                host_height_mm: base.host_height_mm,
+                offset_x_mm: base.offset_x_mm,
+                offset_y_mm: base.offset_y_mm,
+                circle_diameter_mm: base.circle_diameter_mm,
+                contour: base.contour,
+                measure_paths: base.measure_paths,
+                font_sizes: base.font_sizes,
+                text_y_mm: base.text_y_mm,
+                text_x_mm: base.text_x_mm,
+                align: vec!["center".to_string()],
+                combine: base.combine,
+                debug: base.debug,
+                safe_margin_mm: base.safe_margin_mm,
+                text_colors: Vec::new(),
+                text_rotations: Vec::new(),
+                text_flip_x: Vec::new(),
+                text_flip_y: Vec::new(),
+                text_backgrounds: Vec::new(),
+                text_background_padding_mm: base.text_background_padding_mm,
+                text_background_widths_mm: Vec::new(),
+                text_background_alphas: Vec::new(),
+            }
+        }
+    }
+
+    // JS-friendly entry point: takes the CSV/background/font data plus a
+    // single options object (camelCase keys, all optional) instead of a long
+    // positional argument list. See `generate` for the raw equivalent.
+    #[wasm_bindgen]
+    pub fn generate_with_options(
+        csv_data: Option<String>,
+        background: &[u8],
+        contour_background: Option<Vec<u8>>,
+        font_data: Vec<js_sys::Uint8Array>,
+        options: JsValue,
+    ) -> Result<WasmGenerateOutput, JsError> {
+        let js_opts: JsOptions = serde_wasm_bindgen::from_value(options)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+        let align = js_opts.align.iter()
+            .map(|s| s.parse::<TextAlign>())
+            .collect::<Result<Vec<TextAlign>, String>>()
+            .map_err(|e| JsError::new(&e))?;
+
+        let text_colors = js_opts.text_colors.iter()
+            .map(|s| parse_color(s))
+            .collect::<Result<Vec<TextColor>, String>>()
+            .map_err(|e| JsError::new(&e))?;
+
+        let text_backgrounds = js_opts.text_backgrounds.iter()
+            .map(|s| parse_color_or_none(s))
+            .collect::<Result<Vec<Option<TextColor>>, String>>()
+            .map_err(|e| JsError::new(&e))?;
+
+        let opts = Options {
+            host_width_mm: js_opts.host_width_mm,
+            host_height_mm: js_opts.host_height_mm,
+            offset_x_mm: js_opts.offset_x_mm,
+            offset_y_mm: js_opts.offset_y_mm,
+            circle_diameter_mm: js_opts.circle_diameter_mm,
+            contour: js_opts.contour,
+            measure_paths: js_opts.measure_paths,
+            font_sizes: js_opts.font_sizes,
+            text_y_mm: js_opts.text_y_mm,
+            text_x_mm: js_opts.text_x_mm,
+            font_data: font_data.iter().map(|u| u.to_vec()).collect(),
+            align,
+            text_colors,
+            combine: js_opts.combine,
+            debug: js_opts.debug,
+            safe_margin_mm: js_opts.safe_margin_mm,
+            text_rotations: js_opts.text_rotations,
+            text_flip_x: js_opts.text_flip_x,
+            text_flip_y: js_opts.text_flip_y,
+            text_backgrounds,
+            text_background_padding_mm: js_opts.text_background_padding_mm,
+            text_background_widths_mm: js_opts.text_background_widths_mm,
+            text_background_alphas: js_opts.text_background_alphas,
         };
 
         let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
