@@ -1,0 +1,37 @@
+{
+  "csv": "data.csv",
+  "background": "15x15.pdf",
+  "contour_background": "circle.pdf",
+  "output": "15x15-print.pdf",
+  "contour_output": "circle-contour.pdf",
+
+  "host_width": 267,
+  "host_height": 350,
+  "offset_x": 2,
+  "offset_y": 2,
+  "circle_diameter": 10,
+
+  "contour": false,
+  "with_contour": true,
+  "measure_paths": false,
+
+  "font_sizes": [9, 14],
+  "text_y": [10, 3],
+
+  "fonts": [
+    "src/assets/fonts/Helvetica-Bold.ttf",
+    "src/assets/fonts/Courier-Bold.ttf"
+  ],
+
+  "align": ["center", "center"],
+
+  "text_colors": ["1:0:0:0", "0:1:1:0"],
+
+  "text_rotations": [0, 15],
+  "text_flip_x": [false, false],
+  "text_flip_y": [false, false],
+
+  "combineb": true,
+  "debug": true,
+  "safe_margin": 3
+}
