@@ -6,6 +6,7 @@ import { generatePdf, type GenerateResult } from './lib/generate'
 import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildJsOptions, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type PageOptions, type WordStyle } from './lib/options'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
+import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
 
 type Mode = 'print' | 'contour' | 'both'
@@ -70,7 +71,16 @@ export default function App() {
     setBackgroundFile(file)
     if (!file) return
     renderPdfBackground(file)
-      .then(setBackground)
+      .then(async (bg) => {
+        setBackground(bg)
+        await ensureDefaultFont()
+        const maxWidthPt = bg.widthPt * 0.9
+        const separator = splitChars === '' ? ' ' : splitChars[0]
+        const words = [defaultWordStyle(0), defaultWordStyle(1)]
+          .map((style) => randomWordFittingWidth(maxWidthPt, style.fontSizePt))
+          .join(separator)
+        handleSampleTextChange(words)
+      })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
