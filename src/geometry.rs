@@ -128,6 +128,12 @@ impl CardLayout {
         (x, y)
     }
 
+    // Horizontal center-to-center distance (in mm) between adjacent cards in
+    // the grid, used to estimate the cutter's travel time between cards.
+    pub fn pitch_mm(&self) -> f32 {
+        (self.card_w + self.gutter_x) / MM
+    }
+
     // Registration circles: top-left, bottom-right, bottom-left, inset by radius.
     pub fn registration_circles(&self) -> Vec<Operation> {
         let mut ops = Vec::new();

@@ -70,6 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         circle_diameter_mm: get_flag(&args, "circle-diameter", config.circle_diameter.unwrap_or(10.0)),
         contour,
         measure_paths: args.iter().any(|a| a == "--measure-paths") || config.measure_paths.unwrap_or(false),
+        cutting_speed_mm_s: get_flag(&args, "cutting-speed", config.cutting_speed.unwrap_or(8.0)),
+        corner_penalty_s: get_flag(&args, "corner-penalty", config.corner_penalty.unwrap_or(0.2)),
+        preparation_time_s: get_flag(&args, "preparation-time", config.preparation_time.unwrap_or(60.0)),
+        travel_speed_mm_s: get_flag(&args, "travel-speed", config.travel_speed.unwrap_or(16.0)),
         font_sizes: get_float_list_flag(&args, "font-sizes")
             .or_else(|| config.font_sizes.clone())
             .unwrap_or_else(|| vec![9.0, 14.0]),
@@ -170,6 +174,13 @@ fn run(csv_path: Option<&str>, background_path: &str, output_path: &str, opts: &
         println!(
             "Sharp turns (>= 90 degrees) per card: {}; total across {} cards: {}",
             per_card, out.cards_per_page, total
+        );
+    }
+
+    if let (Some(per_card), Some(total)) = (out.time_cutting_per_card_s, out.time_cutting_total_s) {
+        println!(
+            "Estimated cutting time per card: {:.1} s; total: {:.1} s ({:.1} min)",
+            per_card, total, total / 60.0
         );
     }
 

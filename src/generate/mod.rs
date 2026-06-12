@@ -6,7 +6,7 @@ use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}}
 
 use crate::fonts::{embed_fonts, MONTSERRAT_BOLD_TTF};
 use crate::geometry::CardLayout;
-use crate::measure::measure_stroked_paths;
+use crate::measure::{measure_stroked_paths, PathMetrics};
 use crate::options::Options;
 
 // Result of generating a PDF: the document bytes plus, when requested, the
@@ -22,6 +22,61 @@ pub struct GenerateOutput {
     pub node_count_total: Option<usize>,
     pub sharp_turn_count_per_card: Option<usize>,
     pub sharp_turn_count_total: Option<usize>,
+    pub time_cutting_per_card_s: Option<f32>,
+    pub time_cutting_total_s: Option<f32>,
+}
+
+// Path-length/node/sharp-turn/cutting-time measurements derived from a
+// single card's stroked paths, scaled to `total_cards` and combined with
+// `num_pages` worth of machine preparation time.
+struct CuttingMetrics {
+    path_length_per_card_mm: f32,
+    path_length_total_mm: f32,
+    node_count_per_card: usize,
+    node_count_total: usize,
+    sharp_turn_count_per_card: usize,
+    sharp_turn_count_total: usize,
+    time_cutting_per_card_s: f32,
+    time_cutting_total_s: f32,
+}
+
+// Content bytes of a standalone PDF's first page, used to measure the
+// stroked cut lines of a dedicated contour file.
+fn first_page_content(pdf_bytes: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let doc = Document::load_mem(pdf_bytes)?;
+    let pages = doc.get_pages();
+    let (_, page_id) = pages.iter().next().ok_or("No pages in contour background PDF")?;
+    Ok(doc.get_page_content(*page_id)?)
+}
+
+// Combine per-card path metrics with the cutting-time options to estimate
+// how long a cutting machine would take to process `total_cards` cards
+// spread across `num_pages` pages (each page requiring
+// `opts.preparation_time_s` to feed and register, and `cards_on_page - 1`
+// non-cutting travel moves of `pitch_mm` between adjacent cards at
+// `opts.travel_speed_mm_s`).
+fn compute_cutting_metrics(pm: &PathMetrics, opts: &Options, total_cards: usize, num_pages: f32, pitch_mm: f32) -> CuttingMetrics {
+    let per_card_mm = pm.length / crate::geometry::MM;
+    let total_mm = per_card_mm * total_cards as f32;
+    let per_card_cut_time = per_card_mm / opts.cutting_speed_mm_s + pm.sharp_turn_count as f32 * opts.corner_penalty_s;
+
+    // One fewer travel move than there are cards on each page.
+    let travel_segments = (total_cards as f32 - num_pages).max(0.0);
+    let travel_time_total = travel_segments * pitch_mm / opts.travel_speed_mm_s;
+
+    let total_time = total_cards as f32 * per_card_cut_time + num_pages * opts.preparation_time_s + travel_time_total;
+    let per_card_time = if total_cards > 0 { total_time / total_cards as f32 } else { 0.0 };
+
+    CuttingMetrics {
+        path_length_per_card_mm: per_card_mm,
+        path_length_total_mm: total_mm,
+        node_count_per_card: pm.node_count,
+        node_count_total: pm.node_count * total_cards,
+        sharp_turn_count_per_card: pm.sharp_turn_count,
+        sharp_turn_count_total: pm.sharp_turn_count * total_cards,
+        time_cutting_per_card_s: per_card_time,
+        time_cutting_total_s: total_time,
+    }
 }
 
 // Generate a print or contour PDF in memory.
@@ -106,21 +161,11 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // dimensions, offsets and registration circles), with every cell showing
     // just the background and no label text.
     if opts.contour {
-        let (
-            path_length_per_card_mm, path_length_total_mm,
-            node_count_per_card, node_count_total,
-            sharp_turn_count_per_card, sharp_turn_count_total,
-        ) = if opts.measure_paths {
+        let cutting_metrics = if opts.measure_paths {
             let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
-            let per_card_mm = path_metrics.length / crate::geometry::MM;
-            let total_mm = per_card_mm * layout.cards_per_page as f32;
-            (
-                Some(per_card_mm), Some(total_mm),
-                Some(path_metrics.node_count), Some(path_metrics.node_count * layout.cards_per_page),
-                Some(path_metrics.sharp_turn_count), Some(path_metrics.sharp_turn_count * layout.cards_per_page),
-            )
+            Some(compute_cutting_metrics(&path_metrics, opts, layout.cards_per_page, 1.0, layout.pitch_mm()))
         } else {
-            (None, None, None, None, None, None)
+            None
         };
 
         let page_id = contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout)?;
@@ -139,9 +184,14 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         return Ok(GenerateOutput {
             pdf,
             cards_per_page: layout.cards_per_page,
-            path_length_per_card_mm, path_length_total_mm,
-            node_count_per_card, node_count_total,
-            sharp_turn_count_per_card, sharp_turn_count_total,
+            path_length_per_card_mm: cutting_metrics.as_ref().map(|m| m.path_length_per_card_mm),
+            path_length_total_mm: cutting_metrics.as_ref().map(|m| m.path_length_total_mm),
+            node_count_per_card: cutting_metrics.as_ref().map(|m| m.node_count_per_card),
+            node_count_total: cutting_metrics.as_ref().map(|m| m.node_count_total),
+            sharp_turn_count_per_card: cutting_metrics.as_ref().map(|m| m.sharp_turn_count_per_card),
+            sharp_turn_count_total: cutting_metrics.as_ref().map(|m| m.sharp_turn_count_total),
+            time_cutting_per_card_s: cutting_metrics.as_ref().map(|m| m.time_cutting_per_card_s),
+            time_cutting_total_s: cutting_metrics.as_ref().map(|m| m.time_cutting_total_s),
         });
     }
 
@@ -231,12 +281,32 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let mut pdf = Vec::new();
     doc.save_to(&mut pdf)?;
 
+    let cutting_metrics = if opts.measure_paths {
+        let total_cards = card_ids.len();
+        let num_pages = (total_cards as f32 / layout.cards_per_page as f32).ceil();
+        // The cutting machine follows the dedicated contour file when one is
+        // given; otherwise fall back to the print background's own paths.
+        let measure_content = match contour_background_bytes {
+            Some(bytes) => first_page_content(bytes)?,
+            None => bg_content_bytes.clone(),
+        };
+        let path_metrics = measure_stroked_paths(&measure_content)?;
+        Some(compute_cutting_metrics(&path_metrics, opts, total_cards, num_pages, layout.pitch_mm()))
+    } else {
+        None
+    };
+
     Ok(GenerateOutput {
         pdf,
         cards_per_page: layout.cards_per_page,
-        path_length_per_card_mm: None, path_length_total_mm: None,
-        node_count_per_card: None, node_count_total: None,
-        sharp_turn_count_per_card: None, sharp_turn_count_total: None,
+        path_length_per_card_mm: cutting_metrics.as_ref().map(|m| m.path_length_per_card_mm),
+        path_length_total_mm: cutting_metrics.as_ref().map(|m| m.path_length_total_mm),
+        node_count_per_card: cutting_metrics.as_ref().map(|m| m.node_count_per_card),
+        node_count_total: cutting_metrics.as_ref().map(|m| m.node_count_total),
+        sharp_turn_count_per_card: cutting_metrics.as_ref().map(|m| m.sharp_turn_count_per_card),
+        sharp_turn_count_total: cutting_metrics.as_ref().map(|m| m.sharp_turn_count_total),
+        time_cutting_per_card_s: cutting_metrics.as_ref().map(|m| m.time_cutting_per_card_s),
+        time_cutting_total_s: cutting_metrics.as_ref().map(|m| m.time_cutting_total_s),
     })
 }
 
@@ -264,6 +334,83 @@ mod tests {
 
         assert!(out.pdf.starts_with(b"%PDF"));
         assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn compute_cutting_metrics_applies_speed_corner_penalty_prep_and_travel_time() {
+        let pm = PathMetrics { length: 100.0 * crate::geometry::MM, node_count: 4, sharp_turn_count: 4 };
+        let opts = Options { cutting_speed_mm_s: 8.0, corner_penalty_s: 0.2, preparation_time_s: 60.0, travel_speed_mm_s: 16.0, ..Options::default() };
+
+        let metrics = compute_cutting_metrics(&pm, &opts, 3, 2.0, 50.0);
+
+        assert!((metrics.path_length_per_card_mm - 100.0).abs() < 1e-3);
+        assert!((metrics.path_length_total_mm - 300.0).abs() < 1e-3);
+        assert_eq!(metrics.node_count_per_card, 4);
+        assert_eq!(metrics.node_count_total, 12);
+        assert_eq!(metrics.sharp_turn_count_per_card, 4);
+        assert_eq!(metrics.sharp_turn_count_total, 12);
+
+        // per-card cutting: 100mm / 8mm/s + 4 turns * 0.2s = 12.5 + 0.8 = 13.3s
+        // travel: (3 cards - 2 pages) = 1 travel move of 50mm / 16mm/s = 3.125s
+        // total: 3 * 13.3 + 2 * 60 + 3.125 = 39.9 + 120 + 3.125 = 163.025s
+        let expected_total = 163.025;
+        assert!((metrics.time_cutting_total_s - expected_total).abs() < 1e-3);
+
+        // per-card is the total averaged across all cards.
+        let expected_per_card = expected_total / 3.0;
+        assert!((metrics.time_cutting_per_card_s - expected_per_card).abs() < 1e-3);
+    }
+
+    #[test]
+    fn generate_contour_pdf_with_measure_paths_includes_cutting_time() {
+        let opts = Options { contour: true, measure_paths: true, ..Options::default() };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("contour generation should succeed");
+
+        let per_card = out.time_cutting_per_card_s.expect("per-card cutting time should be set");
+        let total = out.time_cutting_total_s.expect("total cutting time should be set");
+        assert!(per_card >= 0.0);
+        // per-card is the total averaged across the page's cards.
+        assert!((total - per_card * out.cards_per_page as f32).abs() < 1e-2);
+        assert!(total > opts.preparation_time_s);
+    }
+
+    #[test]
+    fn generate_print_pdf_with_measure_paths_includes_cutting_time() {
+        let opts = Options { measure_paths: true, ..Options::default() };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts).expect("print generation should succeed");
+
+        let per_card = out.time_cutting_per_card_s.expect("per-card cutting time should be set");
+        let total = out.time_cutting_total_s.expect("total cutting time should be set");
+        // A single card means zero travel moves, so per-card equals the total
+        // (one card's cutting time plus one page's preparation time).
+        assert!((total - per_card).abs() < 1e-2);
+        assert!(total >= opts.preparation_time_s);
+    }
+
+    #[test]
+    fn generate_print_pdf_measures_dedicated_contour_background_when_given() {
+        static CONTOUR_PDF: &[u8] = include_bytes!("../../circle.pdf");
+
+        let opts = Options { measure_paths: true, ..Options::default() };
+
+        let without_contour = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("print generation should succeed");
+        let with_contour = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(CONTOUR_PDF), &opts)
+            .expect("print generation should succeed");
+
+        // The two source PDFs have different stroked-path content, so
+        // supplying a dedicated contour background should change the
+        // measured path length used for the cutting-time estimate.
+        assert_ne!(without_contour.path_length_per_card_mm, with_contour.path_length_per_card_mm);
+    }
+
+    #[test]
+    fn generate_print_pdf_without_measure_paths_omits_cutting_time() {
+        let opts = Options::default();
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts).expect("print generation should succeed");
+
+        assert!(out.time_cutting_per_card_s.is_none());
+        assert!(out.time_cutting_total_s.is_none());
     }
 
     #[test]

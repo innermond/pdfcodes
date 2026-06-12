@@ -10,6 +10,17 @@ pub struct Options {
     pub circle_diameter_mm: f32,
     pub contour: bool,
     pub measure_paths: bool,
+    // Cutter feed rate (mm/s) used to estimate cutting time from the
+    // measured path length.
+    pub cutting_speed_mm_s: f32,
+    // Extra dwell time (seconds) added per sharp (>= 90 degree) turn, to
+    // account for the cutter decelerating/accelerating through the corner.
+    pub corner_penalty_s: f32,
+    // Fixed time (seconds) per page for manually feeding the sheet into the
+    // cutter and having it register the 3 black registration circles.
+    pub preparation_time_s: f32,
+    // Speed (mm/s) of the blade's non-cutting travel moves between cards.
+    pub travel_speed_mm_s: f32,
     // Per-word text layout: font size in points and baseline y-position in
     // mm, indexed by the word's position in the (space-separated) CSV field.
     pub font_sizes: Vec<f32>,
@@ -81,6 +92,10 @@ impl Default for Options {
             circle_diameter_mm: 10.0,
             contour: false,
             measure_paths: false,
+            cutting_speed_mm_s: 8.0,
+            corner_penalty_s: 0.2,
+            preparation_time_s: 60.0,
+            travel_speed_mm_s: 16.0,
             font_sizes: vec![9.0, 14.0],
             text_y_mm: vec![10.0, 3.0],
             text_x_mm: Vec::new(),

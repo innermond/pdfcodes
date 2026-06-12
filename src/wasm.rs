@@ -17,6 +17,8 @@ pub struct WasmGenerateOutput {
     node_count_total: Option<usize>,
     sharp_turn_count_per_card: Option<usize>,
     sharp_turn_count_total: Option<usize>,
+    time_cutting_per_card_s: Option<f32>,
+    time_cutting_total_s: Option<f32>,
 }
 
 #[wasm_bindgen]
@@ -60,6 +62,16 @@ impl WasmGenerateOutput {
     pub fn sharp_turn_count_total(&self) -> Option<usize> {
         self.sharp_turn_count_total
     }
+
+    #[wasm_bindgen(getter)]
+    pub fn time_cutting_per_card_s(&self) -> Option<f32> {
+        self.time_cutting_per_card_s
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn time_cutting_total_s(&self) -> Option<f32> {
+        self.time_cutting_total_s
+    }
 }
 
 // Generate a print PDF (when `csv_data` is `Some`) or a contour PDF
@@ -93,6 +105,10 @@ pub fn generate(
     text_background_padding_mm: f32,
     text_background_widths_mm: Vec<f32>,
     text_background_alphas: Vec<f32>,
+    cutting_speed_mm_s: f32,
+    corner_penalty_s: f32,
+    preparation_time_s: f32,
+    travel_speed_mm_s: f32,
 ) -> Result<WasmGenerateOutput, JsError> {
     let align = align.iter()
         .map(|s| s.parse::<TextAlign>())
@@ -117,6 +133,10 @@ pub fn generate(
         circle_diameter_mm,
         contour,
         measure_paths,
+        cutting_speed_mm_s,
+        corner_penalty_s,
+        preparation_time_s,
+        travel_speed_mm_s,
         font_sizes,
         text_y_mm,
         text_x_mm,
@@ -147,6 +167,8 @@ pub fn generate(
         node_count_total: out.node_count_total,
         sharp_turn_count_per_card: out.sharp_turn_count_per_card,
         sharp_turn_count_total: out.sharp_turn_count_total,
+        time_cutting_per_card_s: out.time_cutting_per_card_s,
+        time_cutting_total_s: out.time_cutting_total_s,
     })
 }
 
@@ -163,6 +185,10 @@ struct JsOptions {
     circle_diameter_mm: f32,
     contour: bool,
     measure_paths: bool,
+    cutting_speed_mm_s: f32,
+    corner_penalty_s: f32,
+    preparation_time_s: f32,
+    travel_speed_mm_s: f32,
     font_sizes: Vec<f32>,
     text_y_mm: Vec<f32>,
     text_x_mm: Vec<f32>,
@@ -191,6 +217,10 @@ impl Default for JsOptions {
             circle_diameter_mm: base.circle_diameter_mm,
             contour: base.contour,
             measure_paths: base.measure_paths,
+            cutting_speed_mm_s: base.cutting_speed_mm_s,
+            corner_penalty_s: base.corner_penalty_s,
+            preparation_time_s: base.preparation_time_s,
+            travel_speed_mm_s: base.travel_speed_mm_s,
             font_sizes: base.font_sizes,
             text_y_mm: base.text_y_mm,
             text_x_mm: base.text_x_mm,
@@ -247,6 +277,10 @@ pub fn generate_with_options(
         circle_diameter_mm: js_opts.circle_diameter_mm,
         contour: js_opts.contour,
         measure_paths: js_opts.measure_paths,
+        cutting_speed_mm_s: js_opts.cutting_speed_mm_s,
+        corner_penalty_s: js_opts.corner_penalty_s,
+        preparation_time_s: js_opts.preparation_time_s,
+        travel_speed_mm_s: js_opts.travel_speed_mm_s,
         font_sizes: js_opts.font_sizes,
         text_y_mm: js_opts.text_y_mm,
         text_x_mm: js_opts.text_x_mm,
@@ -277,5 +311,7 @@ pub fn generate_with_options(
         node_count_total: out.node_count_total,
         sharp_turn_count_per_card: out.sharp_turn_count_per_card,
         sharp_turn_count_total: out.sharp_turn_count_total,
+        time_cutting_per_card_s: out.time_cutting_per_card_s,
+        time_cutting_total_s: out.time_cutting_total_s,
     })
 }

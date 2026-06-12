@@ -17,6 +17,14 @@ pub(crate) struct Config {
     pub contour: Option<bool>,
     pub with_contour: Option<bool>,
     pub measure_paths: Option<bool>,
+    // Cutter feed rate (mm/s) used to estimate cutting time.
+    pub cutting_speed: Option<f32>,
+    // Extra dwell time (seconds) added per sharp (>= 90 degree) turn.
+    pub corner_penalty: Option<f32>,
+    // Fixed time (seconds) per page for feeding/registering the sheet.
+    pub preparation_time: Option<f32>,
+    // Speed (mm/s) of the blade's non-cutting travel moves between cards.
+    pub travel_speed: Option<f32>,
     // Per-word text layout: font size in points and baseline y-position in
     // mm, indexed by the word's position in the (space-separated) CSV field.
     pub font_sizes: Option<Vec<f32>>,
