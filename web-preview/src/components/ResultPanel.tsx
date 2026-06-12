@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import type { GenerateResult } from '../lib/generate'
 
 function formatMetric(value: number | undefined, unit: string, digits = 2): string {
@@ -21,19 +21,20 @@ function formatDuration(value: number | undefined): string {
 }
 
 function usePdfUrl(result: GenerateResult | null): string | null {
-  const pdfUrl = useMemo(() => {
-    if (!result) return null
-    const blob = new Blob([result.pdf.slice().buffer], { type: 'application/pdf' })
-    return URL.createObjectURL(blob)
-  }, [result])
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    return () => {
-      if (pdfUrl) URL.revokeObjectURL(pdfUrl)
-    }
-  }, [pdfUrl])
+    if (!result) return
+    const blob = new Blob([result.pdf.slice().buffer], { type: 'application/pdf' })
+    const url = URL.createObjectURL(blob)
+    // The object URL must be created and revoked together as a paired
+    // browser-resource side effect, so it can't be derived during render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPdfUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [result])
 
-  return pdfUrl
+  return result ? pdfUrl : null
 }
 
 export function ResultPanel({ title, result, downloadName }: { title: string; result: GenerateResult; downloadName: string }) {
