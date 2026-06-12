@@ -127,6 +127,10 @@ export default function App() {
       setGenError('Este necesar un PDF de fundal pentru contur.')
       return
     }
+    if (!csvDataFile) {
+      setGenError('Este necesar un fișier CSV cu date.')
+      return
+    }
 
     const fontResult = resolveFontFiles(fonts)
     if ('error' in fontResult) {
@@ -137,7 +141,7 @@ export default function App() {
     setGenLoading(true)
     setGenError(null)
     try {
-      const csvData = csvDataFile ? await csvDataFile.text() : sampleText
+      const csvData = await csvDataFile.text()
 
       const nextPrintResult = needsPrintInput
         ? await generatePdf({
@@ -322,7 +326,7 @@ export default function App() {
             />
 
             <FileField
-              label="Fișier CSV cu date (opțional, implicit se folosește rândul exemplu)"
+              label="Fișier CSV cu date (necesar pentru generare)"
               accept=".csv,text/csv"
               onChange={(files) => setCsvDataFile(files?.[0] ?? null)}
             />
