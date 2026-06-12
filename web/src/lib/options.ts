@@ -30,6 +30,8 @@ export interface FormState {
   textBackgroundPaddingMm: number
   textBackgroundWidthsMm: string
   textBackgroundAlphas: string
+
+  splitChars: string
 }
 
 // Defaults mirror `Options::default()` in src/options.rs.
@@ -62,6 +64,8 @@ export const defaultFormState: FormState = {
   textBackgroundPaddingMm: 0,
   textBackgroundWidthsMm: '',
   textBackgroundAlphas: '',
+
+  splitChars: '',
 }
 
 function splitList(value: string): string[] {
@@ -114,5 +118,6 @@ export function toJsOptions(form: FormState, contour: boolean) {
     textBackgroundPaddingMm: form.textBackgroundPaddingMm,
     textBackgroundWidthsMm: parseFloatList(form.textBackgroundWidthsMm),
     textBackgroundAlphas: parseFloatList(form.textBackgroundAlphas),
+    splitChars: form.splitChars,
   }
 }

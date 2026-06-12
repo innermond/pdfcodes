@@ -74,6 +74,10 @@ pub struct Options {
     // rectangle, one per word position (or a single entry for every word).
     // Empty means fully opaque.
     pub text_background_alphas: Vec<f32>,
+    // Character combination (one or more characters) used to split each CSV
+    // field into "words" for per-word layout. Empty defaults to a single
+    // space character.
+    pub split_chars: String,
 }
 
 impl Options {
@@ -112,6 +116,7 @@ impl Default for Options {
             text_background_padding_mm: 0.0,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            split_chars: " ".to_string(),
         }
     }
 }

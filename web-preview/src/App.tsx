@@ -27,7 +27,8 @@ export default function App() {
   const [fontsError, setFontsError] = useState<string | null>(null)
 
   const [sampleText, setSampleText] = useState('ABC123 Ion Popescu')
-  const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('ABC123 Ion Popescu')))
+  const [splitChars, setSplitChars] = useState('')
+  const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('ABC123 Ion Popescu', '')))
   const [safeMarginMm, setSafeMarginMm] = useState(0)
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
@@ -61,7 +62,12 @@ export default function App() {
 
   function handleSampleTextChange(value: string) {
     setSampleText(value)
-    setWords((prev) => resizeWords(prev, splitWords(value)))
+    setWords((prev) => resizeWords(prev, splitWords(value, splitChars)))
+  }
+
+  function handleSplitCharsChange(value: string) {
+    setSplitChars(value)
+    setWords((prev) => resizeWords(prev, splitWords(sampleText, value)))
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -124,6 +130,12 @@ export default function App() {
               value={sampleText}
               onChange={handleSampleTextChange}
               placeholder="ABC123 Ion Popescu"
+            />
+            <TextField
+              label="Caractere separator cuvinte (implicit: spațiu)"
+              value={splitChars}
+              onChange={handleSplitCharsChange}
+              placeholder=" "
             />
             <div className="grid grid-cols-2 gap-3">
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />

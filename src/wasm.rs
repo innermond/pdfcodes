@@ -109,6 +109,7 @@ pub fn generate(
     corner_penalty_s: f32,
     preparation_time_s: f32,
     travel_speed_mm_s: f32,
+    split_chars: String,
 ) -> Result<WasmGenerateOutput, JsError> {
     let align = align.iter()
         .map(|s| s.parse::<TextAlign>())
@@ -153,6 +154,7 @@ pub fn generate(
         text_background_padding_mm,
         text_background_widths_mm,
         text_background_alphas,
+        split_chars,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -204,6 +206,7 @@ struct JsOptions {
     text_background_padding_mm: f32,
     text_background_widths_mm: Vec<f32>,
     text_background_alphas: Vec<f32>,
+    split_chars: String,
 }
 
 impl Default for JsOptions {
@@ -236,6 +239,7 @@ impl Default for JsOptions {
             text_background_padding_mm: base.text_background_padding_mm,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            split_chars: base.split_chars,
         }
     }
 }
@@ -297,6 +301,7 @@ pub fn generate_with_options(
         text_background_padding_mm: js_opts.text_background_padding_mm,
         text_background_widths_mm: js_opts.text_background_widths_mm,
         text_background_alphas: js_opts.text_background_alphas,
+        split_chars: js_opts.split_chars,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

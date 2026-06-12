@@ -271,6 +271,12 @@ export default function App() {
 
           <Section title="Stil text (separat prin virgulă, câte o valoare pentru fiecare cuvânt)">
             <div className="grid grid-cols-2 gap-3">
+              <TextField
+                label="Caractere separator cuvinte (implicit: spațiu)"
+                value={form.splitChars}
+                onChange={(v) => set('splitChars', v)}
+                placeholder=" "
+              />
               <TextField label="Dimensiuni font (pt)" value={form.fontSizes} onChange={(v) => set('fontSizes', v)} placeholder="9, 14" />
               <TextField label="Text Y (mm)" value={form.textYMm} onChange={(v) => set('textYMm', v)} placeholder="10, 3" />
               <TextField label="Text X (mm, suprascrie alinierea)" value={form.textXMm} onChange={(v) => set('textXMm', v)} />

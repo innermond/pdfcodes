@@ -67,4 +67,7 @@ pub(crate) struct Config {
     // Opacity (0.0-1.0) of the text_backgrounds rectangle, one per word
     // position (or a single entry for every word).
     pub text_background_alphas: Option<Vec<f32>>,
+    // Character combination used to split each CSV field into "words".
+    // Defaults to a single space character.
+    pub split_chars: Option<String>,
 }

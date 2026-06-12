@@ -31,7 +31,8 @@ pub(crate) fn build_card_xobjects(
     let mut card_ids = Vec::new();
     for result in rdr.records() {
         let txt = result?.get(0).ok_or("Missing CSV field")?.to_string();
-        let texts: Vec<&str> = txt.split(' ').collect();
+        let split_chars = if opts.split_chars.is_empty() { " " } else { opts.split_chars.as_str() };
+        let texts: Vec<&str> = txt.split(split_chars).collect();
 
         if texts.len() > opts.font_sizes.len() || texts.len() > opts.text_y_mm.len() {
             return Err(format!(

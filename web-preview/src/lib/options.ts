@@ -39,10 +39,11 @@ export function defaultWordStyle(index: number): WordStyle {
   }
 }
 
-// Split a sample CSV-style record into words, matching `txt.split(' ')` in
-// src/generate/cards.rs.
-export function splitWords(sample: string): string[] {
-  return sample.split(' ').filter((w) => w.length > 0)
+// Split a sample CSV-style record into words, matching `txt.split(split_chars)`
+// in src/generate/cards.rs. An empty `splitChars` defaults to a single space.
+export function splitWords(sample: string, splitChars: string = ' '): string[] {
+  const sep = splitChars === '' ? ' ' : splitChars
+  return sample.split(sep).filter((w) => w.length > 0)
 }
 
 function fmt(n: number): string {
