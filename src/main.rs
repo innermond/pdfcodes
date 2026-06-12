@@ -179,11 +179,48 @@ fn run(csv_path: Option<&str>, background_path: &str, output_path: &str, opts: &
 
     if let (Some(per_card), Some(total)) = (out.time_cutting_per_card_s, out.time_cutting_total_s) {
         println!(
-            "Estimated cutting time per card: {:.1} s; total: {:.1} s ({:.1} min)",
-            per_card, total, total / 60.0
+            "Estimated cutting time per card: {}; total: {}",
+            format_duration(per_card), format_duration(total)
         );
     }
 
     std::fs::write(output_path, out.pdf)?;
     Ok(())
+}
+
+// Format a duration in seconds as `Ss`, `Mm Ss`, or `Hh Mm Ss`, dropping
+// higher units that are zero.
+fn format_duration(total_seconds: f32) -> String {
+    let total_seconds = total_seconds.round().max(0.0) as u64;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{}h {}m {}s", hours, minutes, seconds)
+    } else if minutes > 0 {
+        format!("{}m {}s", minutes, seconds)
+    } else {
+        format!("{}s", seconds)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_duration_below_minute_is_seconds_only() {
+        assert_eq!(format_duration(42.4), "42s");
+    }
+
+    #[test]
+    fn format_duration_above_minute_includes_minutes() {
+        assert_eq!(format_duration(195.0), "3m 15s");
+    }
+
+    #[test]
+    fn format_duration_above_hour_includes_hours() {
+        assert_eq!(format_duration(3725.0), "1h 2m 5s");
+    }
 }
