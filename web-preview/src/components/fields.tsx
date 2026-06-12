@@ -76,6 +76,38 @@ export function CheckboxField({
   )
 }
 
+export function RadioGroupField<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: T
+  options: { value: T; label: string; description?: string }[]
+  onChange: (value: T) => void
+}) {
+  return (
+    <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
+      <legend className="font-medium">{label}</legend>
+      {options.map((opt) => (
+        <label key={opt.value} className="flex items-start gap-2">
+          <input
+            type="radio"
+            checked={value === opt.value}
+            onChange={() => onChange(opt.value)}
+            className="mt-1 h-4 w-4 border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+          />
+          <span>
+            <span className="font-medium">{opt.label}</span>
+            {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  )
+}
+
 export function SelectField<T extends string>({
   label,
   value,

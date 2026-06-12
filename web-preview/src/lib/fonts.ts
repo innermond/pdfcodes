@@ -1,6 +1,7 @@
 export interface LoadedFont {
   family: string
   fileName: string
+  file: File
 }
 
 let counter = 0
@@ -13,7 +14,7 @@ export async function loadFontFile(file: File): Promise<LoadedFont> {
   const fontFace = new FontFace(family, buffer)
   await fontFace.load()
   document.fonts.add(fontFace)
-  return { family, fileName: file.name }
+  return { family, fileName: file.name, file }
 }
 
 // Pick the font family for a word. Each word may have its own font (set via
