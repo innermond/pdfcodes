@@ -46,6 +46,17 @@ export function CardCanvas({
       {backgroundImageUrl && (
         <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
       )}
+      {contourImageUrl && (
+        <image
+          href={contourImageUrl}
+          x={0}
+          y={cardHeightPt - contourHeightPt}
+          width={contourWidthPt}
+          height={contourHeightPt}
+          preserveAspectRatio="none"
+          opacity={contourOpacity}
+        />
+      )}
       {words.map((word, index) => (
         <WordOverlay
           key={index}
@@ -61,17 +72,6 @@ export function CardCanvas({
           onChange={(next) => onChangeWord(index, next)}
         />
       ))}
-      {contourImageUrl && (
-        <image
-          href={contourImageUrl}
-          x={0}
-          y={cardHeightPt - contourHeightPt}
-          width={contourWidthPt}
-          height={contourHeightPt}
-          preserveAspectRatio="none"
-          opacity={contourOpacity}
-        />
-      )}
     </svg>
   )
 }
