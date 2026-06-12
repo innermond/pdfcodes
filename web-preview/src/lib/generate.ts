@@ -26,8 +26,11 @@ async function toUint8Array(file: File): Promise<Uint8Array> {
 }
 
 function toResult(out: WasmGenerateOutput): GenerateResult {
+  // Copy out of wasm memory before `free()` — `out.pdf` is a view into the
+  // wasm heap, which a later `generate_with_options` call (e.g. for the
+  // contour PDF) can reallocate and overwrite.
   const result: GenerateResult = {
-    pdf: out.pdf,
+    pdf: out.pdf.slice(),
     cardsPerPage: out.cards_per_page,
     pathLengthPerCardMm: out.path_length_per_card_mm,
     pathLengthTotalMm: out.path_length_total_mm,
