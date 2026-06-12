@@ -21,18 +21,6 @@ function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont 
   return Array.from({ length }, (_, index) => fonts[index] ?? null)
 }
 
-// Extract the first field of a CSV line, matching the `csv` crate's
-// handling of an unquoted or quoted leading field.
-function parseFirstCsvField(line: string): string {
-  const trimmed = line.trim()
-  if (trimmed.startsWith('"')) {
-    const end = trimmed.indexOf('"', 1)
-    if (end !== -1) return trimmed.slice(1, end).replace(/""/g, '"')
-  }
-  const comma = trimmed.indexOf(',')
-  return comma === -1 ? trimmed : trimmed.slice(0, comma)
-}
-
 // Pick the font files to send as `--fonts`: a single shared font (mirroring
 // the font_idx broadcast in src/generate/cards.rs), one per word, or none.
 function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { error: string } {
@@ -54,7 +42,6 @@ export default function App() {
   const [contourOpacity, setContourOpacity] = useState(0.5)
 
   const [sampleText, setSampleText] = useState('ABC123 Ion Popescu')
-  const [csvError, setCsvError] = useState<string | null>(null)
   const [splitChars, setSplitChars] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('ABC123 Ion Popescu', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
@@ -71,6 +58,7 @@ export default function App() {
   const [contourResult, setContourResult] = useState<GenerateResult | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
+  const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
 
   function handleBackgroundFileChange(file: File | null) {
     setBackground(null)
@@ -121,21 +109,6 @@ export default function App() {
     setFonts((prev) => resizeFonts(prev, texts.length))
   }
 
-  function handleCsvFileChange(file: File | null) {
-    setCsvError(null)
-    if (!file) return
-    file.text()
-      .then((text) => {
-        const firstLine = text.split(/\r?\n/).find((line) => line.trim().length > 0)
-        if (firstLine === undefined) {
-          setCsvError('Fișierul CSV este gol')
-          return
-        }
-        handleSampleTextChange(parseFirstCsvField(firstLine))
-      })
-      .catch((err) => setCsvError(err instanceof Error ? err.message : String(err)))
-  }
-
   function updateWord(index: number, next: Partial<WordStyle>) {
     setWords((prev) => prev.map((w, i) => (i === index ? { ...w, ...next } : w)))
   }
@@ -164,9 +137,11 @@ export default function App() {
     setGenLoading(true)
     setGenError(null)
     try {
+      const csvData = csvDataFile ? await csvDataFile.text() : sampleText
+
       const nextPrintResult = needsPrintInput
         ? await generatePdf({
-            csvData: sampleText,
+            csvData,
             backgroundFile: backgroundFile!,
             contourBackgroundFile,
             fontFiles: fontResult.files,
@@ -176,7 +151,7 @@ export default function App() {
 
       const nextContourResult = needsContourInput
         ? await generatePdf({
-            csvData: sampleText,
+            csvData,
             backgroundFile: contourBackgroundFile!,
             contourBackgroundFile: null,
             fontFiles: fontResult.files,
@@ -208,7 +183,7 @@ export default function App() {
         </button>
       </div>
       <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
-        Previzualizează poziționarea codurilor pe un fundal și ajustează valorile pentru secțiunea „Stil text”.
+        Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
       </p>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -243,12 +218,6 @@ export default function App() {
           </Section>
 
           <Section title="Text exemplu">
-            <FileField
-              label="Fișier CSV (opțional, se folosește doar primul rând)"
-              accept=".csv,text/csv"
-              onChange={(files) => handleCsvFileChange(files?.[0] ?? null)}
-            />
-            {csvError && <p className="text-sm text-red-600 dark:text-red-400">{csvError}</p>}
             <TextField
               label="Rând CSV exemplu (cuvinte separate prin spațiu)"
               value={sampleText}
@@ -350,6 +319,12 @@ export default function App() {
                 { value: 'contour', label: 'Contur', description: 'Generează PDF-ul cu linii de tăiere folosind fundalul de contur.' },
                 { value: 'both', label: 'Print + Contur', description: 'Generează ambele PDF-uri.' },
               ]}
+            />
+
+            <FileField
+              label="Fișier CSV cu date (opțional, implicit se folosește rândul exemplu)"
+              accept=".csv,text/csv"
+              onChange={(files) => setCsvDataFile(files?.[0] ?? null)}
             />
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
