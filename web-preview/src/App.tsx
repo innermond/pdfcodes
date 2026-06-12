@@ -240,7 +240,6 @@ export default function App() {
               label="Rând CSV exemplu (cuvinte separate prin spațiu)"
               value={sampleText}
               onChange={handleSampleTextChange}
-              placeholder="ABC123 Ion Popescu"
             />
             <TextField
               label="Caractere separator cuvinte (implicit: spațiu)"
