@@ -13,6 +13,10 @@ function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   })
 }
 
+function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont | null)[] {
+  return Array.from({ length }, (_, index) => fonts[index] ?? null)
+}
+
 export default function App() {
   const [theme, toggleTheme] = useTheme()
 
@@ -23,12 +27,11 @@ export default function App() {
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
 
-  const [fonts, setFonts] = useState<LoadedFont[]>([])
-  const [fontsError, setFontsError] = useState<string | null>(null)
-
   const [sampleText, setSampleText] = useState('ABC123 Ion Popescu')
   const [splitChars, setSplitChars] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('ABC123 Ion Popescu', '')))
+  const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
+  const [fontsError, setFontsError] = useState<string | null>(null)
   const [safeMarginMm, setSafeMarginMm] = useState(0)
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
@@ -51,23 +54,29 @@ export default function App() {
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
-  function handleFontFilesChange(files: FileList | null) {
-    setFonts([])
+  function handleWordFontFileChange(index: number, file: File | null) {
     setFontsError(null)
-    if (!files || files.length === 0) return
-    Promise.all(Array.from(files).map(loadFontFile))
-      .then(setFonts)
+    if (!file) {
+      setFonts((prev) => prev.map((f, i) => (i === index ? null : f)))
+      return
+    }
+    loadFontFile(file)
+      .then((font) => setFonts((prev) => prev.map((f, i) => (i === index ? font : f))))
       .catch((err) => setFontsError(err instanceof Error ? err.message : String(err)))
   }
 
   function handleSampleTextChange(value: string) {
     setSampleText(value)
-    setWords((prev) => resizeWords(prev, splitWords(value, splitChars)))
+    const texts = splitWords(value, splitChars)
+    setWords((prev) => resizeWords(prev, texts))
+    setFonts((prev) => resizeFonts(prev, texts.length))
   }
 
   function handleSplitCharsChange(value: string) {
     setSplitChars(value)
-    setWords((prev) => resizeWords(prev, splitWords(sampleText, value)))
+    const texts = splitWords(sampleText, value)
+    setWords((prev) => resizeWords(prev, texts))
+    setFonts((prev) => resizeFonts(prev, texts.length))
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -141,18 +150,7 @@ export default function App() {
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
             </div>
-            <FileField
-              label="Fonturi (opțional, câte unul pentru fiecare cuvânt, sau unul singur pentru toate)"
-              accept=".ttf,.otf,font/ttf,font/otf"
-              multiple
-              onChange={handleFontFilesChange}
-            />
             {fontsError && <p className="text-sm text-red-600 dark:text-red-400">{fontsError}</p>}
-            {fonts.length > 0 && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                {fonts.map((f) => f.fileName).join(', ')}
-              </p>
-            )}
           </Section>
 
           <Section title="Cuvinte">
@@ -212,6 +210,16 @@ export default function App() {
                     <NumberField label="Transparență fundal (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} />
                   </>
                 )}
+                <div className="col-span-2">
+                  <FileField
+                    label="Font pentru acest cuvânt (opțional)"
+                    accept=".ttf,.otf,font/ttf,font/otf"
+                    onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
+                  />
+                  {fonts[selectedIndex] && (
+                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
+                  )}
+                </div>
               </div>
             )}
           </Section>

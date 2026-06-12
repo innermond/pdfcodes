@@ -27,7 +27,7 @@ export function CardCanvas({
   contourHeightPt: number
   contourOpacity: number
   words: WordStyle[]
-  fonts: LoadedFont[]
+  fonts: (LoadedFont | null)[]
   safeMarginMm: number
   backgroundPaddingMm: number
   selectedIndex: number | null
