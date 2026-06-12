@@ -130,7 +130,10 @@ export default function App() {
         ? await generatePdf({
             form,
             contour: true,
-            csvFile: null,
+            // The contour PDF is a single sheet, but the CSV record count
+            // (if available) scales the cutting-time estimate to every
+            // sheet that needs to be cut.
+            csvFile,
             backgroundFile: contourBackgroundFile!,
             contourBackgroundFile: null,
             fontFiles: [],
@@ -206,6 +209,13 @@ export default function App() {
               accept="application/pdf"
               onChange={(files) => setContourBackgroundFile(files?.[0] ?? null)}
             />
+            {mode === 'contour' && (
+              <FileField
+                label="Date CSV (opțional, pentru a calcula timpul de tăiere pentru toate colile)"
+                accept=".csv,text/csv"
+                onChange={(files) => setCsvFile(files?.[0] ?? null)}
+              />
+            )}
             {needsPrintInputs && (
               <FileField
                 label="Fonturi (opțional, câte unul pentru fiecare poziție de cuvânt)"

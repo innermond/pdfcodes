@@ -25,11 +25,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let background_path = positional.get(0).map(|s| s.to_string()).or_else(|| config.background.clone());
 
         let Some(background_path) = background_path else {
-            eprintln!("Usage: {} <background_pdf> [output_pdf] --contour [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--config=config.json]", args[0]);
+            eprintln!("Usage: {} <background_pdf> [output_pdf] --contour [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--csv=path.csv] [--measure-paths] [--config=config.json]", args[0]);
             std::process::exit(1);
         };
         let output_path = positional.get(1).map(|s| s.to_string()).or_else(|| config.output.clone()).unwrap_or_else(|| default_output_path(&background_path, true));
-        (None, background_path, output_path, None)
+        // Optional CSV, used only to count records so the cutting-time
+        // estimate covers every sheet that will be cut, not just one.
+        let csv_path = get_string_flag(&args, "csv").or_else(|| config.csv.clone());
+        (csv_path, background_path, output_path, None)
     } else {
         let csv_path = positional.get(0).map(|s| s.to_string()).or_else(|| config.csv.clone());
         let background_path = positional.get(1).map(|s| s.to_string()).or_else(|| config.background.clone());
@@ -136,7 +139,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(contour_output_path) = contour_output_path {
         let mut contour_opts = opts.as_contour();
         contour_opts.combine = false;
-        run(None, &contour_background_path, &contour_output_path, &contour_opts, &contour_background_path)?;
+        // Pass the print CSV through so the cutting-time estimate covers
+        // every sheet needed for all of its records, not just one.
+        run(csv_path.as_deref(), &contour_background_path, &contour_output_path, &contour_opts, &contour_background_path)?;
         println!("PDF generated successfully: {}", contour_output_path);
     }
 

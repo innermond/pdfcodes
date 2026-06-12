@@ -40,6 +40,16 @@ struct CuttingMetrics {
     time_cutting_total_s: f32,
 }
 
+// Number of card records in the CSV data, used to scale contour cutting-time
+// estimates to the number of sheets that will actually be cut.
+fn count_csv_records(csv_data: &str) -> usize {
+    csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(csv_data.as_bytes())
+        .records()
+        .count()
+}
+
 // Combine per-card path metrics with the cutting-time options to estimate
 // how long a cutting machine would take to process `total_cards` cards
 // spread across `num_pages` pages (each page requiring
@@ -154,7 +164,14 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     if opts.contour {
         let cutting_metrics = if opts.measure_paths {
             let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
-            Some(compute_cutting_metrics(&path_metrics, opts, layout.cards_per_page, 1.0, layout.pitch_mm()))
+            // The contour PDF is a single sheet, but the cutting machine
+            // will run it once per sheet needed to cover every CSV record.
+            let total_cards = match csv_data {
+                Some(data) => count_csv_records(data),
+                None => layout.cards_per_page,
+            };
+            let num_pages = (total_cards as f32 / layout.cards_per_page as f32).ceil().max(1.0);
+            Some(compute_cutting_metrics(&path_metrics, opts, total_cards, num_pages, layout.pitch_mm()))
         } else {
             None
         };
@@ -347,9 +364,25 @@ mod tests {
         let per_card = out.time_cutting_per_card_s.expect("per-card cutting time should be set");
         let total = out.time_cutting_total_s.expect("total cutting time should be set");
         assert!(per_card >= 0.0);
-        // per-card is the total averaged across the page's cards.
+        // Without CSV data, total cards falls back to a single sheet.
         assert!((total - per_card * out.cards_per_page as f32).abs() < 1e-2);
         assert!(total > opts.preparation_time_s);
+    }
+
+    #[test]
+    fn generate_contour_pdf_scales_cutting_time_by_csv_record_count() {
+        let opts = Options { contour: true, measure_paths: true, ..Options::default() };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("contour generation should succeed");
+        let single_sheet_total = out.time_cutting_total_s.expect("total cutting time should be set");
+
+        // Two sheets' worth of records (one row per card) should roughly
+        // double the total cutting time, since two sheets need cutting.
+        let csv_data = "1A 1\n".repeat(out.cards_per_page * 2);
+        let out_two_sheets = generate_pdf(Some(&csv_data), BACKGROUND_PDF, None, &opts)
+            .expect("contour generation should succeed");
+        let two_sheets_total = out_two_sheets.time_cutting_total_s.expect("total cutting time should be set");
+
+        assert!((two_sheets_total - single_sheet_total * 2.0).abs() < 1e-2);
     }
 
     #[test]
