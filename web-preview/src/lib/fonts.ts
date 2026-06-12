@@ -1,7 +1,28 @@
+import montserratBoldUrl from '../assets/fonts/Montserrat-Bold.ttf?url'
+
 export interface LoadedFont {
   family: string
   fileName: string
   file: File
+}
+
+// Matches the bundled Montserrat Bold the CLI/generator falls back to when
+// no `--fonts` are provided (src/fonts.rs, src/generate/mod.rs).
+export const DEFAULT_FONT_FAMILY = 'pdfcodes-preview-default'
+
+let defaultFontReady: Promise<void> | null = null
+
+// Load the default font into the document's font set exactly once.
+export function ensureDefaultFont(): Promise<void> {
+  if (!defaultFontReady) {
+    defaultFontReady = fetch(montserratBoldUrl)
+      .then((res) => res.arrayBuffer())
+      .then((buffer) => new FontFace(DEFAULT_FONT_FAMILY, buffer).load())
+      .then((fontFace) => {
+        document.fonts.add(fontFace)
+      })
+  }
+  return defaultFontReady
 }
 
 let counter = 0
@@ -23,7 +44,7 @@ export async function loadFontFile(file: File): Promise<LoadedFont> {
 // src/generate/cards.rs (a single `--fonts` entry applies to every word).
 export function fontFamilyForWord(fonts: (LoadedFont | null)[], index: number): string {
   const set = fonts.filter((f): f is LoadedFont => f !== null)
-  if (set.length === 0) return 'sans-serif'
+  if (set.length === 0) return DEFAULT_FONT_FAMILY
   const font = set.length === 1 ? set[0] : fonts[index]
-  return font?.family ?? 'sans-serif'
+  return font?.family ?? DEFAULT_FONT_FAMILY
 }

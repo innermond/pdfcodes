@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
 import { ResultPanel } from './components/ResultPanel'
 import { generatePdf, type GenerateResult } from './lib/generate'
-import { loadFontFile, type LoadedFont } from './lib/fonts'
+import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildJsOptions, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type PageOptions, type WordStyle } from './lib/options'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
 import { useTheme } from './lib/theme'
@@ -33,6 +33,10 @@ function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { e
 
 export default function App() {
   const [theme, toggleTheme] = useTheme()
+
+  useEffect(() => {
+    void ensureDefaultFont()
+  }, [])
 
   const [background, setBackground] = useState<PdfBackground | null>(null)
   const [backgroundError, setBackgroundError] = useState<string | null>(null)
