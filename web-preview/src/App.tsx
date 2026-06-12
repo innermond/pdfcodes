@@ -4,7 +4,7 @@ import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Sec
 import { ResultPanel } from './components/ResultPanel'
 import { generatePdf, type GenerateResult } from './lib/generate'
 import { loadFontFile, type LoadedFont } from './lib/fonts'
-import { buildJsOptions, defaultPageOptions, MM, defaultWordStyle, splitWords, toStyleStrings, type Align, type PageOptions, type WordStyle } from './lib/options'
+import { buildJsOptions, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type PageOptions, type WordStyle } from './lib/options'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
 import { useTheme } from './lib/theme'
 
@@ -141,7 +141,6 @@ export default function App() {
   }
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
-  const styleStrings = toStyleStrings(words, backgroundPaddingMm)
 
   const needsPrintInput = mode === 'print' || mode === 'both'
   const needsContourInput = mode === 'contour' || mode === 'both'
@@ -339,26 +338,6 @@ export default function App() {
                 </div>
               </div>
             )}
-          </Section>
-
-          <Section title="Valori pentru „Stil text”">
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Copiază aceste valori în secțiunea „Stil text” din aplicația principală.
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              <TextField label="Dimensiuni font (pt)" value={styleStrings.fontSizes} onChange={() => {}} readOnly />
-              <TextField label="Text Y (mm)" value={styleStrings.textYMm} onChange={() => {}} readOnly />
-              <TextField label="Text X (mm)" value={styleStrings.textXMm} onChange={() => {}} readOnly />
-              <TextField label="Aliniere" value={styleStrings.align} onChange={() => {}} readOnly />
-              <TextField label="Culori text" value={styleStrings.textColors} onChange={() => {}} readOnly />
-              <TextField label="Rotații (grade)" value={styleStrings.textRotations} onChange={() => {}} readOnly />
-              <TextField label="Oglindire X" value={styleStrings.textFlipX} onChange={() => {}} readOnly />
-              <TextField label="Oglindire Y" value={styleStrings.textFlipY} onChange={() => {}} readOnly />
-              <TextField label="Fundaluri text" value={styleStrings.textBackgrounds} onChange={() => {}} readOnly />
-              <TextField label="Padding fundal (mm)" value={styleStrings.textBackgroundPaddingMm} onChange={() => {}} readOnly />
-              <TextField label="Lățimi fundal (mm)" value={styleStrings.textBackgroundWidthsMm} onChange={() => {}} readOnly />
-              <TextField label="Transparențe fundal" value={styleStrings.textBackgroundAlphas} onChange={() => {}} readOnly />
-            </div>
           </Section>
 
           <Section title="Generare">
