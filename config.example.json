@@ -1,5 +1,5 @@
 {
-  "csv": "data.csv",
+  "csv": "data_full.csv",
   "background": "15x15.pdf",
   "contour_background": "circle.pdf",
   "output": "15x15-print.pdf",
@@ -13,7 +13,7 @@
 
   "contour": false,
   "with_contour": true,
-  "measure_paths": false,
+  "measure_paths": true,
 
   "font_sizes": [9, 14],
   "text_y": [10, 3],
