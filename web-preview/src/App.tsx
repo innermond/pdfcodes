@@ -17,6 +17,18 @@ function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont 
   return Array.from({ length }, (_, index) => fonts[index] ?? null)
 }
 
+// Extract the first field of a CSV line, matching the `csv` crate's
+// handling of an unquoted or quoted leading field.
+function parseFirstCsvField(line: string): string {
+  const trimmed = line.trim()
+  if (trimmed.startsWith('"')) {
+    const end = trimmed.indexOf('"', 1)
+    if (end !== -1) return trimmed.slice(1, end).replace(/""/g, '"')
+  }
+  const comma = trimmed.indexOf(',')
+  return comma === -1 ? trimmed : trimmed.slice(0, comma)
+}
+
 export default function App() {
   const [theme, toggleTheme] = useTheme()
 
@@ -28,6 +40,7 @@ export default function App() {
   const [contourOpacity, setContourOpacity] = useState(0.5)
 
   const [sampleText, setSampleText] = useState('ABC123 Ion Popescu')
+  const [csvError, setCsvError] = useState<string | null>(null)
   const [splitChars, setSplitChars] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('ABC123 Ion Popescu', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
@@ -77,6 +90,21 @@ export default function App() {
     const texts = splitWords(sampleText, value)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
+  }
+
+  function handleCsvFileChange(file: File | null) {
+    setCsvError(null)
+    if (!file) return
+    file.text()
+      .then((text) => {
+        const firstLine = text.split(/\r?\n/).find((line) => line.trim().length > 0)
+        if (firstLine === undefined) {
+          setCsvError('Fișierul CSV este gol')
+          return
+        }
+        handleSampleTextChange(parseFirstCsvField(firstLine))
+      })
+      .catch((err) => setCsvError(err instanceof Error ? err.message : String(err)))
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -134,6 +162,12 @@ export default function App() {
           </Section>
 
           <Section title="Text exemplu">
+            <FileField
+              label="Fișier CSV (opțional, se folosește doar primul rând)"
+              accept=".csv,text/csv"
+              onChange={(files) => handleCsvFileChange(files?.[0] ?? null)}
+            />
+            {csvError && <p className="text-sm text-red-600 dark:text-red-400">{csvError}</p>}
             <TextField
               label="Rând CSV exemplu (cuvinte separate prin spațiu)"
               value={sampleText}
