@@ -33,23 +33,23 @@ function ResultPanel({ title, result, downloadName }: { title: string; result: G
     <div className="flex flex-col gap-2">
       <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
       <div className="grid grid-cols-2 gap-2 text-sm text-gray-700">
-        <div>Cards per page: <span className="font-semibold">{result.cardsPerPage}</span></div>
-        <div>Path length / card: <span className="font-semibold">{formatMetric(result.pathLengthPerCardMm, 'mm')}</span></div>
-        <div>Path length total: <span className="font-semibold">{formatMetric(result.pathLengthTotalMm, 'mm')}</span></div>
-        <div>Nodes / card: <span className="font-semibold">{result.nodeCountPerCard ?? '—'}</span></div>
-        <div>Nodes total: <span className="font-semibold">{result.nodeCountTotal ?? '—'}</span></div>
-        <div>Sharp turns / card: <span className="font-semibold">{result.sharpTurnCountPerCard ?? '—'}</span></div>
-        <div>Sharp turns total: <span className="font-semibold">{result.sharpTurnCountTotal ?? '—'}</span></div>
-        <div>Cutting time / card: <span className="font-semibold">{formatMetric(result.timeCuttingPerCardS, 's')}</span></div>
-        <div>Cutting time total: <span className="font-semibold">{formatMetric(result.timeCuttingTotalS, 's')}</span></div>
+        <div>Carduri pe pagină: <span className="font-semibold">{result.cardsPerPage}</span></div>
+        <div>Lungime traseu / card: <span className="font-semibold">{formatMetric(result.pathLengthPerCardMm, 'mm')}</span></div>
+        <div>Lungime traseu totală: <span className="font-semibold">{formatMetric(result.pathLengthTotalMm, 'mm')}</span></div>
+        <div>Noduri / card: <span className="font-semibold">{result.nodeCountPerCard ?? '—'}</span></div>
+        <div>Noduri total: <span className="font-semibold">{result.nodeCountTotal ?? '—'}</span></div>
+        <div>Colțuri ascuțite / card: <span className="font-semibold">{result.sharpTurnCountPerCard ?? '—'}</span></div>
+        <div>Colțuri ascuțite total: <span className="font-semibold">{result.sharpTurnCountTotal ?? '—'}</span></div>
+        <div>Timp de tăiere / card: <span className="font-semibold">{formatMetric(result.timeCuttingPerCardS, 's')}</span></div>
+        <div>Timp de tăiere total: <span className="font-semibold">{formatMetric(result.timeCuttingTotalS, 's')}</span></div>
       </div>
 
       {pdfUrl && (
         <div className="mt-2 flex flex-col gap-2">
           <a href={pdfUrl} download={downloadName} className="text-sm font-medium text-blue-600 hover:underline">
-            Download {downloadName}
+            Descarcă {downloadName}
           </a>
-          <iframe title={`${title} preview`} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200" />
+          <iframe title={`Previzualizare ${title}`} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200" />
         </div>
       )}
     </div>
@@ -78,15 +78,15 @@ export default function App() {
 
   async function handleGenerate() {
     if (needsPrintInputs && !backgroundFile) {
-      setError('A background PDF is required.')
+      setError('Este necesar un PDF de fundal.')
       return
     }
     if (needsPrintInputs && !csvFile) {
-      setError('A CSV file is required.')
+      setError('Este necesar un fișier CSV.')
       return
     }
     if (needsContourInput && !contourBackgroundFile) {
-      setError('A contour background PDF is required.')
+      setError('Este necesar un PDF de fundal pentru contur.')
       return
     }
 
@@ -130,46 +130,46 @@ export default function App() {
     <div className="mx-auto max-w-6xl px-4 py-8">
       <h1 className="mb-1 text-2xl font-bold text-gray-900">pdfcodes</h1>
       <p className="mb-6 text-sm text-gray-500">
-        Generate card-grid PDFs and cutting-time estimates from a CSV and background PDF.
+        Generează PDF-uri cu grile de carduri și estimări ale timpului de tăiere dintr-un fișier CSV și un PDF de fundal.
       </p>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="flex flex-col gap-4">
-          <Section title="Mode">
+          <Section title="Mod">
             <RadioGroupField<Mode>
-              label="What to generate"
+              label="Ce se generează"
               value={mode}
               onChange={setMode}
               options={[
                 {
                   value: 'print',
-                  label: 'Print only',
-                  description: 'Generate the printable sheet PDF from the background and CSV.',
+                  label: 'Doar print',
+                  description: 'Generează PDF-ul cu foaia de printat din fundal și CSV.',
                 },
                 {
                   value: 'contour',
-                  label: 'Contour only',
-                  description: 'Generate a standalone contour/cut-lines PDF from the contour background.',
+                  label: 'Doar contur',
+                  description: 'Generează un PDF separat cu linii de tăiere (contur) din fundalul de contur.',
                 },
                 {
                   value: 'both',
-                  label: 'Print + Contour',
-                  description: 'Generate both the printable sheet and a matching contour/cut-lines PDF.',
+                  label: 'Print + Contur',
+                  description: 'Generează atât foaia de printat, cât și PDF-ul cu linii de tăiere (contur) corespunzător.',
                 },
               ]}
             />
           </Section>
 
-          <Section title="Files">
+          <Section title="Fișiere">
             {needsPrintInputs && (
               <>
                 <FileField
-                  label="Background PDF (print design)"
+                  label="PDF de fundal (design pentru print)"
                   accept="application/pdf"
                   onChange={(files) => setBackgroundFile(files?.[0] ?? null)}
                 />
                 <FileField
-                  label="CSV data"
+                  label="Date CSV"
                   accept=".csv,text/csv"
                   onChange={(files) => setCsvFile(files?.[0] ?? null)}
                 />
@@ -178,15 +178,15 @@ export default function App() {
             <FileField
               label={
                 needsContourInput
-                  ? 'Contour background PDF (cut-lines file)'
-                  : 'Contour background PDF (optional, used by Combine overlay and cutting-time measurement)'
+                  ? 'PDF de fundal pentru contur (fișier cu linii de tăiere)'
+                  : 'PDF de fundal pentru contur (opțional, folosit pentru suprapunerea Combine și măsurarea timpului de tăiere)'
               }
               accept="application/pdf"
               onChange={(files) => setContourBackgroundFile(files?.[0] ?? null)}
             />
             {needsPrintInputs && (
               <FileField
-                label="Fonts (optional, one per word position)"
+                label="Fonturi (opțional, câte unul pentru fiecare poziție de cuvânt)"
                 accept=".ttf,.otf"
                 multiple
                 onChange={(files) => setFontFiles(files ? Array.from(files) : [])}
@@ -194,50 +194,50 @@ export default function App() {
             )}
           </Section>
 
-          <Section title="Layout">
+          <Section title="Aspect pagină">
             <div className="grid grid-cols-2 gap-3">
-              <NumberField label="Host width (mm)" value={form.hostWidthMm} onChange={(v) => set('hostWidthMm', v)} />
-              <NumberField label="Host height (mm)" value={form.hostHeightMm} onChange={(v) => set('hostHeightMm', v)} />
-              <NumberField label="Offset X (mm)" value={form.offsetXMm} onChange={(v) => set('offsetXMm', v)} />
-              <NumberField label="Offset Y (mm)" value={form.offsetYMm} onChange={(v) => set('offsetYMm', v)} />
-              <NumberField label="Circle diameter (mm)" value={form.circleDiameterMm} onChange={(v) => set('circleDiameterMm', v)} />
-              <NumberField label="Safe margin (mm)" value={form.safeMarginMm} onChange={(v) => set('safeMarginMm', v)} />
+              <NumberField label="Lățime pagină (mm)" value={form.hostWidthMm} onChange={(v) => set('hostWidthMm', v)} />
+              <NumberField label="Înălțime pagină (mm)" value={form.hostHeightMm} onChange={(v) => set('hostHeightMm', v)} />
+              <NumberField label="Decalaj X (mm)" value={form.offsetXMm} onChange={(v) => set('offsetXMm', v)} />
+              <NumberField label="Decalaj Y (mm)" value={form.offsetYMm} onChange={(v) => set('offsetYMm', v)} />
+              <NumberField label="Diametru cerc (mm)" value={form.circleDiameterMm} onChange={(v) => set('circleDiameterMm', v)} />
+              <NumberField label="Margine de siguranță (mm)" value={form.safeMarginMm} onChange={(v) => set('safeMarginMm', v)} />
             </div>
           </Section>
 
-          <Section title="Options">
+          <Section title="Opțiuni">
             <div className="grid grid-cols-2 gap-3">
-              <CheckboxField label="Combine overlay" checked={form.combine} onChange={(v) => set('combine', v)} />
-              <CheckboxField label="Debug outlines" checked={form.debug} onChange={(v) => set('debug', v)} />
-              <CheckboxField label="Measure paths / cutting time" checked={form.measurePaths} onChange={(v) => set('measurePaths', v)} />
+              <CheckboxField label="Suprapunere combinată" checked={form.combine} onChange={(v) => set('combine', v)} />
+              <CheckboxField label="Contururi de depanare" checked={form.debug} onChange={(v) => set('debug', v)} />
+              <CheckboxField label="Măsoară traseele / timpul de tăiere" checked={form.measurePaths} onChange={(v) => set('measurePaths', v)} />
             </div>
           </Section>
 
           {form.measurePaths && (
-            <Section title="Cutting time">
+            <Section title="Timp de tăiere">
               <div className="grid grid-cols-2 gap-3">
-                <NumberField label="Cutting speed (mm/s)" value={form.cuttingSpeedMmS} onChange={(v) => set('cuttingSpeedMmS', v)} />
-                <NumberField label="Corner penalty (s)" value={form.cornerPenaltyS} onChange={(v) => set('cornerPenaltyS', v)} />
-                <NumberField label="Preparation time (s)" value={form.preparationTimeS} onChange={(v) => set('preparationTimeS', v)} />
-                <NumberField label="Travel speed (mm/s)" value={form.travelSpeedMmS} onChange={(v) => set('travelSpeedMmS', v)} />
+                <NumberField label="Viteză de tăiere (mm/s)" value={form.cuttingSpeedMmS} onChange={(v) => set('cuttingSpeedMmS', v)} />
+                <NumberField label="Penalizare colț (s)" value={form.cornerPenaltyS} onChange={(v) => set('cornerPenaltyS', v)} />
+                <NumberField label="Timp de pregătire (s)" value={form.preparationTimeS} onChange={(v) => set('preparationTimeS', v)} />
+                <NumberField label="Viteză de deplasare (mm/s)" value={form.travelSpeedMmS} onChange={(v) => set('travelSpeedMmS', v)} />
               </div>
             </Section>
           )}
 
-          <Section title="Text styling (comma-separated, one entry per word)">
+          <Section title="Stil text (separat prin virgulă, câte o valoare pentru fiecare cuvânt)">
             <div className="grid grid-cols-2 gap-3">
-              <TextField label="Font sizes (pt)" value={form.fontSizes} onChange={(v) => set('fontSizes', v)} placeholder="9, 14" />
+              <TextField label="Dimensiuni font (pt)" value={form.fontSizes} onChange={(v) => set('fontSizes', v)} placeholder="9, 14" />
               <TextField label="Text Y (mm)" value={form.textYMm} onChange={(v) => set('textYMm', v)} placeholder="10, 3" />
-              <TextField label="Text X (mm, overrides align)" value={form.textXMm} onChange={(v) => set('textXMm', v)} />
-              <TextField label="Align (left/center/right)" value={form.align} onChange={(v) => set('align', v)} placeholder="center" />
-              <TextField label="Text colors" value={form.textColors} onChange={(v) => set('textColors', v)} placeholder="#RRGGBB or c:m:y:k" />
-              <TextField label="Rotations (degrees)" value={form.textRotations} onChange={(v) => set('textRotations', v)} />
-              <TextField label="Flip X (true/false)" value={form.textFlipX} onChange={(v) => set('textFlipX', v)} />
-              <TextField label="Flip Y (true/false)" value={form.textFlipY} onChange={(v) => set('textFlipY', v)} />
-              <TextField label="Backgrounds" value={form.textBackgrounds} onChange={(v) => set('textBackgrounds', v)} placeholder="#RRGGBB, none" />
-              <NumberField label="Background padding (mm)" value={form.textBackgroundPaddingMm} onChange={(v) => set('textBackgroundPaddingMm', v)} />
-              <TextField label="Background widths (mm)" value={form.textBackgroundWidthsMm} onChange={(v) => set('textBackgroundWidthsMm', v)} />
-              <TextField label="Background alphas (0-1)" value={form.textBackgroundAlphas} onChange={(v) => set('textBackgroundAlphas', v)} />
+              <TextField label="Text X (mm, suprascrie alinierea)" value={form.textXMm} onChange={(v) => set('textXMm', v)} />
+              <TextField label="Aliniere (left/center/right)" value={form.align} onChange={(v) => set('align', v)} placeholder="center" />
+              <TextField label="Culori text" value={form.textColors} onChange={(v) => set('textColors', v)} placeholder="#RRGGBB sau c:m:y:k" />
+              <TextField label="Rotații (grade)" value={form.textRotations} onChange={(v) => set('textRotations', v)} />
+              <TextField label="Oglindire X (true/false)" value={form.textFlipX} onChange={(v) => set('textFlipX', v)} />
+              <TextField label="Oglindire Y (true/false)" value={form.textFlipY} onChange={(v) => set('textFlipY', v)} />
+              <TextField label="Fundaluri text" value={form.textBackgrounds} onChange={(v) => set('textBackgrounds', v)} placeholder="#RRGGBB, none" />
+              <NumberField label="Padding fundal (mm)" value={form.textBackgroundPaddingMm} onChange={(v) => set('textBackgroundPaddingMm', v)} />
+              <TextField label="Lățimi fundal (mm)" value={form.textBackgroundWidthsMm} onChange={(v) => set('textBackgroundWidthsMm', v)} />
+              <TextField label="Transparențe fundal (0-1)" value={form.textBackgroundAlphas} onChange={(v) => set('textBackgroundAlphas', v)} />
             </div>
           </Section>
 
@@ -247,19 +247,19 @@ export default function App() {
             disabled={loading}
             className="rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            {loading ? 'Generating…' : 'Generate PDF'}
+            {loading ? 'Se generează…' : 'Generează PDF'}
           </button>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
 
         <div className="flex flex-col gap-6">
-          <Section title="Result">
+          <Section title="Rezultat">
             {!printResult && !contourResult && (
-              <p className="text-sm text-gray-500">Generate a PDF to see a preview here.</p>
+              <p className="text-sm text-gray-500">Generează un PDF pentru a vedea o previzualizare aici.</p>
             )}
-            {printResult && <ResultPanel title="Print PDF" result={printResult} downloadName="output.pdf" />}
-            {contourResult && <ResultPanel title="Contour PDF" result={contourResult} downloadName="output-contour.pdf" />}
+            {printResult && <ResultPanel title="PDF Print" result={printResult} downloadName="output.pdf" />}
+            {contourResult && <ResultPanel title="PDF Contur" result={contourResult} downloadName="output-contour.pdf" />}
           </Section>
         </div>
       </div>
