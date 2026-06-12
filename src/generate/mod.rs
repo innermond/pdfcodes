@@ -6,7 +6,7 @@ use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}}
 
 use crate::fonts::{embed_fonts, MONTSERRAT_BOLD_TTF};
 use crate::geometry::CardLayout;
-use crate::measure::measure_stroke_length;
+use crate::measure::measure_stroked_paths;
 use crate::options::Options;
 
 // Result of generating a PDF: the document bytes plus, when requested, the
@@ -18,6 +18,10 @@ pub struct GenerateOutput {
     pub cards_per_page: usize,
     pub path_length_per_card_mm: Option<f32>,
     pub path_length_total_mm: Option<f32>,
+    pub node_count_per_card: Option<usize>,
+    pub node_count_total: Option<usize>,
+    pub sharp_turn_count_per_card: Option<usize>,
+    pub sharp_turn_count_total: Option<usize>,
 }
 
 // Generate a print or contour PDF in memory.
@@ -102,13 +106,21 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // dimensions, offsets and registration circles), with every cell showing
     // just the background and no label text.
     if opts.contour {
-        let (path_length_per_card_mm, path_length_total_mm) = if opts.measure_paths {
-            let per_card_pt = measure_stroke_length(&bg_content_bytes)?;
-            let per_card_mm = per_card_pt / crate::geometry::MM;
+        let (
+            path_length_per_card_mm, path_length_total_mm,
+            node_count_per_card, node_count_total,
+            sharp_turn_count_per_card, sharp_turn_count_total,
+        ) = if opts.measure_paths {
+            let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
+            let per_card_mm = path_metrics.length / crate::geometry::MM;
             let total_mm = per_card_mm * layout.cards_per_page as f32;
-            (Some(per_card_mm), Some(total_mm))
+            (
+                Some(per_card_mm), Some(total_mm),
+                Some(path_metrics.node_count), Some(path_metrics.node_count * layout.cards_per_page),
+                Some(path_metrics.sharp_turn_count), Some(path_metrics.sharp_turn_count * layout.cards_per_page),
+            )
         } else {
-            (None, None)
+            (None, None, None, None, None, None)
         };
 
         let page_id = contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout)?;
@@ -124,7 +136,13 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
 
         let mut pdf = Vec::new();
         doc.save_to(&mut pdf)?;
-        return Ok(GenerateOutput { pdf, cards_per_page: layout.cards_per_page, path_length_per_card_mm, path_length_total_mm });
+        return Ok(GenerateOutput {
+            pdf,
+            cards_per_page: layout.cards_per_page,
+            path_length_per_card_mm, path_length_total_mm,
+            node_count_per_card, node_count_total,
+            sharp_turn_count_per_card, sharp_turn_count_total,
+        });
     }
 
     // Load CSV
@@ -213,7 +231,13 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let mut pdf = Vec::new();
     doc.save_to(&mut pdf)?;
 
-    Ok(GenerateOutput { pdf, cards_per_page: layout.cards_per_page, path_length_per_card_mm: None, path_length_total_mm: None })
+    Ok(GenerateOutput {
+        pdf,
+        cards_per_page: layout.cards_per_page,
+        path_length_per_card_mm: None, path_length_total_mm: None,
+        node_count_per_card: None, node_count_total: None,
+        sharp_turn_count_per_card: None, sharp_turn_count_total: None,
+    })
 }
 
 #[cfg(test)]

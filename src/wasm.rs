@@ -13,6 +13,10 @@ pub struct WasmGenerateOutput {
     cards_per_page: usize,
     path_length_per_card_mm: Option<f32>,
     path_length_total_mm: Option<f32>,
+    node_count_per_card: Option<usize>,
+    node_count_total: Option<usize>,
+    sharp_turn_count_per_card: Option<usize>,
+    sharp_turn_count_total: Option<usize>,
 }
 
 #[wasm_bindgen]
@@ -35,6 +39,26 @@ impl WasmGenerateOutput {
     #[wasm_bindgen(getter)]
     pub fn path_length_total_mm(&self) -> Option<f32> {
         self.path_length_total_mm
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn node_count_per_card(&self) -> Option<usize> {
+        self.node_count_per_card
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn node_count_total(&self) -> Option<usize> {
+        self.node_count_total
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sharp_turn_count_per_card(&self) -> Option<usize> {
+        self.sharp_turn_count_per_card
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn sharp_turn_count_total(&self) -> Option<usize> {
+        self.sharp_turn_count_total
     }
 }
 
@@ -119,6 +143,10 @@ pub fn generate(
         cards_per_page: out.cards_per_page,
         path_length_per_card_mm: out.path_length_per_card_mm,
         path_length_total_mm: out.path_length_total_mm,
+        node_count_per_card: out.node_count_per_card,
+        node_count_total: out.node_count_total,
+        sharp_turn_count_per_card: out.sharp_turn_count_per_card,
+        sharp_turn_count_total: out.sharp_turn_count_total,
     })
 }
 
@@ -245,5 +273,9 @@ pub fn generate_with_options(
         cards_per_page: out.cards_per_page,
         path_length_per_card_mm: out.path_length_per_card_mm,
         path_length_total_mm: out.path_length_total_mm,
+        node_count_per_card: out.node_count_per_card,
+        node_count_total: out.node_count_total,
+        sharp_turn_count_per_card: out.sharp_turn_count_per_card,
+        sharp_turn_count_total: out.sharp_turn_count_total,
     })
 }

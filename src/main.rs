@@ -159,6 +159,20 @@ fn run(csv_path: Option<&str>, background_path: &str, output_path: &str, opts: &
         );
     }
 
+    if let (Some(per_card), Some(total)) = (out.node_count_per_card, out.node_count_total) {
+        println!(
+            "Path nodes per card: {}; total across {} cards: {}",
+            per_card, out.cards_per_page, total
+        );
+    }
+
+    if let (Some(per_card), Some(total)) = (out.sharp_turn_count_per_card, out.sharp_turn_count_total) {
+        println!(
+            "Sharp turns (>= 90 degrees) per card: {}; total across {} cards: {}",
+            per_card, out.cards_per_page, total
+        );
+    }
+
     std::fs::write(output_path, out.pdf)?;
     Ok(())
 }
