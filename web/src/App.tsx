@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { CheckboxField, FileField, NumberField, RadioGroupField, Section, TextField } from './components/fields'
 import { generatePdf, type GenerateResult } from './lib/generate'
 import { defaultFormState, type FormState } from './lib/options'
+import { useTheme } from './lib/theme'
 
 type Mode = 'print' | 'contour' | 'both'
 
@@ -49,8 +50,8 @@ function ResultPanel({ title, result, downloadName }: { title: string; result: G
 
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-sm font-semibold text-gray-900">{title}</h3>
-      <div className="grid grid-cols-2 gap-2 text-sm text-gray-700">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 dark:text-gray-300">
         <div>Carduri pe pagină: <span className="font-semibold">{result.cardsPerPage}</span></div>
         {hasCuttingMetrics && (
           <>
@@ -68,10 +69,10 @@ function ResultPanel({ title, result, downloadName }: { title: string; result: G
 
       {pdfUrl && (
         <div className="mt-2 flex flex-col gap-2">
-          <a href={pdfUrl} download={downloadName} className="text-sm font-medium text-blue-600 hover:underline">
+          <a href={pdfUrl} download={downloadName} className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
             Descarcă {downloadName}
           </a>
-          <iframe title={`Previzualizare ${title}`} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200" />
+          <iframe title={`Previzualizare ${title}`} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200 dark:border-gray-700" />
         </div>
       )}
     </div>
@@ -79,6 +80,7 @@ function ResultPanel({ title, result, downloadName }: { title: string; result: G
 }
 
 export default function App() {
+  const [theme, toggleTheme] = useTheme()
   const [form, setForm] = useState<FormState>(defaultFormState)
   const [mode, setMode] = useState<Mode>('print')
   const [csvFile, setCsvFile] = useState<File | null>(null)
@@ -152,9 +154,18 @@ export default function App() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="mb-1 text-2xl font-bold text-gray-900">pdfcodes</h1>
-      <p className="mb-6 text-sm text-gray-500">
+    <div className="mx-auto max-w-6xl px-4 py-8 dark:bg-gray-950 dark:text-gray-100">
+      <div className="mb-1 flex items-start justify-between gap-4">
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">pdfcodes</h1>
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        >
+          {theme === 'dark' ? 'Mod luminos' : 'Mod întunecat'}
+        </button>
+      </div>
+      <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
         Generează PDF-uri cu grile de carduri și estimări ale timpului de tăiere dintr-un fișier CSV și un PDF de fundal.
       </p>
 
@@ -284,13 +295,13 @@ export default function App() {
             {loading ? 'Se generează…' : 'Generează PDF'}
           </button>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
         </div>
 
         <div className="flex flex-col gap-6">
           <Section title="Rezultat">
             {!printResult && !contourResult && (
-              <p className="text-sm text-gray-500">Generează un PDF pentru a vedea o previzualizare aici.</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">Generează un PDF pentru a vedea o previzualizare aici.</p>
             )}
             {printResult && <ResultPanel title="PDF Print" result={printResult} downloadName="output.pdf" />}
             {contourResult && <ResultPanel title="PDF Contur" result={contourResult} downloadName="output-contour.pdf" />}

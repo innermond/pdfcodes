@@ -12,14 +12,14 @@ export function NumberField({
   step?: string | number
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700">
+    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="number"
         step={step}
         value={value}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(parseFloat(e.target.value))}
-        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none"
+        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400"
       />
     </label>
   )
@@ -37,14 +37,14 @@ export function TextField({
   placeholder?: string
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700">
+    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="text"
         value={value}
         placeholder={placeholder}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none"
+        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-400"
       />
     </label>
   )
@@ -60,12 +60,12 @@ export function CheckboxField({
   onChange: (value: boolean) => void
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm text-gray-700">
+    <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-gray-300"
+        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
       />
       <span className="font-medium">{label}</span>
     </label>
@@ -84,7 +84,7 @@ export function RadioGroupField<T extends string>({
   onChange: (value: T) => void
 }) {
   return (
-    <fieldset className="flex flex-col gap-2 text-sm text-gray-700">
+    <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
       <legend className="font-medium">{label}</legend>
       {options.map((opt) => (
         <label key={opt.value} className="flex items-start gap-2">
@@ -92,11 +92,11 @@ export function RadioGroupField<T extends string>({
             type="radio"
             checked={value === opt.value}
             onChange={() => onChange(opt.value)}
-            className="mt-1 h-4 w-4 border-gray-300"
+            className="mt-1 h-4 w-4 border-gray-300 dark:border-gray-600 dark:bg-gray-800"
           />
           <span>
             <span className="font-medium">{opt.label}</span>
-            {opt.description && <span className="block text-xs text-gray-500">{opt.description}</span>}
+            {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
           </span>
         </label>
       ))}
@@ -116,14 +116,14 @@ export function FileField({
   onChange: (files: FileList | null) => void
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700">
+    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="file"
         accept={accept}
         multiple={multiple}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.files)}
-        className="rounded border border-gray-300 px-2 py-1 text-sm file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700"
+        className="rounded border border-gray-300 px-2 py-1 text-sm file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
       />
     </label>
   )
@@ -131,8 +131,8 @@ export function FileField({
 
 export function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <fieldset className="flex flex-col gap-3 rounded-lg border border-gray-200 p-4">
-      <legend className="px-1 text-sm font-semibold text-gray-900">{title}</legend>
+    <fieldset className="flex flex-col gap-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+      <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</legend>
       {children}
     </fieldset>
   )
