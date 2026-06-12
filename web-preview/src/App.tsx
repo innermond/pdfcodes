@@ -46,9 +46,9 @@ export default function App() {
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
 
-  const [sampleText, setSampleText] = useState('ABC123 Ion Popescu')
+  const [sampleText, setSampleText] = useState('')
   const [splitChars, setSplitChars] = useState('')
-  const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('ABC123 Ion Popescu', '')))
+  const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
   const [fontsError, setFontsError] = useState<string | null>(null)
   const [safeMarginMm, setSafeMarginMm] = useState(0)
