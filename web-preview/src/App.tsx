@@ -212,6 +212,7 @@ export default function App() {
                 )}
                 <div className="col-span-2">
                   <FileField
+                    key={selectedIndex}
                     label="Font pentru acest cuvânt (opțional)"
                     accept=".ttf,.otf,font/ttf,font/otf"
                     onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
