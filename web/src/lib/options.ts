@@ -30,6 +30,8 @@ export interface FormState {
   textBackgroundPaddingMm: number
   textBackgroundWidthsMm: string
   textBackgroundAlphas: string
+  textContours: string
+  textContourWidthsMm: string
 
   splitChars: string
 }
@@ -64,6 +66,8 @@ export const defaultFormState: FormState = {
   textBackgroundPaddingMm: 0,
   textBackgroundWidthsMm: '',
   textBackgroundAlphas: '',
+  textContours: '',
+  textContourWidthsMm: '',
 
   splitChars: '',
 }
@@ -118,6 +122,8 @@ export function toJsOptions(form: FormState, contour: boolean) {
     textBackgroundPaddingMm: form.textBackgroundPaddingMm,
     textBackgroundWidthsMm: parseFloatList(form.textBackgroundWidthsMm),
     textBackgroundAlphas: parseFloatList(form.textBackgroundAlphas),
+    textContours: parseStringList(form.textContours),
+    textContourWidthsMm: parseFloatList(form.textContourWidthsMm),
     splitChars: form.splitChars,
   }
 }

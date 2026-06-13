@@ -144,11 +144,13 @@ export function ColorField({
   value,
   onChange,
   allowNone = false,
+  noneLabel = 'fără fundal',
 }: {
   label: string
   value: string | null
   onChange: (value: string | null) => void
   allowNone?: boolean
+  noneLabel?: string
 }) {
   return (
     <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
@@ -168,7 +170,7 @@ export function ColorField({
               onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked ? null : '#000000')}
               className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
             />
-            fără fundal
+            {noneLabel}
           </label>
         )}
       </div>

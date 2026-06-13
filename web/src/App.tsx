@@ -290,6 +290,8 @@ export default function App() {
               <NumberField label="Padding fundal (mm)" value={form.textBackgroundPaddingMm} onChange={(v) => set('textBackgroundPaddingMm', v)} />
               <TextField label="Lățimi fundal (mm)" value={form.textBackgroundWidthsMm} onChange={(v) => set('textBackgroundWidthsMm', v)} />
               <TextField label="Transparențe fundal (0-1)" value={form.textBackgroundAlphas} onChange={(v) => set('textBackgroundAlphas', v)} />
+              <TextField label="Culori contur text" value={form.textContours} onChange={(v) => set('textContours', v)} placeholder="#RRGGBB, none" />
+              <TextField label="Lățimi contur (mm)" value={form.textContourWidthsMm} onChange={(v) => set('textContourWidthsMm', v)} placeholder="0.25" />
             </div>
           </Section>
 

@@ -78,6 +78,14 @@ pub struct Options {
     // field into "words" for per-word layout. Empty defaults to a single
     // space character.
     pub split_chars: String,
+    // Stroke color drawn around each text part's glyphs, one per word
+    // position (or a single entry for every word). `None` means no contour
+    // for that word. Empty means no contours at all.
+    pub text_contour_colors: Vec<Option<TextColor>>,
+    // Stroke width (in mm) for `text_contour_colors`, one per word position
+    // (or a single entry for every word). Empty defaults to 0.25mm for any
+    // word with a contour color set.
+    pub text_contour_widths_mm: Vec<f32>,
 }
 
 impl Options {
@@ -117,6 +125,8 @@ impl Default for Options {
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
             split_chars: " ".to_string(),
+            text_contour_colors: Vec::new(),
+            text_contour_widths_mm: Vec::new(),
         }
     }
 }

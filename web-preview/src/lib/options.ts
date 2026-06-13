@@ -58,6 +58,8 @@ export interface WordStyle {
   background: string | null
   backgroundWidthMm: number | null
   backgroundAlpha: number
+  contourColor: string | null
+  contourWidthMm: number
 }
 
 export function defaultWordStyle(index: number): WordStyle {
@@ -74,6 +76,8 @@ export function defaultWordStyle(index: number): WordStyle {
     background: null,
     backgroundWidthMm: null,
     backgroundAlpha: 1,
+    contourColor: null,
+    contourWidthMm: 0.25,
   }
 }
 
@@ -131,6 +135,7 @@ export function buildJsOptions(
   contour: boolean,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
+  const hasContour = words.some((w) => w.contourColor !== null)
 
   return {
     hostWidthMm: page.hostWidthMm,
@@ -164,6 +169,10 @@ export function buildJsOptions(
       : new Float32Array(),
     textBackgroundAlphas: hasBackground
       ? new Float32Array(words.map((w) => w.backgroundAlpha))
+      : new Float32Array(),
+    textContours: hasContour ? words.map((w) => w.contourColor ?? 'none') : [],
+    textContourWidthsMm: hasContour
+      ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     splitChars,
   }

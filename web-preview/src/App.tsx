@@ -45,7 +45,7 @@ export default function App() {
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
-  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
+  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('multiply')
 
   const [sampleText, setSampleText] = useState('')
   const [splitChars, setSplitChars] = useState('')
@@ -317,6 +317,16 @@ export default function App() {
                     />
                     <NumberField label="Transparență fundal (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} />
                   </>
+                )}
+                <ColorField
+                  label="Contur text"
+                  value={selected.contourColor}
+                  allowNone
+                  noneLabel="fără contur"
+                  onChange={(v) => updateWord(selectedIndex, { contourColor: v })}
+                />
+                {selected.contourColor !== null && (
+                  <NumberField label="Lățime contur (mm)" value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
                 )}
                 <div className="col-span-2">
                   <FileField

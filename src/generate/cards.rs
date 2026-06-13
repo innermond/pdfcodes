@@ -100,17 +100,31 @@ pub(crate) fn build_card_xobjects(
                 txt, texts.len(), opts.text_background_alphas.len()
             ).into());
         }
+        if opts.text_contour_colors.len() > 1 && texts.len() > opts.text_contour_colors.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-contours value(s) configured",
+                txt, texts.len(), opts.text_contour_colors.len()
+            ).into());
+        }
+        if opts.text_contour_widths_mm.len() > 1 && texts.len() > opts.text_contour_widths_mm.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-contour-widths value(s) configured",
+                txt, texts.len(), opts.text_contour_widths_mm.len()
+            ).into());
+        }
 
         let mut operations = Vec::new();
         let mut ext_gstates: Vec<(String, f32)> = Vec::new();
+
+        // Draw background XObject once per card, behind all words.
+        operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
+
         for (idx, text) in texts.iter().enumerate() {
             let font_size = opts.font_sizes[idx];
             let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx };
             let ef = &embedded_fonts[font_idx];
             let align_idx = if opts.align.len() == 1 { 0 } else { idx };
             let align = opts.align[align_idx];
-            // Draw background XObject
-            operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
 
             // Calculate text width using ttf-parser
             let mut base_text_width = 0.0f32;
@@ -187,6 +201,18 @@ pub(crate) fn build_card_xobjects(
                 let alpha_idx = if opts.text_background_alphas.len() == 1 { 0 } else { idx };
                 opts.text_background_alphas[alpha_idx]
             };
+            let contour_color = if opts.text_contour_colors.is_empty() {
+                None
+            } else {
+                let contour_idx = if opts.text_contour_colors.len() == 1 { 0 } else { idx };
+                opts.text_contour_colors[contour_idx]
+            };
+            let contour_width_mm = if opts.text_contour_widths_mm.is_empty() {
+                0.25
+            } else {
+                let width_idx = if opts.text_contour_widths_mm.len() == 1 { 0 } else { idx };
+                opts.text_contour_widths_mm[width_idx]
+            };
 
             operations.push(Operation::new("q", vec![])); // save
             if rotation_deg != 0.0 || flip_x || flip_y {
@@ -252,9 +278,25 @@ pub(crate) fn build_card_xobjects(
                     operations.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
                 }
             }
+            let render_mode = if let Some(stroke_color) = contour_color {
+                match stroke_color {
+                    TextColor::Rgb(r, g, b) => {
+                        operations.push(Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));
+                    }
+                    TextColor::Cmyk(c, m, y, k) => {
+                        operations.push(Operation::new("K", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
+                    }
+                }
+                operations.push(Operation::new("w", vec![Object::Real(contour_width_mm * MM)]));
+                2 // fill, then stroke
+            } else {
+                0 // fill only
+            };
+
             operations.push(Operation::new("BT", vec![]));
             operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
             operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)])); // add slight kerning
+            operations.push(Operation::new("Tr", vec![Object::Integer(render_mode)]));
             operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
             operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
             operations.push(Operation::new("ET", vec![]));

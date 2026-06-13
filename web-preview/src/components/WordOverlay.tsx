@@ -154,6 +154,8 @@ export function WordOverlay({
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
         fill={word.color}
+        stroke={word.contourColor ?? undefined}
+        strokeWidth={word.contourColor !== null ? word.contourWidthMm * MM : undefined}
       >
         {word.text}
       </text>

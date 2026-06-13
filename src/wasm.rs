@@ -110,6 +110,8 @@ pub fn generate(
     preparation_time_s: f32,
     travel_speed_mm_s: f32,
     split_chars: String,
+    text_contours: Vec<String>,
+    text_contour_widths_mm: Vec<f32>,
 ) -> Result<WasmGenerateOutput, JsError> {
     let align = align.iter()
         .map(|s| s.parse::<TextAlign>())
@@ -122,6 +124,11 @@ pub fn generate(
         .map_err(|e| JsError::new(&e))?;
 
     let text_backgrounds = text_backgrounds.iter()
+        .map(|s| parse_color_or_none(s))
+        .collect::<Result<Vec<Option<TextColor>>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
+    let text_contour_colors = text_contours.iter()
         .map(|s| parse_color_or_none(s))
         .collect::<Result<Vec<Option<TextColor>>, String>>()
         .map_err(|e| JsError::new(&e))?;
@@ -155,6 +162,8 @@ pub fn generate(
         text_background_widths_mm,
         text_background_alphas,
         split_chars,
+        text_contour_colors,
+        text_contour_widths_mm,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -207,6 +216,8 @@ struct JsOptions {
     text_background_widths_mm: Vec<f32>,
     text_background_alphas: Vec<f32>,
     split_chars: String,
+    text_contours: Vec<String>,
+    text_contour_widths_mm: Vec<f32>,
 }
 
 impl Default for JsOptions {
@@ -240,6 +251,8 @@ impl Default for JsOptions {
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
             split_chars: base.split_chars,
+            text_contours: Vec::new(),
+            text_contour_widths_mm: Vec::new(),
         }
     }
 }
@@ -273,6 +286,11 @@ pub fn generate_with_options(
         .collect::<Result<Vec<Option<TextColor>>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let text_contour_colors = js_opts.text_contours.iter()
+        .map(|s| parse_color_or_none(s))
+        .collect::<Result<Vec<Option<TextColor>>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
     let opts = Options {
         host_width_mm: js_opts.host_width_mm,
         host_height_mm: js_opts.host_height_mm,
@@ -302,6 +320,8 @@ pub fn generate_with_options(
         text_background_widths_mm: js_opts.text_background_widths_mm,
         text_background_alphas: js_opts.text_background_alphas,
         split_chars: js_opts.split_chars,
+        text_contour_colors,
+        text_contour_widths_mm: js_opts.text_contour_widths_mm,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
