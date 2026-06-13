@@ -147,7 +147,7 @@ export default function App() {
     }
   }
 
-  async function handleSavePreset() {
+  function buildPresetBundleArgs(): [Preset, Parameters<typeof downloadPresetBundle>[2]] {
     const preset: Preset = {
       version: 1,
       sampleText,
@@ -174,11 +174,24 @@ export default function App() {
       if (font) fontsToBundle.set(index, font.file)
     })
 
-    await downloadPresetBundle('pdfcodes-preview-setari.zip', preset, {
-      background: backgroundFile ?? undefined,
-      contour: contourSource === 'upload' ? (contourBackgroundFile ?? undefined) : undefined,
-      fonts: fontsToBundle,
-    })
+    return [
+      preset,
+      {
+        background: backgroundFile ?? undefined,
+        contour: contourSource === 'upload' ? (contourBackgroundFile ?? undefined) : undefined,
+        fonts: fontsToBundle,
+      },
+    ]
+  }
+
+  async function handleSavePreset() {
+    const [preset, resources] = buildPresetBundleArgs()
+    await downloadPresetBundle('pdfcodes-preview-setari.zip', preset, resources)
+  }
+
+  async function handleRequestQuote() {
+    const [preset, resources] = buildPresetBundleArgs()
+    await downloadPresetBundle('pdfcodes-cerere-oferta.zip', preset, resources)
   }
 
   function handleLoadPresetFile(file: File | null) {
@@ -677,6 +690,34 @@ export default function App() {
             </div>
             {presetError && <p className="text-sm text-red-600 dark:text-red-400">{presetError}</p>}
           </Section>
+
+          {!generateUnlocked && (
+            <Section title="Cere ofertă">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Descarcă fișierul cu setările tale (inclusiv fundalurile și fonturile folosite), apoi trimite-ni-l pe
+                email pentru o ofertă personalizată.
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleRequestQuote()}
+                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+              >
+                Descarcă setările pentru ofertă (.zip)
+              </button>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                După descărcare,{' '}
+                <a
+                  href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent('Cerere ofertă pdfcodes')}&body=${encodeURIComponent(
+                    'Bună,\n\nAș dori o ofertă pentru proiectul meu. Am atașat fișierul .zip cu setările descărcat din pdfcodes preview.\n\nMulțumesc!',
+                  )}`}
+                  className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
+                >
+                  trimite-ne un email
+                </a>{' '}
+                și atașează fișierul descărcat.
+              </p>
+            </Section>
+          )}
 
           <Section title="Generare">
             {!generateUnlocked ? (
