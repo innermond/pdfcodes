@@ -7,6 +7,7 @@ import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleF
 import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
 import { ensureWasmInit, generate_shape_pdf } from './lib/wasm'
+import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
 import { randomWordFittingWidth } from './lib/randomWords'
@@ -44,16 +45,6 @@ interface Preset {
 // section is always shown.
 const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
-
-function downloadJson(filename: string, data: unknown) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
-}
 
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   return texts.map((text, index) => {
@@ -156,7 +147,7 @@ export default function App() {
     }
   }
 
-  function handleSavePreset() {
+  async function handleSavePreset() {
     const preset: Preset = {
       version: 1,
       sampleText,
@@ -175,7 +166,19 @@ export default function App() {
       shapeInsetMm,
       shapeCornerRadiusMm,
     }
-    downloadJson('pdfcodes-preview-setari.json', preset)
+
+    const fontsToBundle = new Map<number, File>()
+    fontSources.forEach((source, index) => {
+      if (source !== 'custom') return
+      const font = fonts[index]
+      if (font) fontsToBundle.set(index, font.file)
+    })
+
+    await downloadPresetBundle('pdfcodes-preview-setari.zip', preset, {
+      background: backgroundFile ?? undefined,
+      contour: contourSource === 'upload' ? (contourBackgroundFile ?? undefined) : undefined,
+      fonts: fontsToBundle,
+    })
   }
 
   function handleLoadPresetFile(file: File | null) {
@@ -183,9 +186,9 @@ export default function App() {
     setFontsError(null)
     setFontsNotice(null)
     if (!file) return
-    file.text()
-      .then((text) => {
-        const preset = JSON.parse(text) as Partial<Preset>
+    loadPresetBundle(file)
+      .then(({ preset: rawPreset, background: bgFile, contour: contourFile, fonts: bundledFonts }) => {
+        const preset = rawPreset as Partial<Preset>
         if (!Array.isArray(preset.words)) {
           throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
         }
@@ -210,8 +213,21 @@ export default function App() {
         if (typeof preset.shapeInsetMm === 'number') setShapeInsetMm(preset.shapeInsetMm)
         if (typeof preset.shapeCornerRadiusMm === 'number') setShapeCornerRadiusMm(preset.shapeCornerRadiusMm)
 
-        // Re-fetch any Google Fonts referenced by the preset; custom-uploaded
-        // fonts can't be restored from JSON and must be re-uploaded.
+        // Restore the print/contour background PDFs bundled in the archive, if any.
+        if (bgFile) {
+          setBackgroundFile(bgFile)
+          renderPdfBackground(bgFile)
+            .then(setBackground)
+            .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
+        }
+        if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
+          setContourBackgroundFile(contourFile)
+          renderPdfBackground(contourFile)
+            .then(setContourBackground)
+            .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+        }
+
+        // Re-fetch any Google Fonts referenced by the preset.
         selections.forEach((selection, index) => {
           if (sources[index] !== 'google' || !selection) return
           fetchGoogleFont(selection.family, selection.style)
@@ -219,13 +235,24 @@ export default function App() {
             .catch((err) => setFontsError(err instanceof Error ? err.message : String(err)))
         })
 
-        const customWords = sources
-          .map((source, index) => (source === 'custom' ? index + 1 : null))
-          .filter((n): n is number => n !== null)
-        if (customWords.length > 0) {
+        // Restore custom fonts bundled in the archive; warn about any that
+        // are missing (e.g. older JSON-only presets) and must be re-uploaded.
+        const missingCustomWords: number[] = []
+        sources.forEach((source, index) => {
+          if (source !== 'custom') return
+          const fontFile = bundledFonts.get(index)
+          if (!fontFile) {
+            missingCustomWords.push(index + 1)
+            return
+          }
+          loadFontFile(fontFile)
+            .then((font) => setFonts((prev) => prev.map((f, i) => (i === index ? font : f))))
+            .catch((err) => setFontsError(err instanceof Error ? err.message : String(err)))
+        })
+        if (missingCustomWords.length > 0) {
           setFontsNotice(
-            `Cuvântul${customWords.length > 1 ? 'ele' : ''} ${customWords.join(', ')} folose${customWords.length > 1 ? 'sc' : 'ște'} ` +
-              `un font propriu (.ttf/.otf) care nu este salvat în setări — încarcă din nou fișierul de font.`,
+            `Cuvântul${missingCustomWords.length > 1 ? 'ele' : ''} ${missingCustomWords.join(', ')} folose${missingCustomWords.length > 1 ? 'sc' : 'ște'} ` +
+              `un font propriu (.ttf/.otf) care nu a fost găsit în arhivă — încarcă din nou fișierul de font.`,
           )
         }
       })
@@ -640,11 +667,11 @@ export default function App() {
                 onClick={handleSavePreset}
                 className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
               >
-                Salvează setările (JSON)
+                Salvează setările (.zip)
               </button>
               <FileField
-                label="Încarcă setări (JSON)"
-                accept="application/json,.json"
+                label="Încarcă setări (.zip sau .json)"
+                accept=".zip,application/zip,application/json,.json"
                 onChange={(files) => handleLoadPresetFile(files?.[0] ?? null)}
               />
             </div>
