@@ -8,7 +8,8 @@
     "dev": "npm run build:wasm && vite",
     "build": "npm run build:wasm && tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "fonts:manifest": "node scripts/build-google-fonts-manifest.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",

@@ -27,15 +27,23 @@ export function ensureDefaultFont(): Promise<void> {
 
 let counter = 0
 
+// Load font bytes into the document's font set, returning a unique
+// font-family name to use in SVG `font-family`. `fileName` is wrapped into a
+// `File` so the result can be sent to the generator the same way as an
+// uploaded font (see resolveFontFiles in App.tsx).
+export async function loadFontBytes(bytes: ArrayBuffer, fileName: string): Promise<LoadedFont> {
+  const family = `pdfcodes-preview-font-${counter++}`
+  const fontFace = new FontFace(family, bytes)
+  await fontFace.load()
+  document.fonts.add(fontFace)
+  return { family, fileName, file: new File([bytes], fileName) }
+}
+
 // Load a font file into the document's font set, returning a unique
 // font-family name to use in SVG `font-family`.
 export async function loadFontFile(file: File): Promise<LoadedFont> {
   const buffer = await file.arrayBuffer()
-  const family = `pdfcodes-preview-font-${counter++}`
-  const fontFace = new FontFace(family, buffer)
-  await fontFace.load()
-  document.fonts.add(fontFace)
-  return { family, fileName: file.name, file }
+  return loadFontBytes(buffer, file.name)
 }
 
 // Pick the font family for a word. Each word may have its own font (set via

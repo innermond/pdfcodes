@@ -1,4 +1,4 @@
-import init, { generate_with_options, type WasmGenerateOutput } from '../wasm/pdfcodes'
+import init, { generate_with_options, generate_shape_pdf, type WasmGenerateOutput } from '../wasm/pdfcodes'
 
 let ready: Promise<void> | null = null
 
@@ -10,5 +10,5 @@ export function ensureWasmInit(): Promise<void> {
   return ready
 }
 
-export { generate_with_options }
+export { generate_with_options, generate_shape_pdf }
 export type { WasmGenerateOutput }

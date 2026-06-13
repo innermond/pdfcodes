@@ -4,6 +4,7 @@ use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
+use crate::generate::shapes::{build_shape_pdf, ShapeKind};
 use crate::options::Options;
 
 // Result of a wasm `generate` call: the PDF bytes plus, for contour
@@ -370,4 +371,24 @@ pub fn generate_with_options(
         time_cutting_per_card_s: out.time_cutting_per_card_s,
         time_cutting_total_s: out.time_cutting_total_s,
     })
+}
+
+// Generate a single-page PDF, sized `card_width_mm` x `card_height_mm`,
+// containing a stroked outline of `shape` ("circle", "rectangle", or
+// "rounded-rectangle"), inset by `inset_mm` from the card edges (and, for
+// "rounded-rectangle", with corners of radius `corner_radius_mm`). Intended
+// as a generated stand-in for a user-supplied contour background PDF.
+#[wasm_bindgen]
+pub fn generate_shape_pdf(
+    card_width_mm: f32,
+    card_height_mm: f32,
+    shape: String,
+    inset_mm: f32,
+    corner_radius_mm: f32,
+) -> Result<Vec<u8>, JsError> {
+    let shape: ShapeKind = shape.parse().map_err(|e: String| JsError::new(&e))?;
+    let card_w = card_width_mm * crate::geometry::MM;
+    let card_h = card_height_mm * crate::geometry::MM;
+    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm)
+        .map_err(|e| JsError::new(&e.to_string()))
 }

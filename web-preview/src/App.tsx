@@ -3,7 +3,10 @@ import { CardCanvas } from './components/CardCanvas'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
 import { ResultPanel } from './components/ResultPanel'
 import { generatePdf, type GenerateResult } from './lib/generate'
+import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
+import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
+import { ensureWasmInit, generate_shape_pdf } from './lib/wasm'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
 import { randomWordFittingWidth } from './lib/randomWords'
@@ -12,8 +15,10 @@ import { useTheme } from './lib/theme'
 type Mode = 'print' | 'contour' | 'both'
 
 // User-configurable choices, saved to/loaded from a JSON file. Deliberately
-// excludes binary uploads (background PDFs, fonts) and CSV data, which
-// aren't representable as JSON and are provided separately per session.
+// excludes binary uploads (background PDFs, CSV data, and custom font files),
+// which aren't representable as JSON and are provided separately per session.
+// Per-word Google Font selections *are* representable (just family + style
+// strings) and are re-fetched on load.
 interface Preset {
   version: 1
   sampleText: string
@@ -25,6 +30,12 @@ interface Preset {
   contourBlendMode: BlendMode
   mode: Mode
   pageOptions: PageOptions
+  fontSources: FontSource[]
+  googleFontSelections: (GoogleFontSelection | null)[]
+  contourSource: ContourSource
+  shapeKind: ShapeKind
+  shapeInsetMm: number
+  shapeCornerRadiusMm: number
 }
 
 // UI-only gate for the "Generare" section. Not a security boundary — the
@@ -51,8 +62,27 @@ function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   })
 }
 
+type FontSource = 'google' | 'custom'
+
+type ContourSource = 'upload' | 'shape'
+type ShapeKind = 'circle' | 'rectangle' | 'rounded-rectangle'
+
+const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
+  { value: 'circle', label: 'Cerc' },
+  { value: 'rectangle', label: 'Rectangle' },
+  { value: 'rounded-rectangle', label: 'Rectangle cu colțuri rotunjite' },
+]
+
 function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont | null)[] {
   return Array.from({ length }, (_, index) => fonts[index] ?? null)
+}
+
+function resizeFontSources(sources: FontSource[], length: number): FontSource[] {
+  return Array.from({ length }, (_, index) => sources[index] ?? 'google')
+}
+
+function resizeGoogleFontSelections(selections: (GoogleFontSelection | null)[], length: number): (GoogleFontSelection | null)[] {
+  return Array.from({ length }, (_, index) => selections[index] ?? null)
 }
 
 // Pick the font files to send as `--fonts`: a single shared font (mirroring
@@ -79,12 +109,22 @@ export default function App() {
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
   const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('multiply')
+  const [contourSource, setContourSource] = useState<ContourSource>('upload')
+  const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
+  const [shapeInsetMm, setShapeInsetMm] = useState(2)
+  const [shapeCornerRadiusMm, setShapeCornerRadiusMm] = useState(3)
+  const [shapeError, setShapeError] = useState<string | null>(null)
 
   const [sampleText, setSampleText] = useState('')
   const [splitChars, setSplitChars] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
+  const [fontSources, setFontSources] = useState<FontSource[]>(() => resizeFontSources([], words.length))
+  const [googleFontSelections, setGoogleFontSelections] = useState<(GoogleFontSelection | null)[]>(() =>
+    resizeGoogleFontSelections([], words.length),
+  )
   const [fontsError, setFontsError] = useState<string | null>(null)
+  const [fontsNotice, setFontsNotice] = useState<string | null>(null)
   const [safeMarginMm, setSafeMarginMm] = useState(0)
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
@@ -128,12 +168,20 @@ export default function App() {
       contourBlendMode,
       mode,
       pageOptions,
+      fontSources,
+      googleFontSelections,
+      contourSource,
+      shapeKind,
+      shapeInsetMm,
+      shapeCornerRadiusMm,
     }
     downloadJson('pdfcodes-preview-setari.json', preset)
   }
 
   function handleLoadPresetFile(file: File | null) {
     setPresetError(null)
+    setFontsError(null)
+    setFontsNotice(null)
     if (!file) return
     file.text()
       .then((text) => {
@@ -143,8 +191,13 @@ export default function App() {
         }
         setSampleText(preset.sampleText ?? '')
         setSplitChars(preset.splitChars ?? '')
+        const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
-        setFonts(resizeFonts([], preset.words.length))
+        setFonts(resizeFonts([], length))
+        const sources = resizeFontSources(preset.fontSources ?? [], length)
+        const selections = resizeGoogleFontSelections(preset.googleFontSelections ?? [], length)
+        setFontSources(sources)
+        setGoogleFontSelections(selections)
         setSelectedIndex(null)
         if (typeof preset.safeMarginMm === 'number') setSafeMarginMm(preset.safeMarginMm)
         if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
@@ -152,6 +205,29 @@ export default function App() {
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
+        if (preset.contourSource === 'upload' || preset.contourSource === 'shape') setContourSource(preset.contourSource)
+        if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setShapeKind(preset.shapeKind)
+        if (typeof preset.shapeInsetMm === 'number') setShapeInsetMm(preset.shapeInsetMm)
+        if (typeof preset.shapeCornerRadiusMm === 'number') setShapeCornerRadiusMm(preset.shapeCornerRadiusMm)
+
+        // Re-fetch any Google Fonts referenced by the preset; custom-uploaded
+        // fonts can't be restored from JSON and must be re-uploaded.
+        selections.forEach((selection, index) => {
+          if (sources[index] !== 'google' || !selection) return
+          fetchGoogleFont(selection.family, selection.style)
+            .then((font) => setFonts((prev) => prev.map((f, i) => (i === index ? font : f))))
+            .catch((err) => setFontsError(err instanceof Error ? err.message : String(err)))
+        })
+
+        const customWords = sources
+          .map((source, index) => (source === 'custom' ? index + 1 : null))
+          .filter((n): n is number => n !== null)
+        if (customWords.length > 0) {
+          setFontsNotice(
+            `Cuvântul${customWords.length > 1 ? 'ele' : ''} ${customWords.join(', ')} folose${customWords.length > 1 ? 'sc' : 'ște'} ` +
+              `un font propriu (.ttf/.otf) care nu este salvat în setări — încarcă din nou fișierul de font.`,
+          )
+        }
       })
       .catch((err) => setPresetError(err instanceof Error ? err.message : String(err)))
   }
@@ -185,6 +261,46 @@ export default function App() {
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
+  function handleContourSourceChange(source: ContourSource) {
+    setContourSource(source)
+    setShapeError(null)
+    if (source === 'upload') {
+      setContourBackground(null)
+      setContourBackgroundFile(null)
+      setContourBackgroundError(null)
+    }
+  }
+
+  // Generate a preset-shape contour PDF whenever the shape source is active
+  // and the shape/inset/corner-radius/card size changes, feeding it through
+  // the same `contourBackgroundFile` pipeline as an uploaded contour PDF.
+  useEffect(() => {
+    if (contourSource !== 'shape' || !background) return
+    let cancelled = false
+    const cardWidthMm = background.widthPt / MM
+    const cardHeightMm = background.heightPt / MM
+    ensureWasmInit()
+      .then(() => {
+        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm)
+        const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
+        if (cancelled) return null
+        setContourBackgroundFile(file)
+        return renderPdfBackground(file)
+      })
+      .then((bg) => {
+        if (!cancelled && bg) {
+          setContourBackground(bg)
+          setShapeError(null)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setShapeError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, background])
+
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
   }
@@ -200,11 +316,28 @@ export default function App() {
       .catch((err) => setFontsError(err instanceof Error ? err.message : String(err)))
   }
 
+  function handleWordFontSourceChange(index: number, source: FontSource) {
+    setFontsError(null)
+    setFontSources((prev) => prev.map((s, i) => (i === index ? source : s)))
+    setFonts((prev) => prev.map((f, i) => (i === index ? null : f)))
+    if (source === 'google') {
+      setGoogleFontSelections((prev) => prev.map((s, i) => (i === index ? null : s)))
+    }
+  }
+
+  function handleWordGoogleFontChange(index: number, selection: GoogleFontSelection | null, font: LoadedFont | null) {
+    setFontsError(null)
+    setGoogleFontSelections((prev) => prev.map((s, i) => (i === index ? selection : s)))
+    setFonts((prev) => prev.map((f, i) => (i === index ? font : f)))
+  }
+
   function handleSampleTextChange(value: string) {
     setSampleText(value)
     const texts = splitWords(value, splitChars)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
+    setFontSources((prev) => resizeFontSources(prev, texts.length))
+    setGoogleFontSelections((prev) => resizeGoogleFontSelections(prev, texts.length))
   }
 
   function handleSplitCharsChange(value: string) {
@@ -212,6 +345,8 @@ export default function App() {
     const texts = splitWords(sampleText, value)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
+    setFontSources((prev) => resizeFontSources(prev, texts.length))
+    setGoogleFontSelections((prev) => resizeGoogleFontSelections(prev, texts.length))
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -310,11 +445,40 @@ export default function App() {
               </p>
             )}
 
-            <FileField
-              label="PDF de fundal contur (opțional)"
-              accept="application/pdf"
-              onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
+            <RadioGroupField<ContourSource>
+              label="Sursă fundal contur"
+              value={contourSource}
+              onChange={handleContourSourceChange}
+              options={[
+                { value: 'upload', label: 'Încarcă PDF' },
+                { value: 'shape', label: 'Formă presetată' },
+              ]}
             />
+
+            {contourSource === 'upload' ? (
+              <FileField
+                label="PDF de fundal contur (opțional)"
+                accept="application/pdf"
+                onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
+              />
+            ) : (
+              <>
+                <SelectField
+                  label="Formă"
+                  value={shapeKind}
+                  options={SHAPE_OPTIONS}
+                  onChange={setShapeKind}
+                />
+                <NumberField label="Margine interioară (mm)" value={shapeInsetMm} onChange={setShapeInsetMm} />
+                {shapeKind === 'rounded-rectangle' && (
+                  <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                )}
+                {!background && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
+                )}
+                {shapeError && <p className="text-sm text-red-600 dark:text-red-400">{shapeError}</p>}
+              </>
+            )}
             {contourBackgroundError && <p className="text-sm text-red-600 dark:text-red-400">{contourBackgroundError}</p>}
             {contourBackground && (
               <>
@@ -349,6 +513,7 @@ export default function App() {
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
             </div>
             {fontsError && <p className="text-sm text-red-600 dark:text-red-400">{fontsError}</p>}
+            {fontsNotice && <p className="text-sm text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
 
           <Section title="Cuvinte">
@@ -433,15 +598,36 @@ export default function App() {
                   </>
                 )}
                 <div className="w-full">
-                  <FileField
-                    key={selectedIndex}
-                    label="Font pentru acest cuvânt (opțional)"
-                    accept=".ttf,.otf,font/ttf,font/otf"
-                    onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
+                  <RadioGroupField<FontSource>
+                    label="Font pentru acest cuvânt"
+                    value={fontSources[selectedIndex]}
+                    onChange={(v) => handleWordFontSourceChange(selectedIndex, v)}
+                    options={[
+                      { value: 'google', label: 'Google Font' },
+                      { value: 'custom', label: 'Fișier propriu (.ttf/.otf)' },
+                    ]}
                   />
-                  {fonts[selectedIndex] && (
-                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
-                  )}
+                  <div className="mt-2">
+                    {fontSources[selectedIndex] === 'google' ? (
+                      <GoogleFontPicker
+                        key={selectedIndex}
+                        value={googleFontSelections[selectedIndex]}
+                        onChange={(selection, font) => handleWordGoogleFontChange(selectedIndex, selection, font)}
+                      />
+                    ) : (
+                      <>
+                        <FileField
+                          key={selectedIndex}
+                          label="Font pentru acest cuvânt (opțional)"
+                          accept=".ttf,.otf,font/ttf,font/otf"
+                          onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
+                        />
+                        {fonts[selectedIndex] && (
+                          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             )}

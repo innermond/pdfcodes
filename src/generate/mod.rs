@@ -1,6 +1,7 @@
 mod cards;
 mod contour;
 mod overlay;
+pub mod shapes;
 
 use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}};
 
