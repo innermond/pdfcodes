@@ -541,4 +541,79 @@ mod tests {
 
         assert!(out.pdf.starts_with(b"%PDF"));
     }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_contours() {
+        let opts = Options {
+            text_contour_colors: vec![parse_color_or_none("#FF0000").unwrap(), parse_color_or_none("none").unwrap()],
+            ..three_word_options()
+        };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-contours value"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_contour_widths() {
+        let opts = Options { text_contour_widths_mm: vec![0.25, 0.5], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-contour-widths"));
+    }
+
+    // Find the first card Form XObject (the one referencing the "BG"
+    // background XObject) and return its decoded content operations.
+    fn first_card_operations(pdf: &[u8]) -> Vec<Operation> {
+        let doc = Document::load_mem(pdf).expect("pdf should parse");
+        for object in doc.objects.values() {
+            if let Object::Stream(stream) = object {
+                if stream.dict.get(b"Subtype").and_then(Object::as_name_str).ok() != Some("Form") {
+                    continue;
+                }
+                let Ok(resources) = stream.dict.get(b"Resources").and_then(Object::as_dict) else { continue };
+                let Ok(xobjects) = resources.get(b"XObject").and_then(Object::as_dict) else { continue };
+                if xobjects.has(b"BG") {
+                    return stream.decode_content().expect("content should decode").operations;
+                }
+            }
+        }
+        panic!("no card form XObject found");
+    }
+
+    #[test]
+    fn generate_print_pdf_with_text_contour_draws_stroke_with_fill_render_mode() {
+        let opts = Options {
+            text_contour_colors: vec![parse_color_or_none("#FF0000").unwrap()],
+            text_contour_widths_mm: vec![0.5],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("contoured generation should succeed");
+
+        let operations = first_card_operations(&out.pdf);
+
+        let rg = operations.iter().find(|op| op.operator == "RG").expect("RG operator should be present");
+        assert_eq!(rg.operands, vec![Object::Integer(1), Object::Integer(0), Object::Integer(0)]);
+
+        let w = operations.iter().find(|op| op.operator == "w").expect("w operator should be present");
+        assert_eq!(w.operands, vec![Object::Real(0.5 * crate::geometry::MM)]);
+
+        let tr = operations.iter().filter(|op| op.operator == "Tr").collect::<Vec<_>>();
+        assert!(!tr.is_empty());
+        assert!(tr.iter().all(|op| op.operands == vec![Object::Integer(2)]));
+    }
+
+    #[test]
+    fn generate_print_pdf_without_text_contour_uses_fill_only_render_mode() {
+        let opts = Options::default();
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("generation should succeed");
+
+        let operations = first_card_operations(&out.pdf);
+
+        assert!(operations.iter().all(|op| op.operator != "RG"));
+        assert!(operations.iter().all(|op| op.operator != "w"));
+
+        let tr = operations.iter().filter(|op| op.operator == "Tr").collect::<Vec<_>>();
+        assert!(!tr.is_empty());
+        assert!(tr.iter().all(|op| op.operands == vec![Object::Integer(0)]));
+    }
 }
