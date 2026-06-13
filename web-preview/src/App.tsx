@@ -720,7 +720,7 @@ export default function App() {
                 <a
                   href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent('Cerere ofertă pdfcodes')}&body=${encodeURIComponent(
                     'Bună,\n\nAș dori o ofertă pentru proiectul meu. Am atașat fișierul .zip cu setările descărcat din pdfcodes preview.\n\n' +
-                      'Trebuie să vă trimit și un fișier cu codurile, sau ne puteți spune cum să le generăm noi?\n\nMulțumesc!',
+                      'Trebuie să vă trimit și un fișier cu codurile, sau sa va spun cum să fie generate.\n\nMulțumesc!',
                   )}`}
                   className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
                 >
