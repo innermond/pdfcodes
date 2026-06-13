@@ -1,6 +1,6 @@
 import { useRef } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
-import type { WordStyle } from '../lib/options'
+import type { BlendMode, WordStyle } from '../lib/options'
 import { WordOverlay } from './WordOverlay'
 
 export function CardCanvas({
@@ -11,6 +11,7 @@ export function CardCanvas({
   contourWidthPt,
   contourHeightPt,
   contourOpacity,
+  contourBlendMode,
   words,
   fonts,
   safeMarginMm,
@@ -26,6 +27,7 @@ export function CardCanvas({
   contourWidthPt: number
   contourHeightPt: number
   contourOpacity: number
+  contourBlendMode: BlendMode
   words: WordStyle[]
   fonts: (LoadedFont | null)[]
   safeMarginMm: number
@@ -55,6 +57,7 @@ export function CardCanvas({
           height={contourHeightPt}
           preserveAspectRatio="none"
           opacity={contourOpacity}
+          style={{ mixBlendMode: contourBlendMode }}
         />
       )}
       {words.map((word, index) => (

@@ -3,6 +3,44 @@ export const MM = 72 / 25.4
 
 export type Align = 'left' | 'center' | 'right'
 
+// CSS `mix-blend-mode` values, used to composite the contour background.
+export type BlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-dodge'
+  | 'color-burn'
+  | 'hard-light'
+  | 'soft-light'
+  | 'difference'
+  | 'exclusion'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity'
+
+export const BLEND_MODES: BlendMode[] = [
+  'normal',
+  'multiply',
+  'screen',
+  'overlay',
+  'darken',
+  'lighten',
+  'color-dodge',
+  'color-burn',
+  'hard-light',
+  'soft-light',
+  'difference',
+  'exclusion',
+  'hue',
+  'saturation',
+  'color',
+  'luminosity',
+]
+
 // Per-word style, mirroring the per-word arrays in the main app's "Stil
 // text" section (web/src/lib/options.ts). `null` means "not set", i.e. the
 // generator falls back to its default (alignment-based X, auto background

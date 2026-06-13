@@ -4,7 +4,7 @@ import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Sec
 import { ResultPanel } from './components/ResultPanel'
 import { generatePdf, type GenerateResult } from './lib/generate'
 import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
-import { buildJsOptions, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type PageOptions, type WordStyle } from './lib/options'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
@@ -45,6 +45,7 @@ export default function App() {
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
+  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
 
   const [sampleText, setSampleText] = useState('')
   const [splitChars, setSplitChars] = useState('')
@@ -231,6 +232,12 @@ export default function App() {
                   Dimensiune contur: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
                 <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} />
+                <SelectField
+                  label="Mod combinare contur"
+                  value={contourBlendMode}
+                  options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                  onChange={setContourBlendMode}
+                />
               </>
             )}
           </Section>
@@ -397,6 +404,7 @@ export default function App() {
                 contourWidthPt={contourBackground?.widthPt ?? 0}
                 contourHeightPt={contourBackground?.heightPt ?? 0}
                 contourOpacity={contourOpacity}
+                contourBlendMode={contourBlendMode}
                 words={words}
                 fonts={fonts}
                 safeMarginMm={safeMarginMm}
