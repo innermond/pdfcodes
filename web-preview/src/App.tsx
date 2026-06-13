@@ -130,6 +130,7 @@ export default function App() {
   const [genLoading, setGenLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
   const [presetError, setPresetError] = useState<string | null>(null)
+  const [quoteError, setQuoteError] = useState<string | null>(null)
 
   const [generateUnlocked, setGenerateUnlocked] = useState(
     () => !GENERATE_PASSWORD || sessionStorage.getItem(GENERATE_UNLOCKED_KEY) === '1',
@@ -190,6 +191,15 @@ export default function App() {
   }
 
   async function handleRequestQuote() {
+    if (!backgroundFile) {
+      setQuoteError('Este necesar un PDF de fundal.')
+      return
+    }
+    if (!contourBackgroundFile) {
+      setQuoteError('Este necesar un fundal de contur (încărcat sau o formă presetată).')
+      return
+    }
+    setQuoteError(null)
     const [preset, resources] = buildPresetBundleArgs()
     await downloadPresetBundle('pdfcodes-cerere-oferta.zip', preset, resources)
   }
@@ -704,6 +714,7 @@ export default function App() {
               >
                 Descarcă setările pentru ofertă (.zip)
               </button>
+              {quoteError && <p className="text-sm text-red-600 dark:text-red-400">{quoteError}</p>}
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 După descărcare,{' '}
                 <a
