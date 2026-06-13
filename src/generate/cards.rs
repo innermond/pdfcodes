@@ -3,6 +3,7 @@ use csv::ReaderBuilder;
 use ttf_parser::GlyphId;
 
 use crate::align::TextAlign;
+use crate::blend::BlendMode;
 use crate::color::TextColor;
 use crate::fonts::EmbeddedFont;
 use crate::geometry::{CardLayout, MM};
@@ -112,9 +113,21 @@ pub(crate) fn build_card_xobjects(
                 txt, texts.len(), opts.text_contour_widths_mm.len()
             ).into());
         }
+        if opts.text_background_blend_modes.len() > 1 && texts.len() > opts.text_background_blend_modes.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-backgrounds-blend-modes value(s) configured",
+                txt, texts.len(), opts.text_background_blend_modes.len()
+            ).into());
+        }
+        if opts.text_contour_blend_modes.len() > 1 && texts.len() > opts.text_contour_blend_modes.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-contour-blend-modes value(s) configured",
+                txt, texts.len(), opts.text_contour_blend_modes.len()
+            ).into());
+        }
 
         let mut operations = Vec::new();
-        let mut ext_gstates: Vec<(String, f32)> = Vec::new();
+        let mut ext_gstates: Vec<(String, Option<f32>, Option<BlendMode>)> = Vec::new();
 
         // Draw background XObject once per card, behind all words.
         operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
@@ -213,6 +226,18 @@ pub(crate) fn build_card_xobjects(
                 let width_idx = if opts.text_contour_widths_mm.len() == 1 { 0 } else { idx };
                 opts.text_contour_widths_mm[width_idx]
             };
+            let background_blend_mode = if opts.text_background_blend_modes.is_empty() {
+                BlendMode::Normal
+            } else {
+                let blend_idx = if opts.text_background_blend_modes.len() == 1 { 0 } else { idx };
+                opts.text_background_blend_modes[blend_idx]
+            };
+            let contour_blend_mode = if opts.text_contour_blend_modes.is_empty() {
+                BlendMode::Normal
+            } else {
+                let blend_idx = if opts.text_contour_blend_modes.len() == 1 { 0 } else { idx };
+                opts.text_contour_blend_modes[blend_idx]
+            };
 
             operations.push(Operation::new("q", vec![])); // save
             if rotation_deg != 0.0 || flip_x || flip_y {
@@ -238,15 +263,9 @@ pub(crate) fn build_card_xobjects(
             if let Some(bg_color) = background {
                 let pad = opts.text_background_padding_mm * MM;
                 operations.push(Operation::new("q", vec![])); // save
-                if background_alpha < 1.0 {
-                    let gs_name = match ext_gstates.iter().find(|(_, a)| (*a - background_alpha).abs() < 1e-6) {
-                        Some((name, _)) => name.clone(),
-                        None => {
-                            let name = format!("GSAlpha{}", ext_gstates.len());
-                            ext_gstates.push((name.clone(), background_alpha));
-                            name
-                        }
-                    };
+                let alpha = if background_alpha < 1.0 { Some(background_alpha) } else { None };
+                let blend = if background_blend_mode != BlendMode::Normal { Some(background_blend_mode) } else { None };
+                if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, alpha, blend) {
                     operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
                 }
                 match bg_color {
@@ -278,7 +297,25 @@ pub(crate) fn build_card_xobjects(
                     operations.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
                 }
             }
-            let render_mode = if let Some(stroke_color) = contour_color {
+            operations.push(Operation::new("BT", vec![]));
+            operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
+            operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)])); // add slight kerning
+            operations.push(Operation::new("Tr", vec![Object::Integer(0)])); // fill only
+            operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
+            operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
+            operations.push(Operation::new("ET", vec![]));
+            operations.push(Operation::new("Q", vec![])); // restore
+
+            // Stroke the glyph outlines as a separate pass, so the contour
+            // can use its own blend mode independent of the fill above
+            // (matching the web preview, which draws the contour as a
+            // separate stroke-only <text> element).
+            if let Some(stroke_color) = contour_color {
+                operations.push(Operation::new("q", vec![])); // save
+                let blend = if contour_blend_mode != BlendMode::Normal { Some(contour_blend_mode) } else { None };
+                if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, None, blend) {
+                    operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
+                }
                 match stroke_color {
                     TextColor::Rgb(r, g, b) => {
                         operations.push(Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));
@@ -288,19 +325,15 @@ pub(crate) fn build_card_xobjects(
                     }
                 }
                 operations.push(Operation::new("w", vec![Object::Real(contour_width_mm * MM)]));
-                2 // fill, then stroke
-            } else {
-                0 // fill only
-            };
-
-            operations.push(Operation::new("BT", vec![]));
-            operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
-            operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)])); // add slight kerning
-            operations.push(Operation::new("Tr", vec![Object::Integer(render_mode)]));
-            operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
-            operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
-            operations.push(Operation::new("ET", vec![]));
-            operations.push(Operation::new("Q", vec![])); // restore
+                operations.push(Operation::new("BT", vec![]));
+                operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
+                operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)]));
+                operations.push(Operation::new("Tr", vec![Object::Integer(1)])); // stroke only
+                operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
+                operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
+                operations.push(Operation::new("ET", vec![]));
+                operations.push(Operation::new("Q", vec![])); // restore
+            }
 
             if opts.debug {
                 operations.push(Operation::new("q", vec![])); // save
@@ -340,11 +373,16 @@ pub(crate) fn build_card_xobjects(
             if !ext_gstates.is_empty() {
                 res.set("ExtGState", Object::Dictionary({
                     let mut gstates = Dictionary::new();
-                    for (name, alpha) in &ext_gstates {
+                    for (name, alpha, blend) in &ext_gstates {
                         gstates.set(name.clone(), Object::Dictionary({
                             let mut gs = Dictionary::new();
                             gs.set("Type", Object::Name(b"ExtGState".to_vec()));
-                            gs.set("ca", Object::Real(*alpha));
+                            if let Some(alpha) = alpha {
+                                gs.set("ca", Object::Real(*alpha));
+                            }
+                            if let Some(blend) = blend {
+                                gs.set("BM", Object::Name(blend.pdf_name().as_bytes().to_vec()));
+                            }
                             gs
                         }));
                     }
@@ -360,4 +398,28 @@ pub(crate) fn build_card_xobjects(
     }
 
     Ok(card_ids)
+}
+
+// Find or create an ExtGState resource with the given alpha/blend mode
+// combination, returning its resource name. Returns `None` (no `gs`
+// operator needed) when both are at their defaults (full opacity, Normal
+// blend mode).
+fn ext_gstate_name(
+    ext_gstates: &mut Vec<(String, Option<f32>, Option<BlendMode>)>,
+    alpha: Option<f32>,
+    blend: Option<BlendMode>,
+) -> Option<String> {
+    if alpha.is_none() && blend.is_none() {
+        return None;
+    }
+    if let Some((name, _, _)) = ext_gstates.iter().find(|(_, a, b)| match (a, alpha) {
+        (Some(a), Some(alpha)) => (*a - alpha).abs() < 1e-6,
+        (None, None) => true,
+        _ => false,
+    } && *b == blend) {
+        return Some(name.clone());
+    }
+    let name = format!("GS{}", ext_gstates.len());
+    ext_gstates.push((name.clone(), alpha, blend));
+    Some(name)
 }

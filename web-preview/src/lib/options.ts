@@ -58,8 +58,10 @@ export interface WordStyle {
   background: string | null
   backgroundWidthMm: number | null
   backgroundAlpha: number
+  backgroundBlendMode: BlendMode
   contourColor: string | null
   contourWidthMm: number
+  contourBlendMode: BlendMode
 }
 
 export function defaultWordStyle(index: number): WordStyle {
@@ -76,8 +78,10 @@ export function defaultWordStyle(index: number): WordStyle {
     background: null,
     backgroundWidthMm: null,
     backgroundAlpha: 1,
+    backgroundBlendMode: 'normal',
     contourColor: null,
     contourWidthMm: 0.25,
+    contourBlendMode: 'normal',
   }
 }
 
@@ -170,10 +174,12 @@ export function buildJsOptions(
     textBackgroundAlphas: hasBackground
       ? new Float32Array(words.map((w) => w.backgroundAlpha))
       : new Float32Array(),
+    textBackgroundBlendModes: hasBackground ? words.map((w) => w.backgroundBlendMode) : [],
     textContours: hasContour ? words.map((w) => w.contourColor ?? 'none') : [],
     textContourWidthsMm: hasContour
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
+    textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
     splitChars,
   }
 }

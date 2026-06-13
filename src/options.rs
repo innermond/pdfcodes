@@ -1,4 +1,5 @@
 use crate::align::TextAlign;
+use crate::blend::BlendMode;
 use crate::color::TextColor;
 
 #[derive(Clone)]
@@ -74,6 +75,10 @@ pub struct Options {
     // rectangle, one per word position (or a single entry for every word).
     // Empty means fully opaque.
     pub text_background_alphas: Vec<f32>,
+    // Blend mode for the `text_backgrounds` rectangle, one per word position
+    // (or a single entry for every word). Empty means `Normal` for every
+    // word.
+    pub text_background_blend_modes: Vec<BlendMode>,
     // Character combination (one or more characters) used to split each CSV
     // field into "words" for per-word layout. Empty defaults to a single
     // space character.
@@ -86,6 +91,9 @@ pub struct Options {
     // (or a single entry for every word). Empty defaults to 0.25mm for any
     // word with a contour color set.
     pub text_contour_widths_mm: Vec<f32>,
+    // Blend mode for `text_contour_colors`, one per word position (or a
+    // single entry for every word). Empty means `Normal` for every word.
+    pub text_contour_blend_modes: Vec<BlendMode>,
 }
 
 impl Options {
@@ -124,9 +132,11 @@ impl Default for Options {
             text_background_padding_mm: 0.0,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            text_background_blend_modes: Vec::new(),
             split_chars: " ".to_string(),
             text_contour_colors: Vec::new(),
             text_contour_widths_mm: Vec::new(),
+            text_contour_blend_modes: Vec::new(),
         }
     }
 }

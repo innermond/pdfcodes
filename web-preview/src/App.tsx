@@ -11,6 +11,39 @@ import { useTheme } from './lib/theme'
 
 type Mode = 'print' | 'contour' | 'both'
 
+// User-configurable choices, saved to/loaded from a JSON file. Deliberately
+// excludes binary uploads (background PDFs, fonts) and CSV data, which
+// aren't representable as JSON and are provided separately per session.
+interface Preset {
+  version: 1
+  sampleText: string
+  splitChars: string
+  words: WordStyle[]
+  safeMarginMm: number
+  backgroundPaddingMm: number
+  contourOpacity: number
+  contourBlendMode: BlendMode
+  mode: Mode
+  pageOptions: PageOptions
+}
+
+// UI-only gate for the "Generare" section. Not a security boundary — the
+// password (and the generation logic itself) is fully visible/runnable from
+// the client. Set VITE_GENERATE_PASSWORD to enable the gate; if unset, the
+// section is always shown.
+const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
+const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
+
+function downloadJson(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   return texts.map((text, index) => {
     const existing = words[index] ?? defaultWordStyle(index)
@@ -65,6 +98,63 @@ export default function App() {
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
+  const [presetError, setPresetError] = useState<string | null>(null)
+
+  const [generateUnlocked, setGenerateUnlocked] = useState(
+    () => !GENERATE_PASSWORD || sessionStorage.getItem(GENERATE_UNLOCKED_KEY) === '1',
+  )
+  const [passwordInput, setPasswordInput] = useState('')
+  const [passwordError, setPasswordError] = useState<string | null>(null)
+
+  function handleUnlock() {
+    if (passwordInput === GENERATE_PASSWORD) {
+      setGenerateUnlocked(true)
+      setPasswordError(null)
+      sessionStorage.setItem(GENERATE_UNLOCKED_KEY, '1')
+    } else {
+      setPasswordError('Parolă incorectă.')
+    }
+  }
+
+  function handleSavePreset() {
+    const preset: Preset = {
+      version: 1,
+      sampleText,
+      splitChars,
+      words,
+      safeMarginMm,
+      backgroundPaddingMm,
+      contourOpacity,
+      contourBlendMode,
+      mode,
+      pageOptions,
+    }
+    downloadJson('pdfcodes-preview-setari.json', preset)
+  }
+
+  function handleLoadPresetFile(file: File | null) {
+    setPresetError(null)
+    if (!file) return
+    file.text()
+      .then((text) => {
+        const preset = JSON.parse(text) as Partial<Preset>
+        if (!Array.isArray(preset.words)) {
+          throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
+        }
+        setSampleText(preset.sampleText ?? '')
+        setSplitChars(preset.splitChars ?? '')
+        setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
+        setFonts(resizeFonts([], preset.words.length))
+        setSelectedIndex(null)
+        if (typeof preset.safeMarginMm === 'number') setSafeMarginMm(preset.safeMarginMm)
+        if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
+        if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
+        if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
+        if (preset.mode) setMode(preset.mode)
+        if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
+      })
+      .catch((err) => setPresetError(err instanceof Error ? err.message : String(err)))
+  }
 
   function handleBackgroundFileChange(file: File | null) {
     setBackground(null)
@@ -254,7 +344,7 @@ export default function App() {
               onChange={handleSplitCharsChange}
               placeholder=" "
             />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
             </div>
@@ -280,7 +370,7 @@ export default function App() {
             </div>
 
             {selected && selectedIndex !== null && (
-              <div className="grid grid-cols-2 gap-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+              <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <SelectField<Align>
                   label="Aliniere"
@@ -316,6 +406,12 @@ export default function App() {
                       onChange={(v) => updateWord(selectedIndex, { backgroundWidthMm: Number.isNaN(v) ? null : v })}
                     />
                     <NumberField label="Transparență fundal (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} />
+                    <SelectField
+                      label="Mod îmbinare fundal"
+                      value={selected.backgroundBlendMode}
+                      options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                      onChange={(v) => updateWord(selectedIndex, { backgroundBlendMode: v })}
+                    />
                   </>
                 )}
                 <ColorField
@@ -326,9 +422,17 @@ export default function App() {
                   onChange={(v) => updateWord(selectedIndex, { contourColor: v })}
                 />
                 {selected.contourColor !== null && (
-                  <NumberField label="Lățime contur (mm)" value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
+                  <>
+                    <NumberField label="Lățime contur (mm)" value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
+                    <SelectField
+                      label="Mod îmbinare contur"
+                      value={selected.contourBlendMode}
+                      options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                      onChange={(v) => updateWord(selectedIndex, { contourBlendMode: v })}
+                    />
+                  </>
                 )}
-                <div className="col-span-2">
+                <div className="w-full">
                   <FileField
                     key={selectedIndex}
                     label="Font pentru acest cuvânt (opțional)"
@@ -343,7 +447,39 @@ export default function App() {
             )}
           </Section>
 
+          <Section title="Setări">
+            <div className="flex flex-wrap items-end gap-3">
+              <button
+                type="button"
+                onClick={handleSavePreset}
+                className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+              >
+                Salvează setările (JSON)
+              </button>
+              <FileField
+                label="Încarcă setări (JSON)"
+                accept="application/json,.json"
+                onChange={(files) => handleLoadPresetFile(files?.[0] ?? null)}
+              />
+            </div>
+            {presetError && <p className="text-sm text-red-600 dark:text-red-400">{presetError}</p>}
+          </Section>
+
           <Section title="Generare">
+            {!generateUnlocked ? (
+              <>
+                <TextField label="Parolă" type="password" value={passwordInput} onChange={setPasswordInput} />
+                <button
+                  type="button"
+                  onClick={handleUnlock}
+                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                >
+                  Deblochează
+                </button>
+                {passwordError && <p className="text-sm text-red-600 dark:text-red-400">{passwordError}</p>}
+              </>
+            ) : (
+              <>
             <RadioGroupField<Mode>
               label="Ce se generează"
               value={mode}
@@ -362,7 +498,7 @@ export default function App() {
             />
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Lățime pagină (mm)" value={pageOptions.hostWidthMm} onChange={(v) => setPageOption('hostWidthMm', v)} />
               <NumberField label="Înălțime pagină (mm)" value={pageOptions.hostHeightMm} onChange={(v) => setPageOption('hostHeightMm', v)} />
               <NumberField label="Decalaj X (mm)" value={pageOptions.offsetXMm} onChange={(v) => setPageOption('offsetXMm', v)} />
@@ -371,7 +507,7 @@ export default function App() {
             </div>
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Opțiuni</p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
               <CheckboxField label="Contururi de depanare" checked={pageOptions.debug} onChange={(v) => setPageOption('debug', v)} />
               {needsContourInput && (
@@ -382,7 +518,7 @@ export default function App() {
             {needsContourInput && pageOptions.measurePaths && (
               <>
                 <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Timp de tăiere</p>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                   <NumberField label="Viteză de tăiere (mm/s)" value={pageOptions.cuttingSpeedMmS} onChange={(v) => setPageOption('cuttingSpeedMmS', v)} />
                   <NumberField label="Penalizare colț (s)" value={pageOptions.cornerPenaltyS} onChange={(v) => setPageOption('cornerPenaltyS', v)} />
                   <NumberField label="Timp pregătire (s)" value={pageOptions.preparationTimeS} onChange={(v) => setPageOption('preparationTimeS', v)} />
@@ -400,6 +536,8 @@ export default function App() {
               {genLoading ? 'Se generează…' : 'Generează PDF'}
             </button>
             {genError && <p className="text-sm text-red-600 dark:text-red-400">{genError}</p>}
+              </>
+            )}
           </Section>
         </div>
 

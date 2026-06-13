@@ -308,8 +308,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::color::{parse_color, parse_color_or_none};
     use crate::align::TextAlign;
+    use crate::blend::BlendMode;
+    use crate::color::{parse_color, parse_color_or_none};
 
     static BACKGROUND_PDF: &[u8] = include_bytes!("../../15x15.pdf");
 
@@ -578,8 +579,27 @@ mod tests {
         panic!("no card form XObject found");
     }
 
+    // Find the first card Form XObject's `/Resources /ExtGState` dictionary.
+    fn first_card_ext_gstates(pdf: &[u8]) -> Dictionary {
+        let doc = Document::load_mem(pdf).expect("pdf should parse");
+        for object in doc.objects.values() {
+            if let Object::Stream(stream) = object {
+                if stream.dict.get(b"Subtype").and_then(Object::as_name_str).ok() != Some("Form") {
+                    continue;
+                }
+                let Ok(resources) = stream.dict.get(b"Resources").and_then(Object::as_dict) else { continue };
+                let Ok(xobjects) = resources.get(b"XObject").and_then(Object::as_dict) else { continue };
+                if !xobjects.has(b"BG") {
+                    continue;
+                }
+                return resources.get(b"ExtGState").and_then(Object::as_dict).cloned().unwrap_or_default();
+            }
+        }
+        panic!("no card form XObject found");
+    }
+
     #[test]
-    fn generate_print_pdf_with_text_contour_draws_stroke_with_fill_render_mode() {
+    fn generate_print_pdf_with_text_contour_draws_stroke_as_separate_pass() {
         let opts = Options {
             text_contour_colors: vec![parse_color_or_none("#FF0000").unwrap()],
             text_contour_widths_mm: vec![0.5],
@@ -596,9 +616,11 @@ mod tests {
         let w = operations.iter().find(|op| op.operator == "w").expect("w operator should be present");
         assert_eq!(w.operands, vec![Object::Real(0.5 * crate::geometry::MM)]);
 
-        let tr = operations.iter().filter(|op| op.operator == "Tr").collect::<Vec<_>>();
-        assert!(!tr.is_empty());
-        assert!(tr.iter().all(|op| op.operands == vec![Object::Integer(2)]));
+        // Each word's fill text is drawn in one pass (Tr 0), the contour
+        // stroke in a separate pass (Tr 1), so each can have its own
+        // ExtGState/blend mode. The default options lay out 2 words.
+        let tr = operations.iter().filter(|op| op.operator == "Tr").map(|op| op.operands.clone()).collect::<Vec<_>>();
+        assert_eq!(tr, vec![vec![Object::Integer(0)], vec![Object::Integer(1)], vec![Object::Integer(0)], vec![Object::Integer(1)]]);
     }
 
     #[test]
@@ -615,5 +637,72 @@ mod tests {
         let tr = operations.iter().filter(|op| op.operator == "Tr").collect::<Vec<_>>();
         assert!(!tr.is_empty());
         assert!(tr.iter().all(|op| op.operands == vec![Object::Integer(0)]));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_background_blend_modes() {
+        let opts = Options { text_background_blend_modes: vec![BlendMode::Multiply, BlendMode::Normal], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-backgrounds-blend-modes"));
+    }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_contour_blend_modes() {
+        let opts = Options { text_contour_blend_modes: vec![BlendMode::Multiply, BlendMode::Normal], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-contour-blend-modes"));
+    }
+
+    #[test]
+    fn generate_print_pdf_with_text_background_blend_mode_sets_extgstate_bm() {
+        let opts = Options {
+            text_backgrounds: vec![parse_color_or_none("#FFFF00").unwrap()],
+            text_background_blend_modes: vec![BlendMode::Multiply],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("generation should succeed");
+
+        let ext_gstates = first_card_ext_gstates(&out.pdf);
+        let bm = ext_gstates.iter().find_map(|(_, gs)| {
+            let gs = gs.as_dict().ok()?;
+            gs.get(b"BM").and_then(Object::as_name_str).ok()
+        });
+        assert_eq!(bm, Some("Multiply"));
+    }
+
+    #[test]
+    fn generate_print_pdf_with_text_contour_blend_mode_sets_extgstate_bm() {
+        let opts = Options {
+            text_contour_colors: vec![parse_color_or_none("#FF0000").unwrap()],
+            text_contour_blend_modes: vec![BlendMode::Screen],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("generation should succeed");
+
+        let ext_gstates = first_card_ext_gstates(&out.pdf);
+        let bm = ext_gstates.iter().find_map(|(_, gs)| {
+            let gs = gs.as_dict().ok()?;
+            gs.get(b"BM").and_then(Object::as_name_str).ok()
+        });
+        assert_eq!(bm, Some("Screen"));
+    }
+
+    #[test]
+    fn generate_print_pdf_without_blend_modes_omits_extgstate_bm() {
+        let opts = Options {
+            text_backgrounds: vec![parse_color_or_none("#FFFF00").unwrap()],
+            text_contour_colors: vec![parse_color_or_none("#FF0000").unwrap()],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("generation should succeed");
+
+        let ext_gstates = first_card_ext_gstates(&out.pdf);
+        for (_, gs) in ext_gstates.iter() {
+            let gs = gs.as_dict().expect("ExtGState entry should be a dict");
+            assert!(!gs.has(b"BM"), "unexpected /BM in {:?}", gs);
+        }
     }
 }

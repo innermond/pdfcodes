@@ -1,7 +1,7 @@
 mod cli;
 
 use std::env;
-use pdfcodes::{generate_pdf, parse_color, parse_color_or_none, Options, TextAlign};
+use pdfcodes::{generate_pdf, parse_color, parse_color_or_none, BlendMode, Options, TextAlign};
 
 use cli::args::{default_output_path, get_bool_list_flag, get_flag, get_float_list_flag, get_string_flag, get_string_list_flag, with_suffix};
 use cli::config::Config;
@@ -129,6 +129,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text_background_alphas: get_float_list_flag(&args, "text-backgrounds-alphas")
             .or_else(|| config.text_background_alphas.clone())
             .unwrap_or_default(),
+        text_background_blend_modes: get_string_list_flag(&args, "text-backgrounds-blend-modes")
+            .or_else(|| config.text_background_blend_modes.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.parse::<BlendMode>())
+            .collect::<Result<Vec<BlendMode>, String>>()?,
         split_chars: get_string_flag(&args, "split-chars")
             .or_else(|| config.split_chars.clone())
             .unwrap_or_else(|| " ".to_string()),
@@ -141,6 +147,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text_contour_widths_mm: get_float_list_flag(&args, "text-contour-widths")
             .or_else(|| config.text_contour_widths.clone())
             .unwrap_or_default(),
+        text_contour_blend_modes: get_string_list_flag(&args, "text-contour-blend-modes")
+            .or_else(|| config.text_contour_blend_modes.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.parse::<BlendMode>())
+            .collect::<Result<Vec<BlendMode>, String>>()?,
     };
 
     run(csv_path.as_deref(), &background_path, &output_path, &opts, &contour_background_path)?;

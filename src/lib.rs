@@ -1,4 +1,5 @@
 mod align;
+mod blend;
 mod color;
 mod fonts;
 mod generate;
@@ -11,6 +12,7 @@ mod pdf_import;
 mod wasm;
 
 pub use align::TextAlign;
+pub use blend::BlendMode;
 pub use color::{parse_color, parse_color_or_none, TextColor};
 pub use generate::{generate_pdf, GenerateOutput};
 pub use options::Options;

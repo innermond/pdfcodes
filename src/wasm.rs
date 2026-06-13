@@ -1,6 +1,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::align::TextAlign;
+use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
 use crate::options::Options;
@@ -112,6 +113,8 @@ pub fn generate(
     split_chars: String,
     text_contours: Vec<String>,
     text_contour_widths_mm: Vec<f32>,
+    text_background_blend_modes: Vec<String>,
+    text_contour_blend_modes: Vec<String>,
 ) -> Result<WasmGenerateOutput, JsError> {
     let align = align.iter()
         .map(|s| s.parse::<TextAlign>())
@@ -131,6 +134,16 @@ pub fn generate(
     let text_contour_colors = text_contours.iter()
         .map(|s| parse_color_or_none(s))
         .collect::<Result<Vec<Option<TextColor>>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
+    let text_background_blend_modes = text_background_blend_modes.iter()
+        .map(|s| s.parse::<BlendMode>())
+        .collect::<Result<Vec<BlendMode>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
+    let text_contour_blend_modes = text_contour_blend_modes.iter()
+        .map(|s| s.parse::<BlendMode>())
+        .collect::<Result<Vec<BlendMode>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
     let opts = Options {
@@ -161,9 +174,11 @@ pub fn generate(
         text_background_padding_mm,
         text_background_widths_mm,
         text_background_alphas,
+        text_background_blend_modes,
         split_chars,
         text_contour_colors,
         text_contour_widths_mm,
+        text_contour_blend_modes,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -215,9 +230,11 @@ struct JsOptions {
     text_background_padding_mm: f32,
     text_background_widths_mm: Vec<f32>,
     text_background_alphas: Vec<f32>,
+    text_background_blend_modes: Vec<String>,
     split_chars: String,
     text_contours: Vec<String>,
     text_contour_widths_mm: Vec<f32>,
+    text_contour_blend_modes: Vec<String>,
 }
 
 impl Default for JsOptions {
@@ -250,9 +267,11 @@ impl Default for JsOptions {
             text_background_padding_mm: base.text_background_padding_mm,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            text_background_blend_modes: Vec::new(),
             split_chars: base.split_chars,
             text_contours: Vec::new(),
             text_contour_widths_mm: Vec::new(),
+            text_contour_blend_modes: Vec::new(),
         }
     }
 }
@@ -291,6 +310,16 @@ pub fn generate_with_options(
         .collect::<Result<Vec<Option<TextColor>>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let text_background_blend_modes = js_opts.text_background_blend_modes.iter()
+        .map(|s| s.parse::<BlendMode>())
+        .collect::<Result<Vec<BlendMode>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
+    let text_contour_blend_modes = js_opts.text_contour_blend_modes.iter()
+        .map(|s| s.parse::<BlendMode>())
+        .collect::<Result<Vec<BlendMode>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
     let opts = Options {
         host_width_mm: js_opts.host_width_mm,
         host_height_mm: js_opts.host_height_mm,
@@ -319,9 +348,11 @@ pub fn generate_with_options(
         text_background_padding_mm: js_opts.text_background_padding_mm,
         text_background_widths_mm: js_opts.text_background_widths_mm,
         text_background_alphas: js_opts.text_background_alphas,
+        text_background_blend_modes,
         split_chars: js_opts.split_chars,
         text_contour_colors,
         text_contour_widths_mm: js_opts.text_contour_widths_mm,
+        text_contour_blend_modes,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

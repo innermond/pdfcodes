@@ -37,7 +37,23 @@ export function WordOverlay({
     const el = measureRef.current
     if (!el) return
     const bbox = el.getBBox()
-    setMetrics({ width: bbox.width, ascent: -bbox.y, descent: bbox.height + bbox.y })
+
+    // Use the font's own ascent/descent (not the tight glyph bbox) for
+    // vertical placement, matching how src/generate/cards.rs derives
+    // `ascent`/`descent` from `face.ascender()`/`face.descender()`. The
+    // glyph bbox varies per word (e.g. no descenders => zero descent),
+    // which would desync the background rect's Y position from the PDF.
+    let ascent = -bbox.y
+    let descent = bbox.height + bbox.y
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (ctx) {
+      ctx.font = `${word.fontSizePt}px ${fontFamily}`
+      const tm = ctx.measureText(word.text)
+      ascent = tm.fontBoundingBoxAscent
+      descent = tm.fontBoundingBoxDescent
+    }
+
+    setMetrics({ width: bbox.width, ascent, descent })
   }, [word.text, word.fontSizePt, fontFamily])
 
   if (!metrics) {
@@ -145,7 +161,15 @@ export function WordOverlay({
         />
       )}
       {word.background !== null && (
-        <rect x={rectXPt} y={rectYSvg} width={rectWPt} height={rectHPt} fill={word.background} fillOpacity={word.backgroundAlpha} />
+        <rect
+          x={rectXPt}
+          y={rectYSvg}
+          width={rectWPt}
+          height={rectHPt}
+          fill={word.background}
+          fillOpacity={word.backgroundAlpha}
+          style={{ mixBlendMode: word.backgroundBlendMode }}
+        />
       )}
       <text
         ref={measureRef}
@@ -154,11 +178,23 @@ export function WordOverlay({
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
         fill={word.color}
-        stroke={word.contourColor ?? undefined}
-        strokeWidth={word.contourColor !== null ? word.contourWidthMm * MM : undefined}
       >
         {word.text}
       </text>
+      {word.contourColor !== null && (
+        <text
+          x={xPt}
+          y={ySvg}
+          fontSize={word.fontSizePt}
+          fontFamily={fontFamily}
+          fill="none"
+          stroke={word.contourColor}
+          strokeWidth={word.contourWidthMm * MM}
+          style={{ mixBlendMode: word.contourBlendMode }}
+        >
+          {word.text}
+        </text>
+      )}
     </g>
   )
 }

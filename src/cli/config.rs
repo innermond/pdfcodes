@@ -67,6 +67,10 @@ pub(crate) struct Config {
     // Opacity (0.0-1.0) of the text_backgrounds rectangle, one per word
     // position (or a single entry for every word).
     pub text_background_alphas: Option<Vec<f32>>,
+    // Blend mode for the text_backgrounds rectangle ("normal", "multiply",
+    // "screen", etc., matching CSS mix-blend-mode names), one per word
+    // position (or a single entry for every word). Defaults to "normal".
+    pub text_background_blend_modes: Option<Vec<String>>,
     // Stroke color drawn around each text part's glyphs ("#RRGGBB",
     // "c:m:y:k", or "none"/"-" for no contour), one per word position (or a
     // single entry for every word).
@@ -74,6 +78,10 @@ pub(crate) struct Config {
     // Stroke width (in mm) for text_contours, one per word position (or a
     // single entry for every word). Defaults to 0.25mm.
     pub text_contour_widths: Option<Vec<f32>>,
+    // Blend mode for text_contours ("normal", "multiply", "screen", etc.,
+    // matching CSS mix-blend-mode names), one per word position (or a
+    // single entry for every word). Defaults to "normal".
+    pub text_contour_blend_modes: Option<Vec<String>>,
     // Character combination used to split each CSV field into "words".
     // Defaults to a single space character.
     pub split_chars: Option<String>,

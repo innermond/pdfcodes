@@ -31,24 +31,26 @@ export function TextField({
   onChange,
   placeholder,
   readOnly,
+  type = 'text',
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   placeholder?: string
   readOnly?: boolean
+  type?: 'text' | 'password'
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
+    <label className="flex min-w-0 flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
-        type="text"
+        type={type}
         value={value}
         placeholder={placeholder}
         readOnly={readOnly}
         onFocus={readOnly ? (e) => e.target.select() : undefined}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-400"
+        className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-400"
       />
     </label>
   )
@@ -190,14 +192,14 @@ export function FileField({
   onChange: (files: FileList | null) => void
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
+    <label className="flex min-w-0 flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="file"
         accept={accept}
         multiple={multiple}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.files)}
-        className="rounded border border-gray-300 px-2 py-1 text-sm file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
+        className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 text-sm file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
       />
     </label>
   )
