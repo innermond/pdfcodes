@@ -214,6 +214,7 @@ export default function App() {
       {
         background: backgroundFile ?? undefined,
         contour: contourSource === 'upload' ? (contourBackgroundFile ?? undefined) : undefined,
+        csv: csvDataFile ?? undefined,
         fonts: fontsToBundle,
       },
     ]
@@ -244,7 +245,7 @@ export default function App() {
     setFontsNotice(null)
     if (!file) return
     loadPresetBundle(file)
-      .then(({ preset: rawPreset, background: bgFile, contour: contourFile, fonts: bundledFonts }) => {
+      .then(({ preset: rawPreset, background: bgFile, contour: contourFile, csv: csvFile, fonts: bundledFonts }) => {
         const preset = rawPreset as Partial<Preset>
         if (!Array.isArray(preset.words)) {
           throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
@@ -282,6 +283,9 @@ export default function App() {
           renderPdfBackground(contourFile)
             .then(setContourBackground)
             .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+        }
+        if (csvFile) {
+          setCsvDataFile(csvFile)
         }
 
         // Re-fetch any Google Fonts referenced by the preset.

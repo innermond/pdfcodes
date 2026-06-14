@@ -9,12 +9,14 @@ import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
 export interface ResourceManifest {
   background?: string
   contour?: string
+  csv?: string
   fonts?: Record<string, string>
 }
 
 export interface PresetResources {
   background?: File
   contour?: File
+  csv?: File
   fonts: Map<number, File>
 }
 
@@ -22,6 +24,7 @@ export interface LoadedPresetBundle {
   preset: Record<string, unknown>
   background?: File
   contour?: File
+  csv?: File
   fonts: Map<number, File>
 }
 
@@ -57,6 +60,12 @@ export async function downloadPresetBundle<T extends object>(
     const path = `contour.${extOf(resources.contour.name, 'pdf')}`
     files[path] = new Uint8Array(await resources.contour.arrayBuffer())
     manifest.contour = path
+  }
+
+  if (resources.csv) {
+    const path = `codes.${extOf(resources.csv.name, 'csv')}`
+    files[path] = new Uint8Array(await resources.csv.arrayBuffer())
+    manifest.csv = path
   }
 
   if (resources.fonts.size > 0) {
@@ -104,6 +113,12 @@ export async function loadPresetBundle(file: File): Promise<LoadedPresetBundle> 
   if (manifest.contour && entries[manifest.contour]) {
     result.contour = new File([entries[manifest.contour]], manifest.contour.split('/').pop()!, {
       type: 'application/pdf',
+    })
+  }
+
+  if (manifest.csv && entries[manifest.csv]) {
+    result.csv = new File([entries[manifest.csv]], manifest.csv.split('/').pop()!, {
+      type: 'text/csv',
     })
   }
 
