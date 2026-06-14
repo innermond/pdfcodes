@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
+import { WizardFooter, WizardNav } from './components/WizardNav'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
 import { ResultPanel } from './components/ResultPanel'
 import { generatePdf, type GenerateResult } from './lib/generate'
@@ -48,6 +49,14 @@ interface Preset {
 const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
 
+const WIZARD_STEPS = [
+  { id: 'fundal', label: 'Fundal' },
+  { id: 'aspect', label: 'Aspect & Cuvinte' },
+  { id: 'date', label: 'Sursa de date' },
+  { id: 'generare', label: 'Generare' },
+] as const
+type WizardStepId = (typeof WIZARD_STEPS)[number]['id']
+
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   return texts.map((text, index) => {
     const existing = words[index] ?? defaultWordStyle(index)
@@ -90,6 +99,8 @@ function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { e
 
 export default function App() {
   const [theme, toggleTheme] = useTheme()
+  const [step, setStep] = useState<WizardStepId>('fundal')
+  const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
 
   useEffect(() => {
     void ensureDefaultFont()
@@ -518,8 +529,31 @@ export default function App() {
         Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
       </p>
 
+      <Section title="Setări">
+        <div className="flex flex-wrap items-end gap-3">
+          <button
+            type="button"
+            onClick={handleSavePreset}
+            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            Salvează setările (.zip)
+          </button>
+          <FileField
+            label="Încarcă setări (.zip sau .json)"
+            accept=".zip,application/zip,application/json,.json"
+            onChange={(files) => handleLoadPresetFile(files?.[0] ?? null)}
+          />
+        </div>
+        {presetError && <p className="text-sm text-red-600 dark:text-red-400">{presetError}</p>}
+      </Section>
+
+      <div className="my-4">
+        <WizardNav steps={WIZARD_STEPS} current={step} onSelect={(id) => setStep(id as WizardStepId)} />
+      </div>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="flex flex-col gap-4">
+          {step === 'fundal' && (
           <Section title="Fundal">
             <FileField
               label="PDF de fundal (un card)"
@@ -583,7 +617,10 @@ export default function App() {
               </>
             )}
           </Section>
+          )}
 
+          {step === 'aspect' && (
+          <>
           <Section title="Text exemplu">
             <TextField
               label="Rând CSV exemplu (cuvinte separate prin spațiu)"
@@ -720,25 +757,10 @@ export default function App() {
               </div>
             )}
           </Section>
+          </>
+          )}
 
-          <Section title="Setări">
-            <div className="flex flex-wrap items-end gap-3">
-              <button
-                type="button"
-                onClick={handleSavePreset}
-                className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-              >
-                Salvează setările (.zip)
-              </button>
-              <FileField
-                label="Încarcă setări (.zip sau .json)"
-                accept=".zip,application/zip,application/json,.json"
-                onChange={(files) => handleLoadPresetFile(files?.[0] ?? null)}
-              />
-            </div>
-            {presetError && <p className="text-sm text-red-600 dark:text-red-400">{presetError}</p>}
-          </Section>
-
+          {step === 'date' && (
           <CodeSourceSection
             rowCount={codeRowCount}
             onRowCountChange={setCodeRowCount}
@@ -751,7 +773,10 @@ export default function App() {
             downloadUrl={codeCsvUrl}
             progress={codeCsvProgress}
           />
+          )}
 
+          {step === 'generare' && (
+          <>
           {!generateUnlocked && (
             <Section title="Cere ofertă">
               <p className="text-sm text-gray-600 dark:text-gray-400">
@@ -856,6 +881,15 @@ export default function App() {
               </>
             )}
           </Section>
+          </>
+          )}
+
+          <WizardFooter
+            stepIndex={stepIndex}
+            stepCount={WIZARD_STEPS.length}
+            onBack={() => setStep(WIZARD_STEPS[stepIndex - 1].id)}
+            onNext={() => setStep(WIZARD_STEPS[stepIndex + 1].id)}
+          />
         </div>
 
         <div className="flex flex-col gap-4">
