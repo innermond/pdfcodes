@@ -65,6 +65,12 @@ pub(crate) fn build_card_xobjects(
                 txt, texts.len(), opts.text_colors.len()
             ).into());
         }
+        if opts.text_blend_modes.len() > 1 && texts.len() > opts.text_blend_modes.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} --text-blend-modes value(s) configured",
+                txt, texts.len(), opts.text_blend_modes.len()
+            ).into());
+        }
         if opts.text_rotations.len() > 1 && texts.len() > opts.text_rotations.len() {
             return Err(format!(
                 "CSV row {:?} has {} word(s), but only {} text rotation(s) configured",
@@ -232,6 +238,12 @@ pub(crate) fn build_card_xobjects(
                 let blend_idx = if opts.text_background_blend_modes.len() == 1 { 0 } else { idx };
                 opts.text_background_blend_modes[blend_idx]
             };
+            let text_blend_mode = if opts.text_blend_modes.is_empty() {
+                BlendMode::Normal
+            } else {
+                let blend_idx = if opts.text_blend_modes.len() == 1 { 0 } else { idx };
+                opts.text_blend_modes[blend_idx]
+            };
             let contour_blend_mode = if opts.text_contour_blend_modes.is_empty() {
                 BlendMode::Normal
             } else {
@@ -289,6 +301,10 @@ pub(crate) fn build_card_xobjects(
             }
 
             operations.push(Operation::new("q", vec![])); // save
+            let blend = if text_blend_mode != BlendMode::Normal { Some(text_blend_mode) } else { None };
+            if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, None, blend) {
+                operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
+            }
             match color {
                 TextColor::Rgb(r, g, b) => {
                     operations.push(Operation::new("rg", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));

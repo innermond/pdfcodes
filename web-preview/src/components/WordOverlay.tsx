@@ -178,6 +178,7 @@ export function WordOverlay({
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
         fill={word.color}
+        style={{ mixBlendMode: word.blendMode }}
       >
         {word.text}
       </text>

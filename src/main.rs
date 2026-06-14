@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let background_path = positional.get(1).map(|s| s.to_string()).or_else(|| config.background.clone());
 
         let (Some(csv_path), Some(background_path)) = (csv_path, background_path) else {
-            eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf] [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--font-sizes=9,14] [--text-y=10,3] [--text-x=5,5] [--fonts=path1.ttf,path2.ttf] [--align=left,center,right] [--text-colors=#RRGGBB|c:m:y:k,...] [--text-rotations=0,15] [--text-flip-x=true,false] [--text-flip-y=true,false] [--text-backgrounds=#RRGGBB|c:m:y:k|none,...] [--text-background-padding=0] [--text-backgrounds-widths=20,30] [--text-backgrounds-alphas=0.5,1] [--text-contours=#RRGGBB|c:m:y:k|none,...] [--text-contour-widths=0.25,0.5] [--contour] [--with-contour] [--contour-background=path.pdf] [--combineb] [--debug] [--safe-margin=0] [--split-chars= ] [--config=config.json]", args[0]);
+            eprintln!("Usage: {} <csv_file> <background_pdf> [output_pdf] [--host-width=267] [--host-height=350] [--offset-x=0] [--offset-y=0] [--circle-diameter=10] [--font-sizes=9,14] [--text-y=10,3] [--text-x=5,5] [--fonts=path1.ttf,path2.ttf] [--align=left,center,right] [--text-colors=#RRGGBB|c:m:y:k,...] [--text-blend-modes=normal,multiply,...] [--text-rotations=0,15] [--text-flip-x=true,false] [--text-flip-y=true,false] [--text-backgrounds=#RRGGBB|c:m:y:k|none,...] [--text-background-padding=0] [--text-backgrounds-widths=20,30] [--text-backgrounds-alphas=0.5,1] [--text-contours=#RRGGBB|c:m:y:k|none,...] [--text-contour-widths=0.25,0.5] [--contour] [--with-contour] [--contour-background=path.pdf] [--combineb] [--debug] [--safe-margin=0] [--split-chars= ] [--config=config.json]", args[0]);
             std::process::exit(1);
         };
         let output_path = if with_contour {
@@ -104,6 +104,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|s| parse_color(s))
             .collect::<Result<Vec<pdfcodes::TextColor>, String>>()?,
+        text_blend_modes: get_string_list_flag(&args, "text-blend-modes")
+            .or_else(|| config.text_blend_modes.clone())
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.parse::<BlendMode>())
+            .collect::<Result<Vec<BlendMode>, String>>()?,
         combine,
         debug: args.iter().any(|a| a == "--debug") || config.debug.unwrap_or(false),
         safe_margin_mm: get_flag(&args, "safe-margin", config.safe_margin.unwrap_or(0.0)),

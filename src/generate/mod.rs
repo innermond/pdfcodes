@@ -706,4 +706,28 @@ mod tests {
             assert!(!gs.has(b"BM"), "unexpected /BM in {:?}", gs);
         }
     }
+
+    #[test]
+    fn generate_print_pdf_rejects_too_many_words_for_text_blend_modes() {
+        let opts = Options { text_blend_modes: vec![BlendMode::Multiply, BlendMode::Normal], ..three_word_options() };
+        let err = generate_pdf(Some("1A 1 X\n"), BACKGROUND_PDF, None, &opts).unwrap_err();
+        assert!(err.to_string().contains("--text-blend-modes"));
+    }
+
+    #[test]
+    fn generate_print_pdf_with_text_blend_mode_sets_extgstate_bm() {
+        let opts = Options {
+            text_blend_modes: vec![BlendMode::Multiply],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("generation should succeed");
+
+        let ext_gstates = first_card_ext_gstates(&out.pdf);
+        let bm = ext_gstates.iter().find_map(|(_, gs)| {
+            let gs = gs.as_dict().ok()?;
+            gs.get(b"BM").and_then(Object::as_name_str).ok()
+        });
+        assert_eq!(bm, Some("Multiply"));
+    }
 }

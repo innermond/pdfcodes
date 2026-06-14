@@ -679,6 +679,12 @@ export default function App() {
                   onChange={(v) => updateWord(selectedIndex, { xMm: Number.isNaN(v) ? null : v })}
                 />
                 <ColorField label="Culoare text" value={selected.color} onChange={(v) => updateWord(selectedIndex, { color: v ?? '#000000' })} />
+                <SelectField
+                  label="Mod îmbinare text"
+                  value={selected.blendMode}
+                  options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                  onChange={(v) => updateWord(selectedIndex, { blendMode: v })}
+                />
                 <NumberField label="Rotație (grade)" value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
                 <CheckboxField label="Oglindire X" checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
                 <CheckboxField label="Oglindire Y" checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />

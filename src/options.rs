@@ -40,6 +40,9 @@ pub struct Options {
     // Text fill color per word position, or a single entry to use the same
     // color for every word. Empty defaults to RGB black.
     pub text_colors: Vec<TextColor>,
+    // Blend mode for the text fill itself, one per word position (or a
+    // single entry for every word). Empty means `Normal` for every word.
+    pub text_blend_modes: Vec<BlendMode>,
     // When generating the print PDF, also draw the contour grid (background
     // tiles + registration circles) as a non-printable overlay layer, so the
     // alignment between print and contour PDFs can be checked visually.
@@ -122,6 +125,7 @@ impl Default for Options {
             font_data: Vec::new(),
             align: vec![TextAlign::Center],
             text_colors: Vec::new(),
+            text_blend_modes: Vec::new(),
             combine: false,
             debug: false,
             safe_margin_mm: 0.0,

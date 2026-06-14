@@ -41,6 +41,10 @@ pub(crate) struct Config {
     // Text fill color ("#RRGGBB"), one per word position (or a single entry
     // to use the same color for every word). Defaults to black.
     pub text_colors: Option<Vec<String>>,
+    // Blend mode for the text fill itself ("normal", "multiply", "screen",
+    // etc., matching CSS mix-blend-mode names), one per word position (or a
+    // single entry for every word). Defaults to "normal".
+    pub text_blend_modes: Option<Vec<String>>,
     // Overlay the contour grid as a non-printable layer on the print PDF.
     pub combineb: Option<bool>,
     // Outline the bounding box of each text part on the print PDF.

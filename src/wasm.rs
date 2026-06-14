@@ -100,6 +100,7 @@ pub fn generate(
     debug: bool,
     safe_margin_mm: f32,
     text_colors: Vec<String>,
+    text_blend_modes: Vec<String>,
     text_rotations: Vec<f32>,
     text_flip_x: Vec<u8>,
     text_flip_y: Vec<u8>,
@@ -147,6 +148,11 @@ pub fn generate(
         .collect::<Result<Vec<BlendMode>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let text_blend_modes = text_blend_modes.iter()
+        .map(|s| s.parse::<BlendMode>())
+        .collect::<Result<Vec<BlendMode>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
     let opts = Options {
         host_width_mm,
         host_height_mm,
@@ -165,6 +171,7 @@ pub fn generate(
         font_data: font_data.iter().map(|u| u.to_vec()).collect(),
         align,
         text_colors,
+        text_blend_modes,
         combine,
         debug,
         safe_margin_mm,
@@ -224,6 +231,7 @@ struct JsOptions {
     debug: bool,
     safe_margin_mm: f32,
     text_colors: Vec<String>,
+    text_blend_modes: Vec<String>,
     text_rotations: Vec<f32>,
     text_flip_x: Vec<bool>,
     text_flip_y: Vec<bool>,
@@ -261,6 +269,7 @@ impl Default for JsOptions {
             debug: base.debug,
             safe_margin_mm: base.safe_margin_mm,
             text_colors: Vec::new(),
+            text_blend_modes: Vec::new(),
             text_rotations: Vec::new(),
             text_flip_x: Vec::new(),
             text_flip_y: Vec::new(),
@@ -321,6 +330,11 @@ pub fn generate_with_options(
         .collect::<Result<Vec<BlendMode>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let text_blend_modes = js_opts.text_blend_modes.iter()
+        .map(|s| s.parse::<BlendMode>())
+        .collect::<Result<Vec<BlendMode>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
     let opts = Options {
         host_width_mm: js_opts.host_width_mm,
         host_height_mm: js_opts.host_height_mm,
@@ -339,6 +353,7 @@ pub fn generate_with_options(
         font_data: font_data.iter().map(|u| u.to_vec()).collect(),
         align,
         text_colors,
+        text_blend_modes,
         combine: js_opts.combine,
         debug: js_opts.debug,
         safe_margin_mm: js_opts.safe_margin_mm,

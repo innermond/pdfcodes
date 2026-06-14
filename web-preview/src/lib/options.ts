@@ -52,6 +52,7 @@ export interface WordStyle {
   xMm: number | null
   yMm: number
   color: string
+  blendMode: BlendMode
   rotationDeg: number
   flipX: boolean
   flipY: boolean
@@ -72,6 +73,7 @@ export function defaultWordStyle(index: number): WordStyle {
     xMm: null,
     yMm: index === 0 ? 10 : 3,
     color: '#000000',
+    blendMode: 'normal',
     rotationDeg: 0,
     flipX: false,
     flipY: false,
@@ -163,6 +165,7 @@ export function buildJsOptions(
     debug: page.debug,
     safeMarginMm,
     textColors: words.map((w) => w.color),
+    textBlendModes: words.map((w) => w.blendMode),
     textRotations: new Float32Array(words.map((w) => w.rotationDeg)),
     textFlipX: words.map((w) => w.flipX),
     textFlipY: words.map((w) => w.flipY),
