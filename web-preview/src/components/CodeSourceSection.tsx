@@ -1,5 +1,5 @@
 import { NumberField, Section, SelectField, TextField } from './fields'
-import { defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode } from '../lib/codeSource'
 
 const CHARSET_OPTIONS: { value: CodeCharset; label: string }[] = [
   { value: 'numeric', label: 'Numeric' },
@@ -76,6 +76,7 @@ export function CodeSourceSection({
   onGenerate,
   preview,
   downloadUrl,
+  progress,
 }: {
   rowCount: number
   onRowCountChange: (value: number) => void
@@ -86,7 +87,10 @@ export function CodeSourceSection({
   onGenerate: () => void
   preview: string
   downloadUrl: string | null
+  /** Rows written so far while streaming the CSV, or `null` when idle. */
+  progress: number | null
 }) {
+  const generating = progress !== null
   function updateColumn(index: number, next: CodeColumnConfig) {
     onColumnsChange(columns.map((col, i) => (i === index ? next : col)))
   }
@@ -142,11 +146,12 @@ export function CodeSourceSection({
         <button
           type="button"
           onClick={onGenerate}
-          className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+          disabled={generating}
+          className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
         >
-          Generează CSV
+          {generating ? `Se generează… ${progress.toLocaleString('ro-RO')} / ${rowCount.toLocaleString('ro-RO')}` : 'Generează CSV'}
         </button>
-        {downloadUrl && (
+        {downloadUrl && !generating && (
           <a href={downloadUrl} download="codes.csv" className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
             Descarcă codes.csv
           </a>
@@ -155,7 +160,9 @@ export function CodeSourceSection({
 
       {preview && (
         <div className="flex flex-col gap-1">
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Previzualizare</span>
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Previzualizare {rowCount > CSV_PREVIEW_ROW_COUNT ? `(primele ${CSV_PREVIEW_ROW_COUNT} din ${rowCount.toLocaleString('ro-RO')} rânduri)` : ''}
+          </span>
           <pre className="max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
             {preview}
           </pre>

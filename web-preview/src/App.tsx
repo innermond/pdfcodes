@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
@@ -10,7 +10,7 @@ import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
 import { ensureWasmInit, generate_shape_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
-import { defaultCodeColumn, generateCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
@@ -137,17 +137,33 @@ export default function App() {
   const [codeRowCount, setCodeRowCount] = useState(10)
   const [codeSeparator, setCodeSeparator] = useState(' ')
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
-  const [codeCsvPreview, setCodeCsvPreview] = useState('')
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
+  const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
 
-  function handleGenerateCsv() {
-    const csv = generateCodesCsv(codeRowCount, codeColumns, codeSeparator)
-    setCodeCsvPreview(csv.split('\n').slice(0, 10).join('\n'))
-    setCsvDataFile(new File([csv], 'codes.csv', { type: 'text/csv' }))
+  const codeCsvPreview = useMemo(
+    () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
+    [codeRowCount, codeColumns, codeSeparator],
+  )
+
+  async function handleGenerateCsv() {
+    setCodeCsvProgress(0)
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for await (const { text, rowsDone } of streamCodesCsv(codeRowCount, codeColumns, codeSeparator)) {
+          controller.enqueue(encoder.encode(text))
+          setCodeCsvProgress(rowsDone)
+        }
+        controller.close()
+      },
+    })
+    const blob = await new Response(stream).blob()
+    setCsvDataFile(new File([blob], 'codes.csv', { type: 'text/csv' }))
     setCodeCsvUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev)
-      return URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+      return URL.createObjectURL(blob)
     })
+    setCodeCsvProgress(null)
   }
 
   const [generateUnlocked, setGenerateUnlocked] = useState(
@@ -729,6 +745,7 @@ export default function App() {
             onGenerate={handleGenerateCsv}
             preview={codeCsvPreview}
             downloadUrl={codeCsvUrl}
+            progress={codeCsvProgress}
           />
 
           {!generateUnlocked && (

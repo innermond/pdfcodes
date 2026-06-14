@@ -60,3 +60,40 @@ export function generateCodesCsv(rowCount: number, columns: CodeColumnConfig[], 
   }
   return lines.join('\n')
 }
+
+// Number of rows rendered in the "Previzualizare" panel — cheap enough to
+// regenerate on every keystroke, independent of the (possibly huge) row count
+// used for the actual CSV download.
+export const CSV_PREVIEW_ROW_COUNT = 15
+
+export function generateCsvPreview(rowCount: number, columns: CodeColumnConfig[], separator: string): string {
+  return generateCodesCsv(Math.min(rowCount, CSV_PREVIEW_ROW_COUNT), columns, separator)
+}
+
+export interface CsvChunk {
+  text: string
+  rowsDone: number
+}
+
+// Generates the full CSV in batches, yielding control back to the event loop
+// between batches so the UI thread stays responsive for large row counts.
+export async function* streamCodesCsv(
+  rowCount: number,
+  columns: CodeColumnConfig[],
+  separator: string,
+  rowsPerChunk = 2000,
+): AsyncGenerator<CsvChunk> {
+  const sep = separator || ' '
+  let lines: string[] = []
+  for (let row = 0; row < rowCount; row++) {
+    lines.push(columns.map((column) => codeForRow(column, row)).join(sep))
+    if (lines.length >= rowsPerChunk) {
+      yield { text: lines.join('\n') + '\n', rowsDone: row + 1 }
+      lines = []
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+  }
+  if (lines.length > 0) {
+    yield { text: lines.join('\n') + '\n', rowsDone: rowCount }
+  }
+}

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { defaultCodeColumn, generateCodesCsv, type CodeColumnConfig } from './codeSource'
+import {
+  CSV_PREVIEW_ROW_COUNT,
+  defaultCodeColumn,
+  generateCodesCsv,
+  generateCsvPreview,
+  streamCodesCsv,
+  type CodeColumnConfig,
+} from './codeSource'
 
 function column(overrides: Partial<CodeColumnConfig>): CodeColumnConfig {
   return { ...defaultCodeColumn(), ...overrides }
@@ -55,5 +62,52 @@ describe('generateCodesCsv', () => {
 
   it('returns an empty string for zero rows', () => {
     expect(generateCodesCsv(0, [defaultCodeColumn()], ' ')).toBe('')
+  })
+})
+
+describe('generateCsvPreview', () => {
+  it('caps the preview at CSV_PREVIEW_ROW_COUNT rows even for large row counts', () => {
+    const preview = generateCsvPreview(100_000, [column({ mode: 'range', rangeStart: 1 })], ' ')
+    expect(preview.split('\n')).toHaveLength(CSV_PREVIEW_ROW_COUNT)
+    expect(preview.split('\n')).toEqual(Array.from({ length: CSV_PREVIEW_ROW_COUNT }, (_, i) => String(i + 1)))
+  })
+
+  it('does not cap below the requested row count', () => {
+    const preview = generateCsvPreview(5, [column({ mode: 'range', rangeStart: 1 })], ' ')
+    expect(preview.split('\n')).toEqual(['1', '2', '3', '4', '5'])
+  })
+})
+
+describe('streamCodesCsv', () => {
+  async function collect(generator: AsyncGenerator<{ text: string; rowsDone: number }>) {
+    const chunks: { text: string; rowsDone: number }[] = []
+    for await (const chunk of generator) chunks.push(chunk)
+    return chunks
+  }
+
+  it('yields the full CSV across multiple chunks with increasing rowsDone', async () => {
+    const columns = [column({ mode: 'range', rangeStart: 1 })]
+    const chunks = await collect(streamCodesCsv(10, columns, ' ', 3))
+
+    expect(chunks.map((c) => c.rowsDone)).toEqual([3, 6, 9, 10])
+
+    const lines = chunks
+      .map((c) => c.text)
+      .join('')
+      .split('\n')
+      .filter((line) => line.length > 0)
+    expect(lines).toEqual(Array.from({ length: 10 }, (_, i) => String(i + 1)))
+  })
+
+  it('yields nothing for zero rows', async () => {
+    const chunks = await collect(streamCodesCsv(0, [defaultCodeColumn()], ' ', 5))
+    expect(chunks).toEqual([])
+  })
+
+  it('matches generateCodesCsv output when chunks are concatenated', async () => {
+    const columns = [column({ mode: 'range', rangeStart: 1, padLength: 3 }), column({ mode: 'range', rangeStart: 100 })]
+    const chunks = await collect(streamCodesCsv(7, columns, ';', 4))
+    const streamed = chunks.map((c) => c.text).join('').trimEnd()
+    expect(streamed).toBe(generateCodesCsv(7, columns, ';'))
   })
 })
