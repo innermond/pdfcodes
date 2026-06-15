@@ -72,7 +72,7 @@ export function defaultWordStyle(index: number): WordStyle {
     align: 'center',
     xMm: null,
     yMm: index === 0 ? 10 : 3,
-    color: '#000000',
+    color: '0:0:0:1', // CMYK black
     blendMode: 'normal',
     rotationDeg: 0,
     flipX: false,

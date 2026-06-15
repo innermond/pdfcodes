@@ -1,4 +1,5 @@
 import type { ChangeEvent } from 'react'
+import { colorToCss, formatCmyk, parseCmyk, type Cmyk } from '../lib/cmyk'
 
 export function NumberField({
   label,
@@ -139,8 +140,19 @@ export function SelectField<T extends string>({
   )
 }
 
-// A color field with an optional "none" state, used for text backgrounds
-// where `null` means "no background" (the generator's "none" sentinel).
+const CMYK_CHANNELS: { key: keyof Cmyk; label: string }[] = [
+  { key: 'c', label: 'C' },
+  { key: 'm', label: 'M' },
+  { key: 'y', label: 'Y' },
+  { key: 'k', label: 'K' },
+]
+
+const DEFAULT_CMYK = '0:0:0:1' // black
+
+// A CMYK color field with an optional "none" state. Picking happens in CMYK so
+// colors map directly to print (the generator stores "c:m:y:k"); the swatch is
+// an RGB approximation for on-screen preview. `null` means "no color" (the
+// generator's "none" sentinel), used for text backgrounds and contour.
 export function ColorField({
   label,
   value,
@@ -154,29 +166,54 @@ export function ColorField({
   allowNone?: boolean
   noneLabel?: string
 }) {
+  const cmyk = parseCmyk(value ?? DEFAULT_CMYK)
+
+  function setChannel(key: keyof Cmyk, percent: number) {
+    const next = { ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 }
+    onChange(formatCmyk(next))
+  }
+
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
-      <span className="font-medium">{label}</span>
-      <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={value ?? '#000000'}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-          className="h-8 w-12 rounded border border-gray-300 dark:border-gray-600"
-        />
+    <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">{label}</span>
         {allowNone && (
           <label className="flex items-center gap-1 text-xs">
             <input
               type="checkbox"
               checked={value === null}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked ? null : '#000000')}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked ? null : DEFAULT_CMYK)}
               className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
             />
             {noneLabel}
           </label>
         )}
       </div>
-    </label>
+      {value !== null && (
+        <div className="flex items-center gap-3">
+          <span
+            className="h-10 w-10 shrink-0 rounded border border-gray-300 dark:border-gray-600"
+            style={{ backgroundColor: colorToCss(value) }}
+          />
+          <div className="flex flex-wrap gap-2">
+            {CMYK_CHANNELS.map(({ key, label: ch }) => (
+              <label key={key} className="flex items-center gap-1">
+                <span className="w-4 font-medium">{ch}</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={Math.round(cmyk[key] * 100)}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel(key, Number(e.target.value))}
+                  className="w-14 rounded border border-gray-300 px-1 py-0.5 text-right focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <span className="text-xs text-gray-500 dark:text-gray-400">%</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </fieldset>
   )
 }
 

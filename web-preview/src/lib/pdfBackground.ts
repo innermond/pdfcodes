@@ -27,7 +27,12 @@ export async function renderPdfBackground(file: File): Promise<PdfBackground> {
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas 2D context indisponibil')
 
-  await page.render({ canvasContext: ctx, viewport: renderViewport }).promise
+  // Render onto a transparent canvas instead of pdf.js's default white fill.
+  // A contour PDF is just a stroked outline (no fill), so a white background
+  // would make it look filled and break every blend mode except multiply. For
+  // a print background the card's own white SVG backdrop shows through, so the
+  // result is unchanged.
+  await page.render({ canvasContext: ctx, viewport: renderViewport, background: 'rgba(0,0,0,0)' }).promise
 
   return {
     imageUrl: canvas.toDataURL('image/png'),

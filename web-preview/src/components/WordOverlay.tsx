@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { MM, type WordStyle } from '../lib/options'
+import { colorToCss } from '../lib/cmyk'
 
 interface TextMetrics {
   width: number
@@ -202,7 +203,7 @@ export function WordOverlay({
           y={rectYSvg}
           width={rectWPt}
           height={rectHPt}
-          fill={word.background}
+          fill={colorToCss(word.background)}
           fillOpacity={word.backgroundAlpha}
           style={{ mixBlendMode: word.backgroundBlendMode }}
         />
@@ -213,7 +214,7 @@ export function WordOverlay({
         y={ySvg}
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
-        fill={word.color}
+        fill={colorToCss(word.color)}
         style={{ mixBlendMode: word.blendMode }}
       >
         {word.text}
@@ -225,7 +226,7 @@ export function WordOverlay({
           fontSize={word.fontSizePt}
           fontFamily={fontFamily}
           fill="none"
-          stroke={word.contourColor}
+          stroke={colorToCss(word.contourColor)}
           strokeWidth={word.contourWidthMm * MM}
           style={{ mixBlendMode: word.contourBlendMode }}
         >

@@ -389,10 +389,11 @@ pub fn generate_with_options(
 }
 
 // Generate a single-page PDF, sized `card_width_mm` x `card_height_mm`,
-// containing a stroked outline of `shape` ("circle", "rectangle", or
-// "rounded-rectangle"), inset by `inset_mm` from the card edges (and, for
-// "rounded-rectangle", with corners of radius `corner_radius_mm`). Intended
-// as a generated stand-in for a user-supplied contour background PDF.
+// containing a stroked outline of `shape` ("circle", "ellipse", "rectangle",
+// or "rounded-rectangle"), inset by `inset_mm` from the card edges (and, for
+// "rounded-rectangle", with corners of radius `corner_radius_mm`). The ellipse
+// fills the inset rectangle. Intended as a generated stand-in for a
+// user-supplied contour background PDF.
 #[wasm_bindgen]
 pub fn generate_shape_pdf(
     card_width_mm: f32,

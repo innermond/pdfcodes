@@ -8,6 +8,7 @@ use crate::geometry::MM;
 #[derive(Clone, Copy)]
 pub enum ShapeKind {
     Circle,
+    Ellipse,
     Rectangle,
     RoundedRectangle,
 }
@@ -18,41 +19,49 @@ impl std::str::FromStr for ShapeKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "circle" => Ok(ShapeKind::Circle),
+            "ellipse" => Ok(ShapeKind::Ellipse),
             "rectangle" => Ok(ShapeKind::Rectangle),
             "rounded-rectangle" => Ok(ShapeKind::RoundedRectangle),
-            other => Err(format!("unknown shape \"{other}\" (expected circle, rectangle, or rounded-rectangle)")),
+            other => Err(format!("unknown shape \"{other}\" (expected circle, ellipse, rectangle, or rounded-rectangle)")),
         }
     }
 }
 
-// Stroked circle centered at (cx, cy) with radius r, approximated with 4 cubic beziers.
-fn circle_stroke_ops(cx: f32, cy: f32, r: f32) -> Vec<Operation> {
-    let k = 0.5522847498 * r;
+// Stroked ellipse centered at (cx, cy) with radii rx/ry, approximated with 4
+// cubic beziers.
+fn ellipse_stroke_ops(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<Operation> {
+    let kx = 0.5522847498 * rx;
+    let ky = 0.5522847498 * ry;
     vec![
-        Operation::new("m", vec![Object::Real(cx + r), Object::Real(cy)]),
+        Operation::new("m", vec![Object::Real(cx + rx), Object::Real(cy)]),
         Operation::new("c", vec![
-            Object::Real(cx + r), Object::Real(cy + k),
-            Object::Real(cx + k), Object::Real(cy + r),
-            Object::Real(cx), Object::Real(cy + r),
+            Object::Real(cx + rx), Object::Real(cy + ky),
+            Object::Real(cx + kx), Object::Real(cy + ry),
+            Object::Real(cx), Object::Real(cy + ry),
         ]),
         Operation::new("c", vec![
-            Object::Real(cx - k), Object::Real(cy + r),
-            Object::Real(cx - r), Object::Real(cy + k),
-            Object::Real(cx - r), Object::Real(cy),
+            Object::Real(cx - kx), Object::Real(cy + ry),
+            Object::Real(cx - rx), Object::Real(cy + ky),
+            Object::Real(cx - rx), Object::Real(cy),
         ]),
         Operation::new("c", vec![
-            Object::Real(cx - r), Object::Real(cy - k),
-            Object::Real(cx - k), Object::Real(cy - r),
-            Object::Real(cx), Object::Real(cy - r),
+            Object::Real(cx - rx), Object::Real(cy - ky),
+            Object::Real(cx - kx), Object::Real(cy - ry),
+            Object::Real(cx), Object::Real(cy - ry),
         ]),
         Operation::new("c", vec![
-            Object::Real(cx + k), Object::Real(cy - r),
-            Object::Real(cx + r), Object::Real(cy - k),
-            Object::Real(cx + r), Object::Real(cy),
+            Object::Real(cx + kx), Object::Real(cy - ry),
+            Object::Real(cx + rx), Object::Real(cy - ky),
+            Object::Real(cx + rx), Object::Real(cy),
         ]),
         Operation::new("h", vec![]),
         Operation::new("S", vec![]),
     ]
+}
+
+// Stroked circle centered at (cx, cy) with radius r (an ellipse with equal radii).
+fn circle_stroke_ops(cx: f32, cy: f32, r: f32) -> Vec<Operation> {
+    ellipse_stroke_ops(cx, cy, r, r)
 }
 
 // Stroked rectangle at (x, y) sized w x h, with corners rounded to radius
@@ -154,6 +163,7 @@ pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32
     ];
     operations.extend(match shape {
         ShapeKind::Circle => circle_stroke_ops(card_w / 2.0, card_h / 2.0, w.min(h) / 2.0),
+        ShapeKind::Ellipse => ellipse_stroke_ops(card_w / 2.0, card_h / 2.0, w / 2.0, h / 2.0),
         ShapeKind::Rectangle => rounded_rect_stroke_ops(x, y, w, h, 0.0),
         ShapeKind::RoundedRectangle => rounded_rect_stroke_ops(x, y, w, h, corner_radius_mm * MM),
     });
@@ -238,6 +248,19 @@ mod tests {
         let k = ops.iter().find(|op| op.operator == "k").expect("k operator");
         assert_eq!(nums(&k.operands), vec![0.0, 0.0, 0.0, 1.0]);
         assert!(ops.iter().any(|op| op.operator == "f"));
+    }
+
+    #[test]
+    fn ellipse_fills_the_inset_rectangle_and_is_stroked_not_filled() {
+        // 200x100 card, no inset: rx=100, ry=50, centered at (100, 50).
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0).unwrap();
+        let ops = page_operations(&pdf);
+
+        let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
+        assert_eq!(nums(&m.operands), vec![200.0, 50.0]); // cx + rx, cy
+
+        assert!(ops.iter().any(|op| op.operator == "S"), "ellipse is stroked");
+        assert!(ops.iter().all(|op| op.operator != "f"), "ellipse is not filled");
     }
 
     #[test]

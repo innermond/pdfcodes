@@ -79,10 +79,11 @@ type FontSource = 'google' | 'custom'
 
 type BackgroundSource = 'upload' | 'simple'
 type ContourSource = 'upload' | 'shape'
-type ShapeKind = 'circle' | 'rectangle' | 'rounded-rectangle'
+type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle'
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Cerc' },
+  { value: 'ellipse', label: 'Elipsă' },
   { value: 'rectangle', label: 'Rectangle' },
   { value: 'rounded-rectangle', label: 'Rectangle cu colțuri rotunjite' },
 ]
@@ -839,7 +840,7 @@ export default function App() {
                   value={selected.xMm ?? NaN}
                   onChange={(v) => updateWord(selectedIndex, { xMm: Number.isNaN(v) ? null : v })}
                 />
-                <ColorField label="Culoare text" value={selected.color} onChange={(v) => updateWord(selectedIndex, { color: v ?? '#000000' })} />
+                <ColorField label="Culoare text" value={selected.color} onChange={(v) => updateWord(selectedIndex, { color: v ?? '0:0:0:1' })} />
                 <SelectField
                   label="Mod îmbinare text"
                   value={selected.blendMode}
