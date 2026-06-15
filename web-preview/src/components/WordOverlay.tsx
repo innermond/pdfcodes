@@ -98,6 +98,12 @@ export function WordOverlay({
   }
   const transform = transformParts.length > 0 ? transformParts.join(' ') : undefined
 
+  // Selection outline geometry (a 2pt margin around the glyph box).
+  const selX = xPt - 2
+  const selY = ySvg - metrics.ascent - 2
+  const selW = textWidthPt + 4
+  const selH = metrics.ascent + metrics.descent + 4
+
   const padPt = backgroundPaddingMm * MM
   const rectWPt = word.backgroundWidthMm !== null ? word.backgroundWidthMm * MM : textWidthPt + 2 * padPt
   const rectXPt = word.backgroundWidthMm !== null ? xPt + textWidthPt / 2 - rectWPt / 2 : xPt - padPt
@@ -148,17 +154,47 @@ export function WordOverlay({
       className="cursor-move"
     >
       {selected && (
-        <rect
-          x={xPt - 2}
-          y={ySvg - metrics.ascent - 2}
-          width={textWidthPt + 4}
-          height={metrics.ascent + metrics.descent + 4}
-          fill="none"
-          stroke="#3b82f6"
-          strokeWidth={0.5}
-          strokeDasharray="2 2"
-          vectorEffect="non-scaling-stroke"
-        />
+        // "Marching ants" selection: a static white dashed track with dark
+        // dashes filling its gaps, both animated in lockstep so the dashes
+        // appear to crawl. The two colors keep it visible on any background.
+        <g pointerEvents="none">
+          <rect
+            x={selX}
+            y={selY}
+            width={selW}
+            height={selH}
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth={0.75}
+            strokeDasharray="4 4"
+            vectorEffect="non-scaling-stroke"
+          >
+            <animate
+              attributeName="stroke-dashoffset"
+              values="0;8"
+              dur="0.5s"
+              repeatCount="indefinite"
+            />
+          </rect>
+          <rect
+            x={selX}
+            y={selY}
+            width={selW}
+            height={selH}
+            fill="none"
+            stroke="#1e3a8a"
+            strokeWidth={0.75}
+            strokeDasharray="4 4"
+            vectorEffect="non-scaling-stroke"
+          >
+            <animate
+              attributeName="stroke-dashoffset"
+              values="4;12"
+              dur="0.5s"
+              repeatCount="indefinite"
+            />
+          </rect>
+        </g>
       )}
       {word.background !== null && (
         <rect

@@ -4,7 +4,7 @@ use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
-use crate::generate::shapes::{build_shape_pdf, ShapeKind};
+use crate::generate::shapes::{build_shape_pdf, build_simple_background_pdf, ShapeKind};
 use crate::options::Options;
 
 // Result of a wasm `generate` call: the PDF bytes plus, for contour
@@ -405,5 +405,26 @@ pub fn generate_shape_pdf(
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
     build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+// Generate a single-page background PDF sized `card_width_mm` x
+// `card_height_mm`. `color` is an optional fill ("#RRGGBB" or "c:m:y:k", or
+// "none"/"-"/empty for a blank page). Intended as a generated stand-in for a
+// user-supplied print background PDF.
+#[wasm_bindgen]
+pub fn generate_simple_background_pdf(
+    card_width_mm: f32,
+    card_height_mm: f32,
+    color: String,
+) -> Result<Vec<u8>, JsError> {
+    let fill = if color.trim().is_empty() {
+        None
+    } else {
+        parse_color_or_none(&color).map_err(|e| JsError::new(&e))?
+    };
+    let card_w = card_width_mm * crate::geometry::MM;
+    let card_h = card_height_mm * crate::geometry::MM;
+    build_simple_background_pdf(card_w, card_h, fill)
         .map_err(|e| JsError::new(&e.to_string()))
 }

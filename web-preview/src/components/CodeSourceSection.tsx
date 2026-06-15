@@ -1,5 +1,5 @@
 import { NumberField, Section, SelectField, TextField } from './fields'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
 const CHARSET_OPTIONS: { value: CodeCharset; label: string }[] = [
   { value: 'numeric', label: 'Numeric' },
@@ -10,6 +10,11 @@ const CHARSET_OPTIONS: { value: CodeCharset; label: string }[] = [
 const MODE_OPTIONS: { value: CodeMode; label: string }[] = [
   { value: 'random', label: 'Generat aleator' },
   { value: 'range', label: 'Interval numeric' },
+]
+
+const PAD_MODE_OPTIONS: { value: CodePadMode; label: string }[] = [
+  { value: 'width', label: 'Până la o lățime' },
+  { value: 'fixed', label: 'Text fix adăugat' },
 ]
 
 function CodeColumnEditor({
@@ -58,8 +63,12 @@ function CodeColumnEditor({
           <>
             <NumberField label="Start interval" value={column.rangeStart} onChange={(v) => set('rangeStart', v)} step={1} />
             <NumberField label="Pas" value={column.rangeStep} onChange={(v) => set('rangeStep', v)} step={1} />
-            <NumberField label="Completare cu zerouri (cifre)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
           </>
+        )}
+        <SelectField label="Mod completare" value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
+        <TextField label="Caractere de completare" value={column.padChar} onChange={(v) => set('padChar', v)} />
+        {column.padMode === 'width' && (
+          <NumberField label="Lățime totală (caractere)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
         )}
       </div>
     </fieldset>
@@ -71,6 +80,7 @@ export function CodeSourceSection({
   onRowCountChange,
   separator,
   onSeparatorChange,
+  separatorWarning,
   columns,
   onColumnsChange,
   onGenerate,
@@ -82,6 +92,8 @@ export function CodeSourceSection({
   onRowCountChange: (value: number) => void
   separator: string
   onSeparatorChange: (value: string) => void
+  /** Shown when the code separator diverges from the word separator. */
+  separatorWarning?: string | null
   columns: CodeColumnConfig[]
   onColumnsChange: (columns: CodeColumnConfig[]) => void
   onGenerate: () => void
@@ -120,6 +132,10 @@ export function CodeSourceSection({
           placeholder=" "
         />
       </div>
+
+      {separatorWarning && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">{separatorWarning}</p>
+      )}
 
       <div className="flex flex-col gap-3">
         {columns.map((column, index) => (

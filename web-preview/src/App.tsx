@@ -8,7 +8,7 @@ import { generatePdf, type GenerateResult } from './lib/generate'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
-import { ensureWasmInit, generate_shape_pdf } from './lib/wasm'
+import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
 import { defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
@@ -27,6 +27,7 @@ interface Preset {
   version: 1
   sampleText: string
   splitChars: string
+  codeSeparator: string
   words: WordStyle[]
   safeMarginMm: number
   backgroundPaddingMm: number
@@ -34,6 +35,10 @@ interface Preset {
   contourBlendMode: BlendMode
   mode: Mode
   pageOptions: PageOptions
+  backgroundSource: BackgroundSource
+  simpleBgWidthMm: number
+  simpleBgHeightMm: number
+  simpleBgColor: string | null
   fontSources: FontSource[]
   googleFontSelections: (GoogleFontSelection | null)[]
   contourSource: ContourSource
@@ -64,8 +69,15 @@ function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   })
 }
 
+// Human-readable rendering of a separator for warning text. An empty string
+// means "space" (the default used by both splitWords and the CSV generator).
+function describeSeparator(sep: string): string {
+  return sep === '' || sep === ' ' ? 'spațiu' : `„${sep}”`
+}
+
 type FontSource = 'google' | 'custom'
 
+type BackgroundSource = 'upload' | 'simple'
 type ContourSource = 'upload' | 'shape'
 type ShapeKind = 'circle' | 'rectangle' | 'rounded-rectangle'
 
@@ -108,6 +120,10 @@ export default function App() {
 
   const [background, setBackground] = useState<PdfBackground | null>(null)
   const [backgroundError, setBackgroundError] = useState<string | null>(null)
+  const [backgroundSource, setBackgroundSource] = useState<BackgroundSource>('upload')
+  const [simpleBgWidthMm, setSimpleBgWidthMm] = useState(86)
+  const [simpleBgHeightMm, setSimpleBgHeightMm] = useState(54)
+  const [simpleBgColor, setSimpleBgColor] = useState<string | null>(null)
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
@@ -146,15 +162,51 @@ export default function App() {
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
   const [codeRowCount, setCodeRowCount] = useState(10)
-  const [codeSeparator, setCodeSeparator] = useState(' ')
+  const [codeSeparator, setCodeSeparator] = useState('')
+  // `codeSeparator` mirrors `splitChars` until the user edits it directly. Once
+  // touched it keeps its own value and becomes the source of truth: the CSV rows
+  // are joined with it, so generation must split them back with the same char.
+  const [codeSeparatorTouched, setCodeSeparatorTouched] = useState(false)
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!codeSeparatorTouched) setCodeSeparator(splitChars)
+  }, [splitChars, codeSeparatorTouched])
+
+  // The two separators normally agree (codeSeparator follows splitChars). They
+  // can only diverge after the user edits codeSeparator, in which case the
+  // preview word-split (splitChars) won't match the generated CSV.
+  const separatorsMismatch = codeSeparator !== splitChars
+  const separatorMismatchWarning = separatorsMismatch
+    ? `Separatorul codurilor (${describeSeparator(codeSeparator)}) diferă de separatorul cuvintelor (${describeSeparator(splitChars)}). La generare se folosește separatorul codurilor.`
+    : null
 
   const codeCsvPreview = useMemo(
     () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
     [codeRowCount, codeColumns, codeSeparator],
   )
+
+  // While editing the data source, mirror the first generated record into the
+  // card preview (split by codeSeparator, the separator the row is built with)
+  // so column/separator/padding tweaks are reflected live on the card.
+  useEffect(() => {
+    if (step !== 'date') return
+    const firstRow = codeCsvPreview.split('\n')[0] ?? ''
+    handleSampleTextChange(firstRow, codeSeparator)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, codeCsvPreview, codeSeparator])
+
+  // On the "Aspect & Cuvinte" step, default the selection to the first word so
+  // its editing controls are shown right away. Also recovers from a stale
+  // selection index that points past the current word list.
+  useEffect(() => {
+    if (step !== 'aspect' || words.length === 0) return
+    if (selectedIndex === null || selectedIndex >= words.length) {
+      setSelectedIndex(0)
+    }
+  }, [step, selectedIndex, words.length])
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
@@ -198,6 +250,7 @@ export default function App() {
       version: 1,
       sampleText,
       splitChars,
+      codeSeparator,
       words,
       safeMarginMm,
       backgroundPaddingMm,
@@ -205,6 +258,10 @@ export default function App() {
       contourBlendMode,
       mode,
       pageOptions,
+      backgroundSource,
+      simpleBgWidthMm,
+      simpleBgHeightMm,
+      simpleBgColor,
       fontSources,
       googleFontSelections,
       contourSource,
@@ -262,7 +319,14 @@ export default function App() {
           throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
         }
         setSampleText(preset.sampleText ?? '')
-        setSplitChars(preset.splitChars ?? '')
+        const loadedSplitChars = preset.splitChars ?? ''
+        setSplitChars(loadedSplitChars)
+        // Older presets predate codeSeparator; fall back to splitChars (no
+        // divergence). A stored value that differs counts as user-edited so the
+        // sync effect leaves it alone and the mismatch warning shows.
+        const loadedCodeSeparator = preset.codeSeparator ?? loadedSplitChars
+        setCodeSeparator(loadedCodeSeparator)
+        setCodeSeparatorTouched(loadedCodeSeparator !== loadedSplitChars)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         setFonts(resizeFonts([], length))
@@ -277,13 +341,20 @@ export default function App() {
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
+        const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
+        setBackgroundSource(loadedBackgroundSource)
+        if (typeof preset.simpleBgWidthMm === 'number') setSimpleBgWidthMm(preset.simpleBgWidthMm)
+        if (typeof preset.simpleBgHeightMm === 'number') setSimpleBgHeightMm(preset.simpleBgHeightMm)
+        if (preset.simpleBgColor === null || typeof preset.simpleBgColor === 'string') setSimpleBgColor(preset.simpleBgColor)
         if (preset.contourSource === 'upload' || preset.contourSource === 'shape') setContourSource(preset.contourSource)
         if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setShapeKind(preset.shapeKind)
         if (typeof preset.shapeInsetMm === 'number') setShapeInsetMm(preset.shapeInsetMm)
         if (typeof preset.shapeCornerRadiusMm === 'number') setShapeCornerRadiusMm(preset.shapeCornerRadiusMm)
 
         // Restore the print/contour background PDFs bundled in the archive, if any.
-        if (bgFile) {
+        // A simple background is regenerated from its saved dimensions/color by
+        // the effect, so the bundled file is only used for the upload source.
+        if (bgFile && loadedBackgroundSource === 'upload') {
           setBackgroundFile(bgFile)
           renderPdfBackground(bgFile)
             .then(setBackground)
@@ -349,6 +420,63 @@ export default function App() {
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
+
+  function handleBackgroundSourceChange(source: BackgroundSource) {
+    setBackgroundSource(source)
+    setBackgroundError(null)
+    // Switching to upload clears any generated background so the user starts
+    // from a fresh file picker; switching to simple lets the effect below
+    // generate the background from the entered dimensions/color.
+    if (source === 'upload') {
+      setBackground(null)
+      setBackgroundFile(null)
+    }
+  }
+
+  // Generate a simple solid-color (or blank) background PDF whenever the simple
+  // background source is active and its dimensions/color change, feeding it
+  // through the same `backgroundFile`/`background` pipeline as an uploaded PDF.
+  useEffect(() => {
+    if (backgroundSource !== 'simple') return
+    if (!(simpleBgWidthMm > 0) || !(simpleBgHeightMm > 0)) {
+      setBackground(null)
+      setBackgroundFile(null)
+      setBackgroundError('Lățimea și înălțimea fundalului trebuie să fie numere pozitive.')
+      return
+    }
+    let cancelled = false
+    ensureWasmInit()
+      .then(async () => {
+        const bytes = generate_simple_background_pdf(simpleBgWidthMm, simpleBgHeightMm, simpleBgColor ?? '')
+        const file = new File([bytes.buffer as ArrayBuffer], 'fundal-simplu.pdf', { type: 'application/pdf' })
+        if (cancelled) return null
+        setBackgroundFile(file)
+        setBackgroundError(null)
+        await ensureDefaultFont()
+        return renderPdfBackground(file)
+      })
+      .then((bg) => {
+        if (cancelled || !bg) return
+        setBackground(bg)
+        // Populate a sample row for the preview, but only when empty so tweaking
+        // the dimensions doesn't clobber text the user already entered.
+        if (!sampleText) {
+          const maxWidthPt = bg.widthPt * 0.9
+          const separator = splitChars === '' ? ' ' : splitChars[0]
+          const words = [defaultWordStyle(0), defaultWordStyle(1)]
+            .map((style) => randomWordFittingWidth(maxWidthPt, style.fontSizePt))
+            .join(separator)
+          handleSampleTextChange(words)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setBackgroundError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
 
   function handleContourBackgroundFileChange(file: File | null) {
     setContourBackground(null)
@@ -430,9 +558,9 @@ export default function App() {
     setFonts((prev) => prev.map((f, i) => (i === index ? font : f)))
   }
 
-  function handleSampleTextChange(value: string) {
+  function handleSampleTextChange(value: string, separator: string = splitChars) {
     setSampleText(value)
-    const texts = splitWords(value, splitChars)
+    const texts = splitWords(value, separator)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
     setFontSources((prev) => resizeFontSources(prev, texts.length))
@@ -446,6 +574,11 @@ export default function App() {
     setFonts((prev) => resizeFonts(prev, texts.length))
     setFontSources((prev) => resizeFontSources(prev, texts.length))
     setGoogleFontSelections((prev) => resizeGoogleFontSelections(prev, texts.length))
+  }
+
+  function handleCodeSeparatorChange(value: string) {
+    setCodeSeparator(value)
+    setCodeSeparatorTouched(true)
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -488,7 +621,7 @@ export default function App() {
             backgroundFile: backgroundFile!,
             contourBackgroundFile,
             fontFiles: fontResult.files,
-            options: buildJsOptions(words, splitChars, safeMarginMm, backgroundPaddingMm, pageOptions, false),
+            options: buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false),
           })
         : null
 
@@ -498,7 +631,7 @@ export default function App() {
             backgroundFile: contourBackgroundFile!,
             contourBackgroundFile: null,
             fontFiles: fontResult.files,
-            options: buildJsOptions(words, splitChars, safeMarginMm, backgroundPaddingMm, pageOptions, true),
+            options: buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true),
           })
         : null
 
@@ -555,11 +688,36 @@ export default function App() {
         <div className="flex flex-col gap-4">
           {step === 'fundal' && (
           <Section title="Fundal">
-            <FileField
-              label="PDF de fundal (un card)"
-              accept="application/pdf"
-              onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
+            <RadioGroupField<BackgroundSource>
+              label="Sursă fundal print"
+              value={backgroundSource}
+              onChange={handleBackgroundSourceChange}
+              options={[
+                { value: 'upload', label: 'Încarcă PDF' },
+                { value: 'simple', label: 'Fundal simplu' },
+              ]}
             />
+            {backgroundSource === 'upload' ? (
+              <FileField
+                label="PDF de fundal (un card)"
+                accept="application/pdf"
+                onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
+              />
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label="Lățime (mm)" value={simpleBgWidthMm} onChange={setSimpleBgWidthMm} />
+                  <NumberField label="Înălțime (mm)" value={simpleBgHeightMm} onChange={setSimpleBgHeightMm} />
+                </div>
+                <ColorField
+                  label="Culoare fundal (opțional)"
+                  value={simpleBgColor}
+                  onChange={setSimpleBgColor}
+                  allowNone
+                  noneLabel="fără culoare"
+                />
+              </>
+            )}
             {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
             {background && (
               <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -633,6 +791,9 @@ export default function App() {
               onChange={handleSplitCharsChange}
               placeholder=" "
             />
+            {separatorMismatchWarning && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">{separatorMismatchWarning}</p>
+            )}
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
@@ -771,7 +932,8 @@ export default function App() {
             rowCount={codeRowCount}
             onRowCountChange={setCodeRowCount}
             separator={codeSeparator}
-            onSeparatorChange={setCodeSeparator}
+            onSeparatorChange={handleCodeSeparatorChange}
+            separatorWarning={separatorMismatchWarning}
             columns={codeColumns}
             onColumnsChange={setCodeColumns}
             onGenerate={handleGenerateCsv}
