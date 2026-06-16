@@ -1,5 +1,5 @@
-import type { ChangeEvent } from 'react'
-import { colorToCss, formatCmyk, parseCmyk, type Cmyk } from '../lib/cmyk'
+import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareToCmyk, hsvToRgb, type Cmyk } from '../lib/cmyk'
 
 export function NumberField({
   label,
@@ -149,6 +149,35 @@ const CMYK_CHANNELS: { key: keyof Cmyk; label: string }[] = [
 
 const DEFAULT_CMYK = '0:0:0:1' // black
 
+// The picker's color square: hue across X, saturation top->bottom, painted at
+// full brightness. It's independent of the current color, so build the PNG once
+// (lazily, on first open) and share the data URL across every ColorField. The
+// click math in the component uses the same axis mapping via `squareToCmyk`.
+let cmySquarePng: string | null = null
+function cmySquareDataUrl(): string {
+  if (cmySquarePng !== null) return cmySquarePng
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return ''
+  const img = ctx.createImageData(size, size)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const { r, g, b } = hsvToRgb((x / (size - 1)) * 360, 1 - y / (size - 1), 1)
+      const i = (y * size + x) * 4
+      img.data[i] = r
+      img.data[i + 1] = g
+      img.data[i + 2] = b
+      img.data[i + 3] = 255
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+  cmySquarePng = canvas.toDataURL('image/png')
+  return cmySquarePng
+}
+
 // A CMYK color field with an optional "none" state. Picking happens in CMYK so
 // colors map directly to print (the generator stores "c:m:y:k"); the swatch is
 // an RGB approximation for on-screen preview. `null` means "no color" (the
@@ -167,11 +196,51 @@ export function ColorField({
   noneLabel?: string
 }) {
   const cmyk = parseCmyk(value ?? DEFAULT_CMYK)
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   function setChannel(key: keyof Cmyk, percent: number) {
     const next = { ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 }
     onChange(formatCmyk(next))
   }
+
+  // Close the popover when clicking outside it or pressing Escape.
+  useEffect(() => {
+    if (!open) return
+    function handlePointer(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointer)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handlePointer)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  // Pick a color from the square: map the pointer position to hue/saturation and
+  // keep the current K. Supports click and drag.
+  function pickFromSquare(e: ReactPointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const xFrac = (e.clientX - rect.left) / rect.width
+    const yFrac = (e.clientY - rect.top) / rect.height
+    onChange(squareToCmyk(xFrac, yFrac, cmyk.k))
+  }
+
+  function handleSquarePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pickFromSquare(e)
+  }
+
+  function handleSquarePointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.buttons !== 1) return
+    pickFromSquare(e)
+  }
+
+  const marker = value !== null ? cmykToSquarePos(value) : null
 
   return (
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -191,10 +260,44 @@ export function ColorField({
       </div>
       {value !== null && (
         <div className="flex items-center gap-3">
-          <span
-            className="h-10 w-10 shrink-0 rounded border border-gray-300 dark:border-gray-600"
-            style={{ backgroundColor: colorToCss(value) }}
-          />
+          <div ref={containerRef} className="relative shrink-0">
+            <button
+              type="button"
+              aria-label="Alege culoarea"
+              onClick={() => setOpen((v) => !v)}
+              className="h-10 w-10 rounded border border-gray-300 dark:border-gray-600"
+              style={{ backgroundColor: colorToCss(value) }}
+            />
+            {open && (
+              <div className="absolute z-10 mt-1 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
+                <div
+                  className="relative h-40 w-40 cursor-crosshair rounded"
+                  style={{ backgroundImage: `url(${cmySquareDataUrl()})`, backgroundSize: '100% 100%' }}
+                  onPointerDown={handleSquarePointerDown}
+                  onPointerMove={handleSquarePointerMove}
+                >
+                  {marker && (
+                    <span
+                      className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow"
+                      style={{ left: `${marker.xFrac * 100}%`, top: `${marker.yFrac * 100}%` }}
+                    />
+                  )}
+                </div>
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="w-4 font-medium">K</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(cmyk.k * 100)}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel('k', Number(e.target.value))}
+                    className="flex-1"
+                  />
+                  <span className="w-8 text-right text-gray-500 dark:text-gray-400">{Math.round(cmyk.k * 100)}%</span>
+                </label>
+              </div>
+            )}
+          </div>
           <div className="flex flex-wrap gap-2">
             {CMYK_CHANNELS.map(({ key, label: ch }) => (
               <label key={key} className="flex items-center gap-1">

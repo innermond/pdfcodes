@@ -7,12 +7,13 @@ import { ResultPanel } from './components/ResultPanel'
 import { generatePdf, type GenerateResult } from './lib/generate'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
-import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
+import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
 import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
-import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
+import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
+import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
 
@@ -56,8 +57,8 @@ const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
 
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
-  { id: 'aspect', label: 'Aspect & Cuvinte' },
   { id: 'date', label: 'Sursa de date' },
+  { id: 'aspect', label: 'Aspect & Cuvinte' },
   { id: 'generare', label: 'Generare' },
 ] as const
 type WizardStepId = (typeof WIZARD_STEPS)[number]['id']
@@ -149,6 +150,10 @@ export default function App() {
   const [safeMarginMm, setSafeMarginMm] = useState(0)
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
+  // While true, code/text colors auto-track a contrasting color over a simple
+  // colored background so they stay visible. Turns off once the user picks a
+  // text color (or loads a preset), after which their choices are kept.
+  const [autoTextColor, setAutoTextColor] = useState(true)
 
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
@@ -330,6 +335,9 @@ export default function App() {
         setCodeSeparatorTouched(loadedCodeSeparator !== loadedSplitChars)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
+        // The preset carries its own text colors; don't override them with the
+        // background-contrast default.
+        setAutoTextColor(false)
         setFonts(resizeFonts([], length))
         const sources = resizeFontSources(preset.fontSources ?? [], length)
         const selections = resizeGoogleFontSelections(preset.googleFontSelections ?? [], length)
@@ -413,11 +421,8 @@ export default function App() {
         setBackground(bg)
         await ensureDefaultFont()
         const maxWidthPt = bg.widthPt * 0.9
-        const separator = splitChars === '' ? ' ' : splitChars[0]
-        const words = [defaultWordStyle(0), defaultWordStyle(1)]
-          .map((style) => randomWordFittingWidth(maxWidthPt, style.fontSizePt))
-          .join(separator)
-        handleSampleTextChange(words)
+        const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+        handleSampleTextChange(word)
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -454,7 +459,9 @@ export default function App() {
         setBackgroundFile(file)
         setBackgroundError(null)
         await ensureDefaultFont()
-        return renderPdfBackground(file)
+        // Preview the solid color via the app's own CMYK->RGB conversion so it
+        // matches the picker swatch; the print PDF (`file`) stays CMYK.
+        return solidColorBackground(simpleBgColor, simpleBgWidthMm * MM, simpleBgHeightMm * MM)
       })
       .then((bg) => {
         if (cancelled || !bg) return
@@ -463,11 +470,8 @@ export default function App() {
         // the dimensions doesn't clobber text the user already entered.
         if (!sampleText) {
           const maxWidthPt = bg.widthPt * 0.9
-          const separator = splitChars === '' ? ' ' : splitChars[0]
-          const words = [defaultWordStyle(0), defaultWordStyle(1)]
-            .map((style) => randomWordFittingWidth(maxWidthPt, style.fontSizePt))
-            .join(separator)
-          handleSampleTextChange(words)
+          const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+          handleSampleTextChange(word)
         }
       })
       .catch((err) => {
@@ -478,6 +482,17 @@ export default function App() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
+
+  // Default the code/text color to one that contrasts the simple background so
+  // codes are visible. Stays in effect (also recoloring newly added words) only
+  // until the user picks a text color, then leaves their choices untouched.
+  useEffect(() => {
+    if (backgroundSource !== 'simple' || !autoTextColor) return
+    const target = contrastColor(simpleBgColor)
+    // Syncing a derived default into word state; the equality guard prevents re-renders.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWords((prev) => (prev.every((w) => w.color === target) ? prev : prev.map((w) => ({ ...w, color: target }))))
+  }, [backgroundSource, autoTextColor, simpleBgColor, words.length])
 
   function handleContourBackgroundFileChange(file: File | null) {
     setContourBackground(null)
@@ -825,7 +840,7 @@ export default function App() {
               <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <SelectField<Align>
-                  label="Aliniere"
+                  label="Aliniere orizontală"
                   value={selected.align}
                   onChange={(v) => updateWord(selectedIndex, { align: v, xMm: null })}
                   options={[
@@ -834,13 +849,44 @@ export default function App() {
                     { value: 'right', label: 'dreapta' },
                   ]}
                 />
-                <NumberField label="Y (mm)" value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v })} />
+                <SelectField<VAlign>
+                  label="Aliniere verticală"
+                  value={selected.valign}
+                  onChange={(v) =>
+                    updateWord(selectedIndex, {
+                      valign: v,
+                      yMm: background
+                        ? verticalAlignYMm(
+                            v,
+                            selected,
+                            fontFamilyForWord(fonts, selectedIndex),
+                            background.heightPt / MM,
+                            safeMarginMm,
+                          )
+                        : selected.yMm,
+                    })
+                  }
+                  options={[
+                    { value: 'top', label: 'sus' },
+                    { value: 'middle', label: 'mijloc' },
+                    { value: 'bottom', label: 'jos' },
+                    { value: 'custom', label: 'personalizat' },
+                  ]}
+                />
+                <NumberField label="Y (mm)" value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v, valign: 'custom' })} />
                 <NumberField
                   label="X (mm, gol = automat după aliniere)"
                   value={selected.xMm ?? NaN}
                   onChange={(v) => updateWord(selectedIndex, { xMm: Number.isNaN(v) ? null : v })}
                 />
-                <ColorField label="Culoare text" value={selected.color} onChange={(v) => updateWord(selectedIndex, { color: v ?? '0:0:0:1' })} />
+                <ColorField
+                  label="Culoare text"
+                  value={selected.color}
+                  onChange={(v) => {
+                    setAutoTextColor(false)
+                    updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
+                  }}
+                />
                 <SelectField
                   label="Mod îmbinare text"
                   value={selected.blendMode}

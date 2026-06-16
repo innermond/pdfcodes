@@ -72,3 +72,74 @@ export function colorToCss(value: string): string {
   const hex = (n: number) => n.toString(16).padStart(2, '0')
   return `#${hex(r)}${hex(g)}${hex(b)}`
 }
+
+// Pick a legible default text color (CMYK black or white) for a given
+// background color, so codes stay visible on a chosen simple background. A
+// `null` background means "no fill" (white card), so default to black.
+export function contrastColor(background: string | null): string {
+  if (background === null) return '0:0:0:1' // black on white
+  const { r, g, b } = cmykToRgb(parseCmyk(background))
+  // Perceived luminance (0-255): light background -> black text, dark -> white.
+  const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+  return luminance > 140 ? '0:0:0:1' : '0:0:0:0'
+}
+
+// Standard HSV -> RGB (hue in 0-360, sat/val in 0-1; returns 0-255 components).
+// Used to paint the picker's color square and to resolve a clicked position to
+// a color.
+export function hsvToRgb(h: number, s: number, v: number): { r: number; g: number; b: number } {
+  const hh = ((h % 360) + 360) % 360 / 60
+  const i = Math.floor(hh)
+  const f = hh - i
+  const p = v * (1 - s)
+  const q = v * (1 - s * f)
+  const t = v * (1 - s * (1 - f))
+  const [r, g, b] =
+    i % 6 === 0 ? [v, t, p]
+    : i % 6 === 1 ? [q, v, p]
+    : i % 6 === 2 ? [p, v, t]
+    : i % 6 === 3 ? [p, q, v]
+    : i % 6 === 4 ? [t, p, v]
+    : [v, p, q]
+  return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) }
+}
+
+// Inverse of `hsvToRgb` (components 0-255; hue 0-360, sat/val 0-1). Used to
+// place the picker marker for the current color.
+export function rgbToHsv({ r, g, b }: { r: number; g: number; b: number }): { h: number; s: number; v: number } {
+  const rn = r / 255
+  const gn = g / 255
+  const bn = b / 255
+  const max = Math.max(rn, gn, bn)
+  const min = Math.min(rn, gn, bn)
+  const d = max - min
+  let h = 0
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d) % 6
+    else if (max === gn) h = (bn - rn) / d + 2
+    else h = (rn - gn) / d + 4
+    h *= 60
+    if (h < 0) h += 360
+  }
+  const s = max === 0 ? 0 : d / max
+  return { h, s, v: max }
+}
+
+// Map a position in the picker's color square (`xFrac`/`yFrac` each 0-1: x is
+// hue, y is saturation top->bottom) plus a separate K value (0-1) to a stored
+// "c:m:y:k" string. The square is painted at full brightness so the picked RGB
+// yields C/M/Y with no black of its own; the K slider supplies black.
+export function squareToCmyk(xFrac: number, yFrac: number, k: number): string {
+  const clamp = (n: number) => Math.min(1, Math.max(0, n))
+  const { r, g, b } = hsvToRgb(clamp(xFrac) * 360, 1 - clamp(yFrac), 1)
+  const hex = (n: number) => n.toString(16).padStart(2, '0')
+  const { c, m, y } = rgbHexToCmyk(`#${hex(r)}${hex(g)}${hex(b)}`)
+  return formatCmyk({ c, m, y, k: clamp(k) })
+}
+
+// Where a stored color sits in the picker square (inverse axis mapping of
+// `squareToCmyk`), used to position the marker.
+export function cmykToSquarePos(value: string): { xFrac: number; yFrac: number } {
+  const { h, s } = rgbToHsv(cmykToRgb(parseCmyk(value)))
+  return { xFrac: h / 360, yFrac: 1 - s }
+}

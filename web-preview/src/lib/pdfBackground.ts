@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { colorToCss } from './cmyk'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
@@ -7,6 +8,29 @@ export interface PdfBackground {
   imageUrl: string
   widthPt: number
   heightPt: number
+}
+
+// Build the preview for a simple solid-color background directly from the
+// stored "c:m:y:k" color, using the app's own CMYK->RGB conversion (the same
+// one the picker swatch and word text use). The actual print PDF stays CMYK;
+// rendering *it* through pdf.js would show DeviceCMYK black as a washed
+// dark-slate, mismatching the pure black the user picked. `null` means no
+// color, leaving a transparent card so the white SVG backdrop shows through.
+export function solidColorBackground(
+  color: string | null,
+  widthPt: number,
+  heightPt: number,
+): PdfBackground {
+  const canvas = document.createElement('canvas')
+  // A 1x1 swatch is enough; CardCanvas stretches it with preserveAspectRatio="none".
+  canvas.width = 1
+  canvas.height = 1
+  const ctx = canvas.getContext('2d')
+  if (ctx && color !== null) {
+    ctx.fillStyle = colorToCss(color)
+    ctx.fillRect(0, 0, 1, 1)
+  }
+  return { imageUrl: canvas.toDataURL('image/png'), widthPt, heightPt }
 }
 
 // Render the first page of a background PDF to an image, plus its page size

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { MM, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
 
@@ -57,6 +57,61 @@ export function WordOverlay({
     setMetrics({ width: bbox.width, ascent, descent })
   }, [word.text, word.fontSizePt, fontFamily])
 
+  const textWidthPt = metrics?.width ?? 0
+  const safeMarginPt = safeMarginMm * MM
+
+  const xPt =
+    word.xMm !== null
+      ? word.xMm * MM
+      : word.align === 'left'
+        ? safeMarginPt
+        : word.align === 'right'
+          ? cardWidthPt - textWidthPt - safeMarginPt
+          : (cardWidthPt - textWidthPt) / 2
+
+  const yPt = word.yMm * MM
+  const ySvg = cardHeightPt - yPt
+
+  // Arrow keys nudge the selected word. The step is 1/100 of the card
+  // dimension along the axis of movement (width for left/right, height for
+  // up/down), matching how the printed card is proportioned. The handler
+  // closes over the current resolved position, so it re-subscribes when the
+  // word moves.
+  const startXMm = word.xMm ?? xPt / MM
+  const startYMm = word.yMm
+  const stepXMm = cardWidthPt / MM / 100
+  const stepYMm = cardHeightPt / MM / 100
+  useEffect(() => {
+    if (!selected) return
+    function handleKey(e: KeyboardEvent) {
+      let xMm = startXMm
+      let yMm = startYMm
+      switch (e.key) {
+        case 'ArrowLeft':
+          xMm -= stepXMm
+          break
+        case 'ArrowRight':
+          xMm += stepXMm
+          break
+        case 'ArrowUp':
+          yMm += stepYMm
+          break
+        case 'ArrowDown':
+          yMm -= stepYMm
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+      const next: Partial<WordStyle> = { xMm, yMm }
+      // A vertical nudge overrides any snapped vertical alignment.
+      if (yMm !== startYMm) next.valign = 'custom'
+      onChange(next)
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [selected, startXMm, startYMm, stepXMm, stepYMm, onChange])
+
   if (!metrics) {
     return (
       <text
@@ -71,21 +126,6 @@ export function WordOverlay({
       </text>
     )
   }
-
-  const textWidthPt = metrics.width
-  const safeMarginPt = safeMarginMm * MM
-
-  const xPt =
-    word.xMm !== null
-      ? word.xMm * MM
-      : word.align === 'left'
-        ? safeMarginPt
-        : word.align === 'right'
-          ? cardWidthPt - textWidthPt - safeMarginPt
-          : (cardWidthPt - textWidthPt) / 2
-
-  const yPt = word.yMm * MM
-  const ySvg = cardHeightPt - yPt
 
   const cxSvg = xPt + textWidthPt / 2
   const cySvg = ySvg - (metrics.ascent + metrics.descent) / 2
@@ -130,12 +170,24 @@ export function WordOverlay({
     target.setPointerCapture(e.pointerId)
 
     function handleMove(ev: PointerEvent) {
-      const dxUser = (ev.clientX - startClientX) * scaleX
-      const dyUser = (ev.clientY - startClientY) * scaleY
-      onChange({
+      let dxUser = (ev.clientX - startClientX) * scaleX
+      let dyUser = (ev.clientY - startClientY) * scaleY
+      // Holding Shift locks the drag to a straight line along the dominant
+      // axis (horizontal or vertical), zeroing the smaller component.
+      if (ev.shiftKey) {
+        if (Math.abs(dxUser) >= Math.abs(dyUser)) {
+          dyUser = 0
+        } else {
+          dxUser = 0
+        }
+      }
+      const next: Partial<WordStyle> = {
         xMm: startXMm + dxUser / MM,
         yMm: startYMm - dyUser / MM,
-      })
+      }
+      // Moving the word vertically overrides any snapped vertical alignment.
+      if (dyUser !== 0) next.valign = 'custom'
+      onChange(next)
     }
 
     function handleUp(ev: PointerEvent) {
