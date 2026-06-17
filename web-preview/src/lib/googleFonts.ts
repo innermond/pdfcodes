@@ -45,6 +45,20 @@ export async function stylesForFamily(family: string): Promise<GoogleFontStyle[]
   return GOOGLE_FONT_STYLES.map((s) => s.value).filter((style) => entry.variants[style])
 }
 
+// Fixed sample shown for each font in the picker preview.
+export const PREVIEW_SAMPLE = 'Qarg09!'
+
+// Build a Google Fonts CSS2 stylesheet URL that loads `families` (regular/400)
+// subsetted to just the glyphs in `text`, so only a few KB download per font.
+// Returns '' for an empty list. The fonts register under their real family
+// names, so the picker can render the sample via `font-family: "<family>"`.
+export function googleFontsCss2Url(families: string[], text: string = PREVIEW_SAMPLE): string {
+  const unique = Array.from(new Set(families.filter((f) => f.trim() !== '')))
+  if (unique.length === 0) return ''
+  const params = unique.map((f) => `family=${encodeURIComponent(f)}`).join('&')
+  return `https://fonts.googleapis.com/css2?${params}&text=${encodeURIComponent(text)}&display=swap`
+}
+
 const fontCache = new Map<string, Promise<LoadedFont>>()
 
 // Fetch the .ttf bytes for `family`/`style` from fonts.gstatic.com (CORS-

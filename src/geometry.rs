@@ -143,3 +143,25 @@ impl CardLayout {
         ops
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cards_per_page_grid() {
+        // 86x54mm cards on a 267x350mm host, no gutters, 10mm registration circles.
+        // available 247x330mm -> floor(247/86)=2 cols, floor(330/54)=6 rows.
+        let opts = Options {
+            host_width_mm: 267.0,
+            host_height_mm: 350.0,
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            circle_diameter_mm: 10.0,
+            ..Options::default()
+        };
+        let layout = CardLayout::compute(86.0 * MM, 54.0 * MM, &opts);
+        assert_eq!(layout.cols, 2);
+        assert_eq!(layout.cards_per_page, 12);
+    }
+}

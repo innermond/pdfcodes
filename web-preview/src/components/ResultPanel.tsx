@@ -37,6 +37,33 @@ function usePdfUrl(result: GenerateResult | null): string | null {
   return result ? pdfUrl : null
 }
 
+// A download-only result (no inline preview), used for artifacts that aren't a
+// single previewable PDF — e.g. a ZIP of batched print PDFs.
+export function FileDownload({ title, blob, name, note }: { title: string; blob: Blob; name: string; note?: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(blob)
+    // Object URL is a paired create/revoke browser resource, so it can't be
+    // derived during render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [blob])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      {note && <p className="text-sm text-gray-500 dark:text-gray-400">{note}</p>}
+      {url && (
+        <a href={url} download={name} className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
+          Descarcă {name}
+        </a>
+      )}
+    </div>
+  )
+}
+
 export function ResultPanel({ title, result, downloadName }: { title: string; result: GenerateResult; downloadName: string }) {
   const pdfUrl = usePdfUrl(result)
 

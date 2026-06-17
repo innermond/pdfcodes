@@ -153,10 +153,14 @@ export function CodeSourceSection({
       <button
         type="button"
         onClick={addColumn}
-        className="self-start rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
       >
         Adaugă cod pe rând
       </button>
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        Adaugă încă un cod pe fiecare rând. Un rând poate conține mai multe coduri (separate prin separatorul de mai
+        sus) — folosește această opțiune când un card trebuie să afișeze mai multe coduri.
+      </p>
 
       <div className="flex items-center gap-4">
         <button

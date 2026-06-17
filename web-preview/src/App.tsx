@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
-import { ResultPanel } from './components/ResultPanel'
-import { generatePdf, type GenerateResult } from './lib/generate'
+import { FileDownload, ResultPanel } from './components/ResultPanel'
+import { type GenerateResult } from './lib/generate'
+import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
@@ -61,6 +62,10 @@ const WIZARD_STEPS = [
   { id: 'aspect', label: 'Aspect & Cuvinte' },
   { id: 'generare', label: 'Generare' },
 ] as const
+
+// Pages per generation batch. Each batch is built as its own PDF and freed
+// before the next, bounding peak memory to roughly one batch.
+const PAGES_PER_BATCH = 50
 type WizardStepId = (typeof WIZARD_STEPS)[number]['id']
 
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
@@ -130,7 +135,7 @@ export default function App() {
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
-  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('multiply')
+  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
   const [contourSource, setContourSource] = useState<ContourSource>('upload')
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
   const [shapeInsetMm, setShapeInsetMm] = useState(2)
@@ -159,8 +164,10 @@ export default function App() {
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
-  const [printResult, setPrintResult] = useState<GenerateResult | null>(null)
+  const [printArtifact, setPrintArtifact] = useState<PrintArtifact | null>(null)
   const [contourResult, setContourResult] = useState<GenerateResult | null>(null)
+  const [genProgress, setGenProgress] = useState<BatchProgress | null>(null)
+  const cancelGenRef = useRef<(() => void) | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
@@ -522,9 +529,12 @@ export default function App() {
     let cancelled = false
     const cardWidthMm = background.widthPt / MM
     const cardHeightMm = background.heightPt / MM
+    // Stroke the contour in a color that contrasts the background so it stays
+    // visible; for an uploaded background (unknown color) default to black.
+    const strokeColor = backgroundSource === 'simple' ? contrastColor(simpleBgColor) : '0:0:0:1'
     ensureWasmInit()
       .then(() => {
-        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm)
+        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, strokeColor)
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
@@ -542,7 +552,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, background])
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, background, backgroundSource, simpleBgColor])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -603,6 +613,11 @@ export default function App() {
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
 
+  // The "Fundal" step gates the rest of the wizard: it's done only once both the
+  // print background and the contour are set up. Until then steps 2–4 are locked.
+  const fundalDone = background !== null && contourBackground !== null
+  const fundalLockedHint = 'Configurează fundalul și conturul în pasul „Fundal” pentru a continua.'
+
   const needsPrintInput = mode === 'print' || mode === 'both'
   const needsContourInput = mode === 'contour' || mode === 'both'
 
@@ -628,37 +643,54 @@ export default function App() {
 
     setGenLoading(true)
     setGenError(null)
+    setGenProgress(null)
+    setPrintArtifact(null)
+    setContourResult(null)
     try {
-      const csvData = await csvDataFile.text()
-
-      const nextPrintResult = needsPrintInput
-        ? await generatePdf({
-            csvData,
-            backgroundFile: backgroundFile!,
-            contourBackgroundFile,
-            fontFiles: fontResult.files,
-            options: buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false),
-          })
+      const printOptions = needsPrintInput
+        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false)
         : null
-
-      const nextContourResult = needsContourInput
-        ? await generatePdf({
-            csvData,
-            backgroundFile: contourBackgroundFile!,
-            contourBackgroundFile: null,
-            fontFiles: fontResult.files,
-            options: buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true),
-          })
+      const contourOptions = needsContourInput
+        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true)
         : null
+      const combine = pageOptions.combine === true
 
-      setPrintResult(nextPrintResult)
-      setContourResult(nextContourResult)
+      const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
+      const contour =
+        (needsContourInput || combine) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
+      const fontBufs = await Promise.all(fontResult.files.map((f) => f.arrayBuffer()))
+      const mode: 'print' | 'contour' | 'both' =
+        needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
+
+      const handle = generateBatched(
+        {
+          mode,
+          background,
+          contour,
+          fonts: fontBufs,
+          printOptions,
+          contourOptions,
+          pagesPerBatch: PAGES_PER_BATCH,
+          totalRows: codeRowCount > 0 ? codeRowCount : null,
+          csv: csvDataFile,
+        },
+        setGenProgress,
+      )
+      cancelGenRef.current = handle.cancel
+      const result = await handle.promise
+      setPrintArtifact(result.print)
+      setContourResult(result.contour)
     } catch (err) {
-      setGenError(err instanceof Error ? err.message : String(err))
-      setPrintResult(null)
+      // A user cancellation is not an error.
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setGenError(err instanceof Error ? err.message : String(err))
+      }
+      setPrintArtifact(null)
       setContourResult(null)
     } finally {
       setGenLoading(false)
+      setGenProgress(null)
+      cancelGenRef.current = null
     }
   }
 
@@ -697,7 +729,13 @@ export default function App() {
       </Section>
 
       <div className="my-4">
-        <WizardNav steps={WIZARD_STEPS} current={step} onSelect={(id) => setStep(id as WizardStepId)} />
+        <WizardNav
+          steps={WIZARD_STEPS}
+          current={step}
+          onSelect={(id) => setStep(id as WizardStepId)}
+          isEnabled={(_step, index) => index === 0 || fundalDone}
+          lockedHint={fundalLockedHint}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -1084,14 +1122,32 @@ export default function App() {
               </>
             )}
 
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={genLoading}
-              className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
-            >
-              {genLoading ? 'Se generează…' : 'Generează PDF'}
-            </button>
+            {genLoading ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => cancelGenRef.current?.()}
+                  className="self-start rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  Anulează
+                </button>
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  {genProgress
+                    ? `${genProgress.phase === 'contour' ? 'Contur' : 'Print'}: ${genProgress.rowsDone.toLocaleString('ro-RO')}${
+                        genProgress.totalRows ? ` / ${genProgress.totalRows.toLocaleString('ro-RO')}` : ''
+                      } rânduri · ${genProgress.batchesDone} loturi · ${Math.round(genProgress.wasmBytes / 1048576)} MB`
+                    : 'Se generează…'}
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleGenerate}
+                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+              >
+                Generează PDF
+              </button>
+            )}
             {genError && <p className="text-sm text-red-600 dark:text-red-400">{genError}</p>}
               </>
             )}
@@ -1099,11 +1155,15 @@ export default function App() {
           </>
           )}
 
+          {step === 'fundal' && !fundalDone && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">{fundalLockedHint}</p>
+          )}
           <WizardFooter
             stepIndex={stepIndex}
             stepCount={WIZARD_STEPS.length}
             onBack={() => setStep(WIZARD_STEPS[stepIndex - 1].id)}
             onNext={() => setStep(WIZARD_STEPS[stepIndex + 1].id)}
+            nextDisabled={step === 'fundal' && !fundalDone}
           />
         </div>
 
@@ -1132,9 +1192,16 @@ export default function App() {
             )}
           </Section>
 
-          {(printResult || contourResult) && (
+          {(printArtifact || contourResult) && (
             <Section title="Rezultat">
-              {printResult && <ResultPanel title="Print" result={printResult} downloadName="print.pdf" />}
+              {printArtifact && (
+                <FileDownload
+                  title="Print"
+                  blob={printArtifact.blob}
+                  name={printArtifact.name}
+                  note={printArtifact.isZip ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri.' : undefined}
+                />
+              )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
             </Section>
           )}

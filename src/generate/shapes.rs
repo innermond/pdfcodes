@@ -150,16 +150,22 @@ fn build_single_page_pdf(card_w: f32, card_h: f32, operations: Vec<Operation>) -
 // stroked outline of `shape`, inset by `inset_mm` from the card edges (and,
 // for RoundedRectangle, with corners of radius `corner_radius_mm`). Used as
 // a generated stand-in for a user-supplied contour background PDF.
-pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32, corner_radius_mm: f32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32, corner_radius_mm: f32, stroke: TextColor) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let inset = (inset_mm * MM).max(0.0);
     let x = inset;
     let y = inset;
     let w = (card_w - 2.0 * inset).max(0.0);
     let h = (card_h - 2.0 * inset).max(0.0);
 
+    // Stroke color uses the uppercase (stroking) color operators: `RG` for RGB,
+    // `K` for CMYK.
+    let stroke_op = match stroke {
+        TextColor::Rgb(r, g, b) => Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]),
+        TextColor::Cmyk(c, m, y, k) => Operation::new("K", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]),
+    };
     let mut operations = vec![
         Operation::new("w", vec![Object::Real(1.0)]),
-        Operation::new("G", vec![Object::Real(0.0)]),
+        stroke_op,
     ];
     operations.extend(match shape {
         ShapeKind::Circle => circle_stroke_ops(card_w / 2.0, card_h / 2.0, w.min(h) / 2.0),
@@ -253,7 +259,7 @@ mod tests {
     #[test]
     fn ellipse_fills_the_inset_rectangle_and_is_stroked_not_filled() {
         // 200x100 card, no inset: rx=100, ry=50, centered at (100, 50).
-        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0).unwrap();
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -261,6 +267,10 @@ mod tests {
 
         assert!(ops.iter().any(|op| op.operator == "S"), "ellipse is stroked");
         assert!(ops.iter().all(|op| op.operator != "f"), "ellipse is not filled");
+
+        // The requested CMYK stroke color is emitted via the `K` operator.
+        let k = ops.iter().find(|op| op.operator == "K").expect("stroke color");
+        assert_eq!(nums(&k.operands), vec![0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

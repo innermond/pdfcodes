@@ -5,7 +5,9 @@ use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
 use crate::generate::shapes::{build_shape_pdf, build_simple_background_pdf, ShapeKind};
+use crate::geometry::CardLayout;
 use crate::options::Options;
+use lopdf::{Document, Object};
 
 // Result of a wasm `generate` call: the PDF bytes plus, for contour
 // pages, the stroked-path measurements (when `measure_paths` is set).
@@ -286,6 +288,45 @@ impl Default for JsOptions {
     }
 }
 
+// Number of cards that fit on one host page for the given background page
+// size and layout options, without building a PDF. The JS side uses this to
+// size generation batches to whole pages (see web-preview's batched worker).
+#[wasm_bindgen]
+pub fn cards_per_page(background: &[u8], options: JsValue) -> Result<usize, JsError> {
+    let js_opts: JsOptions = serde_wasm_bindgen::from_value(options)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let doc = Document::load_mem(background).map_err(|e| JsError::new(&e.to_string()))?;
+    let (_, page_id) = doc
+        .get_pages()
+        .into_iter()
+        .next()
+        .ok_or_else(|| JsError::new("No pages in background PDF"))?;
+    let media_box = doc
+        .get_dictionary(page_id)
+        .and_then(|d| d.get(b"MediaBox"))
+        .and_then(|o| o.as_array())
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let dim = |o: &Object| match o {
+        Object::Integer(v) => *v as f32,
+        Object::Real(v) => *v,
+        _ => 0.0,
+    };
+    let card_w = dim(&media_box[2]);
+    let card_h = dim(&media_box[3]);
+
+    // Only the layout fields affect the grid; the rest fall back to defaults.
+    let opts = Options {
+        host_width_mm: js_opts.host_width_mm,
+        host_height_mm: js_opts.host_height_mm,
+        offset_x_mm: js_opts.offset_x_mm,
+        offset_y_mm: js_opts.offset_y_mm,
+        circle_diameter_mm: js_opts.circle_diameter_mm,
+        ..Options::default()
+    };
+    Ok(CardLayout::compute(card_w, card_h, &opts).cards_per_page)
+}
+
 // JS-friendly entry point: takes the CSV/background/font data plus a
 // single options object (camelCase keys, all optional) instead of a long
 // positional argument list. See `generate` for the raw equivalent.
@@ -401,11 +442,18 @@ pub fn generate_shape_pdf(
     shape: String,
     inset_mm: f32,
     corner_radius_mm: f32,
+    stroke_color: String,
 ) -> Result<Vec<u8>, JsError> {
     let shape: ShapeKind = shape.parse().map_err(|e: String| JsError::new(&e))?;
+    // `stroke_color` is "#RRGGBB" or "c:m:y:k"; an empty string falls back to black.
+    let stroke = if stroke_color.trim().is_empty() {
+        crate::color::TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)
+    } else {
+        crate::color::parse_color(&stroke_color).map_err(|e| JsError::new(&e))?
+    };
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
-    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm)
+    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, stroke)
         .map_err(|e| JsError::new(&e.to_string()))
 }
 

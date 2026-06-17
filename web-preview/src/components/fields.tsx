@@ -67,12 +67,12 @@ export function CheckboxField({
   onChange: (value: boolean) => void
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+    <label className="-mx-2 flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+        className="h-4 w-4 cursor-pointer rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
       />
       <span className="font-medium">{label}</span>
     </label>
@@ -94,12 +94,15 @@ export function RadioGroupField<T extends string>({
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
       <legend className="font-medium">{label}</legend>
       {options.map((opt) => (
-        <label key={opt.value} className="flex items-start gap-2">
+        <label
+          key={opt.value}
+          className="-mx-2 flex cursor-pointer items-start gap-2 rounded px-2 py-1 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
           <input
             type="radio"
             checked={value === opt.value}
             onChange={() => onChange(opt.value)}
-            className="mt-1 h-4 w-4 border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+            className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
           />
           <span>
             <span className="font-medium">{opt.label}</span>
@@ -207,16 +210,25 @@ export function ColorField({
   // Close the popover when clicking outside it or pressing Escape.
   useEffect(() => {
     if (!open) return
-    function handlePointer(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false)
+    function handleOutsideClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        // Swallow the click so it only closes the popover and doesn't also
+        // activate whatever control was underneath (a radio/checkbox/button).
+        // Capture phase + stopPropagation keeps the event from reaching the
+        // target or React's delegated handlers; preventDefault blocks the
+        // native default (e.g. toggling a checkbox).
+        e.preventDefault()
+        e.stopPropagation()
+        setOpen(false)
+      }
     }
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false)
     }
-    document.addEventListener('mousedown', handlePointer)
+    document.addEventListener('click', handleOutsideClick, true)
     document.addEventListener('keydown', handleKey)
     return () => {
-      document.removeEventListener('mousedown', handlePointer)
+      document.removeEventListener('click', handleOutsideClick, true)
       document.removeEventListener('keydown', handleKey)
     }
   }, [open])
@@ -247,12 +259,12 @@ export function ColorField({
       <div className="flex items-center justify-between">
         <span className="font-medium">{label}</span>
         {allowNone && (
-          <label className="flex items-center gap-1 text-xs">
+          <label className="flex cursor-pointer items-center gap-1 text-xs">
             <input
               type="checkbox"
               checked={value === null}
               onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked ? null : DEFAULT_CMYK)}
-              className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+              className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
             />
             {noneLabel}
           </label>
