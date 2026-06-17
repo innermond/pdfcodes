@@ -11,6 +11,8 @@ pub enum ShapeKind {
     Ellipse,
     Rectangle,
     RoundedRectangle,
+    BeveledRectangle,
+    Heart,
 }
 
 impl std::str::FromStr for ShapeKind {
@@ -22,7 +24,9 @@ impl std::str::FromStr for ShapeKind {
             "ellipse" => Ok(ShapeKind::Ellipse),
             "rectangle" => Ok(ShapeKind::Rectangle),
             "rounded-rectangle" => Ok(ShapeKind::RoundedRectangle),
-            other => Err(format!("unknown shape \"{other}\" (expected circle, ellipse, rectangle, or rounded-rectangle)")),
+            "beveled-rectangle" => Ok(ShapeKind::BeveledRectangle),
+            "heart" => Ok(ShapeKind::Heart),
+            other => Err(format!("unknown shape \"{other}\" (expected circle, ellipse, rectangle, rounded-rectangle, beveled-rectangle, or heart)")),
         }
     }
 }
@@ -67,7 +71,13 @@ fn circle_stroke_ops(cx: f32, cy: f32, r: f32) -> Vec<Operation> {
 // Stroked rectangle at (x, y) sized w x h, with corners rounded to radius
 // `r` (0 for a plain rectangle), approximated with cubic beziers at each
 // corner. `r` is clamped so opposite corner arcs never overlap.
-fn rounded_rect_stroke_ops(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<Operation> {
+//
+// When `concave` is false the corner arcs bulge outward (the usual rounded
+// rectangle). When true, each corner is a quarter-circle centered on the outer
+// corner point, so the arc curves into the interior — a scalloped/notched
+// corner. Either way the straight edges and the points where arcs meet them are
+// identical; only the bezier control points differ.
+fn rounded_rect_stroke_ops(x: f32, y: f32, w: f32, h: f32, r: f32, concave: bool) -> Vec<Operation> {
     let r = r.max(0.0).min(w / 2.0).min(h / 2.0);
     if r <= 0.0 {
         return vec![
@@ -76,31 +86,128 @@ fn rounded_rect_stroke_ops(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<Operat
         ];
     }
     let k = 0.5522847498 * r;
+    // The two control points for each corner's bezier, listed clockwise from the
+    // bottom-right corner, matching the path order below.
+    let [br, tr, tl, bl] = if concave {
+        [
+            [(x + w - r, y + k), (x + w - k, y + r)],         // centered at (x+w, y)
+            [(x + w - k, y + h - r), (x + w - r, y + h - k)], // centered at (x+w, y+h)
+            [(x + r, y + h - k), (x + k, y + h - r)],         // centered at (x, y+h)
+            [(x + k, y + r), (x + r, y + k)],                 // centered at (x, y)
+        ]
+    } else {
+        [
+            [(x + w - r + k, y), (x + w, y + r - k)],
+            [(x + w, y + h - r + k), (x + w - r + k, y + h)],
+            [(x + r - k, y + h), (x, y + h - r + k)],
+            [(x, y + r - k), (x + r - k, y)],
+        ]
+    };
     vec![
         Operation::new("m", vec![Object::Real(x + r), Object::Real(y)]),
         Operation::new("l", vec![Object::Real(x + w - r), Object::Real(y)]),
         Operation::new("c", vec![
-            Object::Real(x + w - r + k), Object::Real(y),
-            Object::Real(x + w), Object::Real(y + r - k),
+            Object::Real(br[0].0), Object::Real(br[0].1),
+            Object::Real(br[1].0), Object::Real(br[1].1),
             Object::Real(x + w), Object::Real(y + r),
         ]),
         Operation::new("l", vec![Object::Real(x + w), Object::Real(y + h - r)]),
         Operation::new("c", vec![
-            Object::Real(x + w), Object::Real(y + h - r + k),
-            Object::Real(x + w - r + k), Object::Real(y + h),
+            Object::Real(tr[0].0), Object::Real(tr[0].1),
+            Object::Real(tr[1].0), Object::Real(tr[1].1),
             Object::Real(x + w - r), Object::Real(y + h),
         ]),
         Operation::new("l", vec![Object::Real(x + r), Object::Real(y + h)]),
         Operation::new("c", vec![
-            Object::Real(x + r - k), Object::Real(y + h),
-            Object::Real(x), Object::Real(y + h - r + k),
+            Object::Real(tl[0].0), Object::Real(tl[0].1),
+            Object::Real(tl[1].0), Object::Real(tl[1].1),
             Object::Real(x), Object::Real(y + h - r),
         ]),
         Operation::new("l", vec![Object::Real(x), Object::Real(y + r)]),
         Operation::new("c", vec![
-            Object::Real(x), Object::Real(y + r - k),
-            Object::Real(x + r - k), Object::Real(y),
+            Object::Real(bl[0].0), Object::Real(bl[0].1),
+            Object::Real(bl[1].0), Object::Real(bl[1].1),
             Object::Real(x + r), Object::Real(y),
+        ]),
+        Operation::new("h", vec![]),
+        Operation::new("S", vec![]),
+    ]
+}
+
+// Stroked rectangle at (x, y) sized w x h whose corners are cut off (chamfered)
+// by `b` — each 90° corner becomes a straight diagonal of leg length `b`. `b`
+// is clamped so opposite chamfers never overlap; `b <= 0` yields a plain
+// rectangle.
+fn beveled_rect_stroke_ops(x: f32, y: f32, w: f32, h: f32, b: f32) -> Vec<Operation> {
+    let b = b.max(0.0).min(w / 2.0).min(h / 2.0);
+    if b <= 0.0 {
+        return vec![
+            Operation::new("re", vec![Object::Real(x), Object::Real(y), Object::Real(w), Object::Real(h)]),
+            Operation::new("S", vec![]),
+        ];
+    }
+    vec![
+        Operation::new("m", vec![Object::Real(x + b), Object::Real(y)]),
+        Operation::new("l", vec![Object::Real(x + w - b), Object::Real(y)]),
+        Operation::new("l", vec![Object::Real(x + w), Object::Real(y + b)]),
+        Operation::new("l", vec![Object::Real(x + w), Object::Real(y + h - b)]),
+        Operation::new("l", vec![Object::Real(x + w - b), Object::Real(y + h)]),
+        Operation::new("l", vec![Object::Real(x + b), Object::Real(y + h)]),
+        Operation::new("l", vec![Object::Real(x), Object::Real(y + h - b)]),
+        Operation::new("l", vec![Object::Real(x), Object::Real(y + b)]),
+        Operation::new("h", vec![]),
+        Operation::new("S", vec![]),
+    ]
+}
+
+// Stroked heart filling the box at (x, y) sized w x h: a pointed tip at the
+// bottom-center, two circular lobes across the top, and curved sides between.
+// Built from cubic beziers in a normalized 0..1 box (so it stretches with a
+// non-square box) — each lobe is a semicircle (two quarter-circle arcs).
+fn heart_stroke_ops(x: f32, y: f32, w: f32, h: f32) -> Vec<Operation> {
+    let px = |nx: f32| x + nx * w;
+    let py = |ny: f32| y + ny * h;
+    // Quarter-circle bezier constant for the lobe radius of 0.25 (in normalized
+    // units); lobes are centered at y=0.75 and peak at the top (y=1).
+    let k = 0.5522847498 * 0.25;
+    vec![
+        // Bottom tip.
+        Operation::new("m", vec![Object::Real(px(0.5)), Object::Real(py(0.0))]),
+        // Left side: tip up to the left outer edge.
+        Operation::new("c", vec![
+            Object::Real(px(0.4)), Object::Real(py(0.1)),
+            Object::Real(px(0.0)), Object::Real(py(0.5)),
+            Object::Real(px(0.0)), Object::Real(py(0.75)),
+        ]),
+        // Left lobe: outer edge over the top.
+        Operation::new("c", vec![
+            Object::Real(px(0.0)), Object::Real(py(0.75 + k)),
+            Object::Real(px(0.25 - k)), Object::Real(py(1.0)),
+            Object::Real(px(0.25)), Object::Real(py(1.0)),
+        ]),
+        // Left lobe: top down into the center cleft.
+        Operation::new("c", vec![
+            Object::Real(px(0.25 + k)), Object::Real(py(1.0)),
+            Object::Real(px(0.5)), Object::Real(py(0.75 + k)),
+            Object::Real(px(0.5)), Object::Real(py(0.75)),
+        ]),
+        // Right lobe: cleft up over the top.
+        Operation::new("c", vec![
+            Object::Real(px(0.5)), Object::Real(py(0.75 + k)),
+            Object::Real(px(0.75 - k)), Object::Real(py(1.0)),
+            Object::Real(px(0.75)), Object::Real(py(1.0)),
+        ]),
+        // Right lobe: top down to the right outer edge.
+        Operation::new("c", vec![
+            Object::Real(px(0.75 + k)), Object::Real(py(1.0)),
+            Object::Real(px(1.0)), Object::Real(py(0.75 + k)),
+            Object::Real(px(1.0)), Object::Real(py(0.75)),
+        ]),
+        // Right side: outer edge back down to the tip.
+        Operation::new("c", vec![
+            Object::Real(px(1.0)), Object::Real(py(0.5)),
+            Object::Real(px(0.6)), Object::Real(py(0.1)),
+            Object::Real(px(0.5)), Object::Real(py(0.0)),
         ]),
         Operation::new("h", vec![]),
         Operation::new("S", vec![]),
@@ -147,10 +254,13 @@ fn build_single_page_pdf(card_w: f32, card_h: f32, operations: Vec<Operation>) -
 
 // Build a minimal one-page PDF whose MediaBox is `card_w` x `card_h` (in PDF
 // points, matching the print background's card size) and whose content is a
-// stroked outline of `shape`, inset by `inset_mm` from the card edges (and,
-// for RoundedRectangle, with corners of radius `corner_radius_mm`). Used as
-// a generated stand-in for a user-supplied contour background PDF.
-pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32, corner_radius_mm: f32, stroke: TextColor) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+// stroked outline of `shape`, inset by `inset_mm` from the card edges.
+// `corner_radius_mm` is the corner radius for RoundedRectangle and the chamfer
+// leg length for BeveledRectangle; it's ignored by the other shapes.
+// `corner_concave` flips RoundedRectangle's corners to curve inward (ignored by
+// the other shapes). Used as a generated stand-in for a user-supplied contour
+// background PDF.
+pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32, corner_radius_mm: f32, corner_concave: bool, stroke: TextColor) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let inset = (inset_mm * MM).max(0.0);
     let x = inset;
     let y = inset;
@@ -163,15 +273,20 @@ pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32
         TextColor::Rgb(r, g, b) => Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]),
         TextColor::Cmyk(c, m, y, k) => Operation::new("K", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]),
     };
+    // Line width 0 is a PDF hairline: the thinnest line the output device can
+    // render (one device pixel), independent of scale — what cutters/plotters
+    // expect for a cut contour.
     let mut operations = vec![
-        Operation::new("w", vec![Object::Real(1.0)]),
+        Operation::new("w", vec![Object::Real(0.0)]),
         stroke_op,
     ];
     operations.extend(match shape {
         ShapeKind::Circle => circle_stroke_ops(card_w / 2.0, card_h / 2.0, w.min(h) / 2.0),
         ShapeKind::Ellipse => ellipse_stroke_ops(card_w / 2.0, card_h / 2.0, w / 2.0, h / 2.0),
-        ShapeKind::Rectangle => rounded_rect_stroke_ops(x, y, w, h, 0.0),
-        ShapeKind::RoundedRectangle => rounded_rect_stroke_ops(x, y, w, h, corner_radius_mm * MM),
+        ShapeKind::Rectangle => rounded_rect_stroke_ops(x, y, w, h, 0.0, false),
+        ShapeKind::RoundedRectangle => rounded_rect_stroke_ops(x, y, w, h, corner_radius_mm * MM, corner_concave),
+        ShapeKind::BeveledRectangle => beveled_rect_stroke_ops(x, y, w, h, corner_radius_mm * MM),
+        ShapeKind::Heart => heart_stroke_ops(x, y, w, h),
     });
 
     build_single_page_pdf(card_w, card_h, operations)
@@ -259,7 +374,7 @@ mod tests {
     #[test]
     fn ellipse_fills_the_inset_rectangle_and_is_stroked_not_filled() {
         // 200x100 card, no inset: rx=100, ry=50, centered at (100, 50).
-        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -271,6 +386,60 @@ mod tests {
         // The requested CMYK stroke color is emitted via the `K` operator.
         let k = ops.iter().find(|op| op.operator == "K").expect("stroke color");
         assert_eq!(nums(&k.operands), vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn beveled_rectangle_chamfers_each_corner_with_straight_lines() {
+        // 200x100 card, no inset, 10pt bevel. The path is moveto + 7 lineto +
+        // close + stroke; no curves, no fill.
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::BeveledRectangle, 0.0, 10.0 / MM, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
+        let ops = page_operations(&pdf);
+
+        let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
+        assert_eq!(nums(&m.operands), vec![10.0, 0.0]); // x + b, y — first point after bottom-left chamfer
+
+        assert_eq!(ops.iter().filter(|op| op.operator == "l").count(), 7, "7 line segments");
+        assert!(ops.iter().all(|op| op.operator != "c"), "bevels are straight, not curved");
+        assert!(ops.iter().any(|op| op.operator == "S"), "shape is stroked");
+        assert!(ops.iter().all(|op| op.operator != "f"), "shape is not filled");
+    }
+
+    #[test]
+    fn heart_starts_at_the_bottom_tip_and_is_built_from_curves() {
+        // 200x100 card, no inset: tip is centered at the bottom, (100, 0).
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Heart, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
+        let ops = page_operations(&pdf);
+
+        let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
+        assert_eq!(nums(&m.operands), vec![100.0, 0.0]); // tip at bottom-center
+
+        assert_eq!(ops.iter().filter(|op| op.operator == "c").count(), 6, "two sides + four lobe arcs");
+        assert!(ops.iter().any(|op| op.operator == "S"), "heart is stroked");
+        assert!(ops.iter().all(|op| op.operator != "f"), "heart is not filled");
+    }
+
+    #[test]
+    fn rounded_rectangle_concave_centers_corner_arcs_on_the_outer_corner() {
+        // 200x100 card, no inset, r=10. Both orientations share the same edge
+        // endpoints (4 lines + 4 curves); only the control points differ. The
+        // concave bottom-right arc is a quarter circle centered on (200, 0), so
+        // its first control point sits at (x+w-r, y+k) = (190, k).
+        let r = 10.0;
+        let k = 0.5522847498 * r;
+        let concave = build_shape_pdf(200.0, 100.0, ShapeKind::RoundedRectangle, 0.0, r / MM, true, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
+        let convex = build_shape_pdf(200.0, 100.0, ShapeKind::RoundedRectangle, 0.0, r / MM, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
+
+        let concave_ops = page_operations(&concave);
+        let convex_ops = page_operations(&convex);
+        // Same path structure: 4 straight edges and 4 corner curves either way.
+        for ops in [&concave_ops, &convex_ops] {
+            assert_eq!(ops.iter().filter(|op| op.operator == "l").count(), 4);
+            assert_eq!(ops.iter().filter(|op| op.operator == "c").count(), 4);
+        }
+
+        let first_curve = concave_ops.iter().find(|op| op.operator == "c").expect("curve");
+        let p = nums(&first_curve.operands);
+        assert!((p[0] - 190.0).abs() < 1e-3 && (p[1] - k).abs() < 1e-3, "first control point is centered on the outer corner");
     }
 
     #[test]

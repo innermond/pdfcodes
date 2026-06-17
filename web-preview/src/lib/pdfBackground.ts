@@ -11,11 +11,11 @@ export interface PdfBackground {
 }
 
 // Build the preview for a simple solid-color background directly from the
-// stored "c:m:y:k" color, using the app's own CMYK->RGB conversion (the same
-// one the picker swatch and word text use). The actual print PDF stays CMYK;
-// rendering *it* through pdf.js would show DeviceCMYK black as a washed
-// dark-slate, mismatching the pure black the user picked. `null` means no
-// color, leaving a transparent card so the white SVG backdrop shows through.
+// stored "c:m:y:k" color, using the app's CMYK->RGB conversion (the same one the
+// picker swatch and word text use). That conversion mirrors how PDF viewers
+// render DeviceCMYK, so this 1x1 swatch matches the generated print PDF's actual
+// appearance. `null` means no color, leaving a transparent card so the white SVG
+// backdrop shows through.
 export function solidColorBackground(
   color: string | null,
   widthPt: number,

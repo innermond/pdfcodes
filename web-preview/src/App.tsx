@@ -47,6 +47,7 @@ interface Preset {
   shapeKind: ShapeKind
   shapeInsetMm: number
   shapeCornerRadiusMm: number
+  shapeCornerOrientation: CornerOrientation
 }
 
 // UI-only gate for the "Generare" section. Not a security boundary — the
@@ -85,13 +86,24 @@ type FontSource = 'google' | 'custom'
 
 type BackgroundSource = 'upload' | 'simple'
 type ContourSource = 'upload' | 'shape'
-type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle'
+type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Cerc' },
   { value: 'ellipse', label: 'Elipsă' },
   { value: 'rectangle', label: 'Rectangle' },
   { value: 'rounded-rectangle', label: 'Rectangle cu colțuri rotunjite' },
+  { value: 'beveled-rectangle', label: 'Rectangle cu colțuri teșite' },
+  { value: 'heart', label: 'Inimă' },
+]
+
+// Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
+// usual rounded corner), "in" curves them toward the interior (scalloped).
+type CornerOrientation = 'out' | 'in'
+
+const CORNER_ORIENTATION_OPTIONS: { value: CornerOrientation; label: string }[] = [
+  { value: 'out', label: 'În afară' },
+  { value: 'in', label: 'În interior' },
 ]
 
 function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont | null)[] {
@@ -140,6 +152,7 @@ export default function App() {
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
   const [shapeInsetMm, setShapeInsetMm] = useState(2)
   const [shapeCornerRadiusMm, setShapeCornerRadiusMm] = useState(3)
+  const [shapeCornerOrientation, setShapeCornerOrientation] = useState<CornerOrientation>('out')
   const [shapeError, setShapeError] = useState<string | null>(null)
 
   const [sampleText, setSampleText] = useState('')
@@ -281,6 +294,7 @@ export default function App() {
       shapeKind,
       shapeInsetMm,
       shapeCornerRadiusMm,
+      shapeCornerOrientation,
     }
 
     const fontsToBundle = new Map<number, File>()
@@ -366,6 +380,8 @@ export default function App() {
         if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setShapeKind(preset.shapeKind)
         if (typeof preset.shapeInsetMm === 'number') setShapeInsetMm(preset.shapeInsetMm)
         if (typeof preset.shapeCornerRadiusMm === 'number') setShapeCornerRadiusMm(preset.shapeCornerRadiusMm)
+        if (preset.shapeCornerOrientation === 'in' || preset.shapeCornerOrientation === 'out')
+          setShapeCornerOrientation(preset.shapeCornerOrientation)
 
         // Restore the print/contour background PDFs bundled in the archive, if any.
         // A simple background is regenerated from its saved dimensions/color by
@@ -534,7 +550,7 @@ export default function App() {
     const strokeColor = backgroundSource === 'simple' ? contrastColor(simpleBgColor) : '0:0:0:1'
     ensureWasmInit()
       .then(() => {
-        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, strokeColor)
+        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
@@ -552,7 +568,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, background, backgroundSource, simpleBgColor])
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, background, backgroundSource, simpleBgColor])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -617,6 +633,16 @@ export default function App() {
   // print background and the contour are set up. Until then steps 2–4 are locked.
   const fundalDone = background !== null && contourBackground !== null
   const fundalLockedHint = 'Configurează fundalul și conturul în pasul „Fundal” pentru a continua.'
+
+  // The "Sursa de date" step adds a second gate: the user must press "Generează
+  // CSV" so the data source is fixed before the remaining steps unlock. The
+  // generated CSV's object URL (only ever set by handleGenerateCsv) is the
+  // signal — a CSV uploaded later in "Generare" doesn't count here.
+  const dataSourceDone = codeCsvUrl !== null
+  const dataSourceLockedHint = 'Apasă „Generează CSV” în pasul „Sursa de date” pentru a continua.'
+
+  // Single hint surfaced on locked steps: whichever gate is currently blocking.
+  const lockedHint = !fundalDone ? fundalLockedHint : dataSourceLockedHint
 
   const needsPrintInput = mode === 'print' || mode === 'both'
   const needsContourInput = mode === 'contour' || mode === 'both'
@@ -733,8 +759,10 @@ export default function App() {
           steps={WIZARD_STEPS}
           current={step}
           onSelect={(id) => setStep(id as WizardStepId)}
-          isEnabled={(_step, index) => index === 0 || fundalDone}
-          lockedHint={fundalLockedHint}
+          isEnabled={(_step, index) =>
+            index === 0 || (index === 1 ? fundalDone : fundalDone && dataSourceDone)
+          }
+          lockedHint={lockedHint}
         />
       </div>
 
@@ -805,7 +833,18 @@ export default function App() {
                 />
                 <NumberField label="Margine interioară (mm)" value={shapeInsetMm} onChange={setShapeInsetMm} />
                 {shapeKind === 'rounded-rectangle' && (
-                  <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                  <>
+                    <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                    <SelectField
+                      label="Orientare"
+                      value={shapeCornerOrientation}
+                      options={CORNER_ORIENTATION_OPTIONS}
+                      onChange={setShapeCornerOrientation}
+                    />
+                  </>
+                )}
+                {shapeKind === 'beveled-rectangle' && (
+                  <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
                 )}
                 {!background && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
@@ -1158,12 +1197,15 @@ export default function App() {
           {step === 'fundal' && !fundalDone && (
             <p className="text-sm text-amber-600 dark:text-amber-400">{fundalLockedHint}</p>
           )}
+          {step === 'date' && !dataSourceDone && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">{dataSourceLockedHint}</p>
+          )}
           <WizardFooter
             stepIndex={stepIndex}
             stepCount={WIZARD_STEPS.length}
             onBack={() => setStep(WIZARD_STEPS[stepIndex - 1].id)}
             onNext={() => setStep(WIZARD_STEPS[stepIndex + 1].id)}
-            nextDisabled={step === 'fundal' && !fundalDone}
+            nextDisabled={(step === 'fundal' && !fundalDone) || (step === 'date' && !dataSourceDone)}
           />
         </div>
 
@@ -1199,7 +1241,8 @@ export default function App() {
                   title="Print"
                   blob={printArtifact.blob}
                   name={printArtifact.name}
-                  note={printArtifact.isZip ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri.' : undefined}
+                  isZip={printArtifact.isZip}
+                  note={printArtifact.isZip ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri (previzualizarea arată primul PDF).' : undefined}
                 />
               )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}

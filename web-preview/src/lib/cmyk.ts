@@ -39,12 +39,33 @@ export function parseCmyk(value: string): Cmyk {
   return { c: 0, m: 0, y: 0, k: 1 }
 }
 
+// Convert CMYK to RGB for on-screen display. This deliberately matches how PDF
+// viewers render DeviceCMYK (the polynomial pdf.js uses, derived from Adobe's
+// conversion) rather than the naive `255*(1-c)*(1-k)` model, so the preview
+// reflects the *actual* generated PDF — e.g. pure CMYK black shows as the same
+// washed dark slate a viewer paints, not an idealized #000000. Inputs are
+// 0-1; outputs are 0-255.
 export function cmykToRgb({ c, m, y, k }: Cmyk): { r: number; g: number; b: number } {
-  return {
-    r: Math.round(255 * (1 - c) * (1 - k)),
-    g: Math.round(255 * (1 - m) * (1 - k)),
-    b: Math.round(255 * (1 - y) * (1 - k)),
-  }
+  const r =
+    255 +
+    c * (-4.387332384609988 * c + 54.48615194189176 * m + 18.82290502165302 * y + 212.25662451639585 * k - 285.2331026137004) +
+    m * (1.7149763477362134 * m - 5.6096736904047315 * y - 17.873870861415444 * k - 5.497006427196366) +
+    y * (-2.5217340131683033 * y - 21.248923337353073 * k + 17.5119270841813) +
+    k * (-21.86122147463605 * k - 189.48180835922747)
+  const g =
+    255 +
+    c * (8.841041422036149 * c + 60.118027045597366 * m + 6.871425592049007 * y + 31.159100130055922 * k - 79.2970844816548) +
+    m * (-15.310361306967817 * m + 17.575251261109482 * y + 131.35250912493976 * k - 190.9453302588951) +
+    y * (4.444339102852739 * y + 9.8632861493405 * k - 24.86741582555878) +
+    k * (-20.737325471181034 * k - 187.80453709719578)
+  const b =
+    255 +
+    c * (0.8842522430003296 * c + 8.078677503112928 * m + 30.89978309703729 * y - 0.23883238689178934 * k - 14.183576799673286) +
+    m * (10.49593273432072 * m + 63.02378494754052 * y + 50.606957656360734 * k - 112.23884253719248) +
+    y * (0.03296041114873217 * y + 115.60384449646641 * k - 193.58209356861505) +
+    k * (-22.33816807309886 * k - 180.12613974708367)
+  const clampByte = (n: number) => Math.min(255, Math.max(0, Math.round(n)))
+  return { r: clampByte(r), g: clampByte(g), b: clampByte(b) }
 }
 
 export function rgbHexToCmyk(hex: string): Cmyk {
@@ -125,21 +146,36 @@ export function rgbToHsv({ r, g, b }: { r: number; g: number; b: number }): { h:
   return { h, s, v: max }
 }
 
-// Map a position in the picker's color square (`xFrac`/`yFrac` each 0-1: x is
-// hue, y is saturation top->bottom) plus a separate K value (0-1) to a stored
-// "c:m:y:k" string. The square is painted at full brightness so the picked RGB
-// yields C/M/Y with no black of its own; the K slider supplies black.
-export function squareToCmyk(xFrac: number, yFrac: number, k: number): string {
+// CMYK for a position in the picker's color square (`xFrac`/`yFrac` each 0-1: x
+// is hue, y is saturation top->bottom) plus a separate K value (0-1). The square
+// is sampled at full brightness so the C/M/Y carry no black of their own; the K
+// slider supplies black.
+function squareCmyk(xFrac: number, yFrac: number, k: number): Cmyk {
   const clamp = (n: number) => Math.min(1, Math.max(0, n))
   const { r, g, b } = hsvToRgb(clamp(xFrac) * 360, 1 - clamp(yFrac), 1)
   const hex = (n: number) => n.toString(16).padStart(2, '0')
   const { c, m, y } = rgbHexToCmyk(`#${hex(r)}${hex(g)}${hex(b)}`)
-  return formatCmyk({ c, m, y, k: clamp(k) })
+  return { c, m, y, k: clamp(k) }
+}
+
+// `squareCmyk` serialized to the generator's "c:m:y:k" string.
+export function squareToCmyk(xFrac: number, yFrac: number, k: number): string {
+  return formatCmyk(squareCmyk(xFrac, yFrac, k))
+}
+
+// Display RGB for a square position: the CMYK that position encodes, rendered
+// with the print CMYK->RGB conversion so the picker shows only the colors CMYK
+// can actually produce (and darkens with K) instead of the full RGB gamut.
+export function squareColor(xFrac: number, yFrac: number, k: number): { r: number; g: number; b: number } {
+  return cmykToRgb(squareCmyk(xFrac, yFrac, k))
 }
 
 // Where a stored color sits in the picker square (inverse axis mapping of
-// `squareToCmyk`), used to position the marker.
+// `squareToCmyk`), used to position the marker. This inverts the square's own
+// RGB->CMY sampling (naive, at K=0) rather than the display conversion, so the
+// marker tracks the picked hue/saturation regardless of how colors are painted.
 export function cmykToSquarePos(value: string): { xFrac: number; yFrac: number } {
-  const { h, s } = rgbToHsv(cmykToRgb(parseCmyk(value)))
+  const { c, m, y } = parseCmyk(value)
+  const { h, s } = rgbToHsv({ r: 255 * (1 - c), g: 255 * (1 - m), b: 255 * (1 - y) })
   return { xFrac: h / 360, yFrac: 1 - s }
 }

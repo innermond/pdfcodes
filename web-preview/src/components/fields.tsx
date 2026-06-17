@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
-import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareToCmyk, hsvToRgb, type Cmyk } from '../lib/cmyk'
+import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
 
 export function NumberField({
   label,
@@ -152,13 +152,19 @@ const CMYK_CHANNELS: { key: keyof Cmyk; label: string }[] = [
 
 const DEFAULT_CMYK = '0:0:0:1' // black
 
-// The picker's color square: hue across X, saturation top->bottom, painted at
-// full brightness. It's independent of the current color, so build the PNG once
-// (lazily, on first open) and share the data URL across every ColorField. The
-// click math in the component uses the same axis mapping via `squareToCmyk`.
-let cmySquarePng: string | null = null
-function cmySquareDataUrl(): string {
-  if (cmySquarePng !== null) return cmySquarePng
+// The picker's color square: hue across X, saturation top->bottom, painted
+// through the print CMYK->RGB conversion (via `squareColor`) so it shows only
+// the colors CMYK can reproduce and darkens with the current black level `k` —
+// matching the swatch and the generated PDF. The click math in the component
+// uses the same axis mapping via `squareToCmyk`. Painting depends on `k`, so the
+// PNGs are cached per quantized K rather than built once.
+const cmySquarePngByK = new Map<number, string>()
+function cmySquareDataUrl(k: number): string {
+  // Quantize K so dragging the slider reuses cached squares instead of
+  // repainting on every sub-step.
+  const kq = Math.round(Math.min(1, Math.max(0, k)) * 100) / 100
+  const cached = cmySquarePngByK.get(kq)
+  if (cached !== undefined) return cached
   const size = 128
   const canvas = document.createElement('canvas')
   canvas.width = size
@@ -168,7 +174,7 @@ function cmySquareDataUrl(): string {
   const img = ctx.createImageData(size, size)
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const { r, g, b } = hsvToRgb((x / (size - 1)) * 360, 1 - y / (size - 1), 1)
+      const { r, g, b } = squareColor(x / (size - 1), y / (size - 1), kq)
       const i = (y * size + x) * 4
       img.data[i] = r
       img.data[i + 1] = g
@@ -177,8 +183,9 @@ function cmySquareDataUrl(): string {
     }
   }
   ctx.putImageData(img, 0, 0)
-  cmySquarePng = canvas.toDataURL('image/png')
-  return cmySquarePng
+  const url = canvas.toDataURL('image/png')
+  cmySquarePngByK.set(kq, url)
+  return url
 }
 
 // A CMYK color field with an optional "none" state. Picking happens in CMYK so
@@ -284,7 +291,7 @@ export function ColorField({
               <div className="absolute z-10 mt-1 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
                 <div
                   className="relative h-40 w-40 cursor-crosshair rounded"
-                  style={{ backgroundImage: `url(${cmySquareDataUrl()})`, backgroundSize: '100% 100%' }}
+                  style={{ backgroundImage: `url(${cmySquareDataUrl(cmyk.k)})`, backgroundSize: '100% 100%' }}
                   onPointerDown={handleSquarePointerDown}
                   onPointerMove={handleSquarePointerMove}
                 >

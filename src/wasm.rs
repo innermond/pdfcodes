@@ -431,10 +431,12 @@ pub fn generate_with_options(
 
 // Generate a single-page PDF, sized `card_width_mm` x `card_height_mm`,
 // containing a stroked outline of `shape` ("circle", "ellipse", "rectangle",
-// or "rounded-rectangle"), inset by `inset_mm` from the card edges (and, for
-// "rounded-rectangle", with corners of radius `corner_radius_mm`). The ellipse
-// fills the inset rectangle. Intended as a generated stand-in for a
-// user-supplied contour background PDF.
+// "rounded-rectangle", "beveled-rectangle", or "heart"), inset by `inset_mm`
+// from the card edges. `corner_radius_mm` is the corner radius for "rounded-rectangle"
+// and the chamfer leg length for "beveled-rectangle". `corner_orientation`
+// ("out" — the default — or "in") flips "rounded-rectangle"'s corners to curve
+// inward. The ellipse fills the inset rectangle. Intended as a generated
+// stand-in for a user-supplied contour background PDF.
 #[wasm_bindgen]
 pub fn generate_shape_pdf(
     card_width_mm: f32,
@@ -442,9 +444,15 @@ pub fn generate_shape_pdf(
     shape: String,
     inset_mm: f32,
     corner_radius_mm: f32,
+    corner_orientation: String,
     stroke_color: String,
 ) -> Result<Vec<u8>, JsError> {
     let shape: ShapeKind = shape.parse().map_err(|e: String| JsError::new(&e))?;
+    let corner_concave = match corner_orientation.as_str() {
+        "in" => true,
+        "out" | "" => false,
+        other => return Err(JsError::new(&format!("unknown corner orientation \"{other}\" (expected in or out)"))),
+    };
     // `stroke_color` is "#RRGGBB" or "c:m:y:k"; an empty string falls back to black.
     let stroke = if stroke_color.trim().is_empty() {
         crate::color::TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)
@@ -453,7 +461,7 @@ pub fn generate_shape_pdf(
     };
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
-    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, stroke)
+    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, corner_concave, stroke)
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
