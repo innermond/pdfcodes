@@ -7,24 +7,35 @@ export function WizardNav({
   steps,
   current,
   onSelect,
+  isEnabled = () => true,
+  lockedHint,
 }: {
   steps: readonly WizardStep[]
   current: string
   onSelect: (id: string) => void
+  // Whether a step can be navigated to. The current step is always selectable.
+  isEnabled?: (step: WizardStep, index: number) => boolean
+  // Tooltip shown on locked steps explaining why they're unavailable.
+  lockedHint?: string
 }) {
   return (
     <ol className="flex flex-wrap gap-2">
       {steps.map((step, index) => {
         const active = step.id === current
+        const enabled = active || isEnabled(step, index)
         return (
           <li key={step.id}>
             <button
               type="button"
-              onClick={() => onSelect(step.id)}
+              onClick={() => enabled && onSelect(step.id)}
+              disabled={!enabled}
+              title={!enabled ? lockedHint : undefined}
               className={`flex items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ${
                 active
                   ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  : enabled
+                    ? 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                    : 'cursor-not-allowed bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-600'
               }`}
             >
               <span
@@ -48,11 +59,13 @@ export function WizardFooter({
   stepCount,
   onBack,
   onNext,
+  nextDisabled = false,
 }: {
   stepIndex: number
   stepCount: number
   onBack: () => void
   onNext: () => void
+  nextDisabled?: boolean
 }) {
   return (
     <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
@@ -70,7 +83,7 @@ export function WizardFooter({
       <button
         type="button"
         onClick={onNext}
-        disabled={stepIndex === stepCount - 1}
+        disabled={stepIndex === stepCount - 1 || nextDisabled}
         className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
       >
         Continuă →

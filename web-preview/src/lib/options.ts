@@ -3,6 +3,12 @@ export const MM = 72 / 25.4
 
 export type Align = 'left' | 'center' | 'right'
 
+// Vertical alignment of a word's glyph box within the card. Unlike `Align`
+// (handled by the generator), this is resolved in the preview to a concrete
+// baseline `yMm`, so the generated PDF needs no extra support. `custom` means
+// the baseline was positioned manually (drag, arrow keys, or the Y field).
+export type VAlign = 'top' | 'middle' | 'bottom' | 'custom'
+
 // CSS `mix-blend-mode` values, used to composite the contour background.
 export type BlendMode =
   | 'normal'
@@ -49,6 +55,7 @@ export interface WordStyle {
   text: string
   fontSizePt: number
   align: Align
+  valign: VAlign
   xMm: number | null
   yMm: number
   color: string
@@ -70,9 +77,10 @@ export function defaultWordStyle(index: number): WordStyle {
     text: '',
     fontSizePt: index === 0 ? 9 : 14,
     align: 'center',
+    valign: 'custom',
     xMm: null,
     yMm: index === 0 ? 10 : 3,
-    color: '#000000',
+    color: '0:0:0:1', // CMYK black
     blendMode: 'normal',
     rotationDeg: 0,
     flipX: false,
@@ -87,10 +95,44 @@ export function defaultWordStyle(index: number): WordStyle {
   }
 }
 
+// Resolve a vertical alignment into a baseline `yMm` (distance from the
+// bottom of the card, matching `WordStyle.yMm`). Font ascent/descent come
+// from the same canvas measurement `WordOverlay` uses, so the snapped
+// position lines up with the rendered glyph box. Returns the word's current
+// `yMm` unchanged for `custom`.
+export function verticalAlignYMm(
+  valign: VAlign,
+  word: WordStyle,
+  fontFamily: string,
+  cardHeightMm: number,
+  safeMarginMm: number,
+): number {
+  if (valign === 'custom') return word.yMm
+
+  let ascentMm = (word.fontSizePt * 0.8) / MM
+  let descentMm = (word.fontSizePt * 0.2) / MM
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (ctx) {
+    ctx.font = `${word.fontSizePt}px ${fontFamily}`
+    const tm = ctx.measureText(word.text || 'X')
+    ascentMm = tm.fontBoundingBoxAscent / MM
+    descentMm = tm.fontBoundingBoxDescent / MM
+  }
+
+  switch (valign) {
+    case 'top':
+      return cardHeightMm - safeMarginMm - ascentMm
+    case 'bottom':
+      return safeMarginMm + descentMm
+    case 'middle':
+      return cardHeightMm / 2 - (ascentMm - descentMm) / 2
+  }
+}
+
 // Split a sample CSV-style record into words, matching `txt.split(split_chars)`
-// in src/generate/cards.rs. An empty `splitChars` defaults to a single space.
-export function splitWords(sample: string, splitChars: string = ' '): string[] {
-  const sep = splitChars === '' ? ' ' : splitChars
+// in src/generate/cards.rs. An empty separator defaults to a single space.
+export function splitWords(sample: string, separator: string = ' '): string[] {
+  const sep = separator === '' ? ' ' : separator
   return sample.split(sep).filter((w) => w.length > 0)
 }
 
@@ -134,7 +176,7 @@ export const defaultPageOptions: PageOptions = {
 // the main app's form.
 export function buildJsOptions(
   words: WordStyle[],
-  splitChars: string,
+  separator: string,
   safeMarginMm: number,
   backgroundPaddingMm: number,
   page: PageOptions,
@@ -183,6 +225,6 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
-    splitChars,
+    splitChars: separator,
   }
 }

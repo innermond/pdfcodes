@@ -23,12 +23,50 @@ describe('generateCodesCsv', () => {
     expect(csv.split('\n')).toEqual(['0010', '0015', '0020'])
   })
 
-  it('wraps the code with optional prefix and postfix, separated by a single space', () => {
+  it('zero-pads random numeric codes shorter than padLength', () => {
+    const csv = generateCodesCsv(20, [column({ mode: 'random', charset: 'numeric', length: 3, padLength: 6 })], ' ')
+    for (const line of csv.split('\n')) {
+      expect(line).toHaveLength(6)
+      expect(line).toMatch(/^0+[0-9]{3}$/)
+    }
+  })
+
+  it('leaves codes untouched when padLength is shorter than the code', () => {
+    const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 12345, padLength: 3 })], ' ')
+    expect(csv).toBe('12345')
+  })
+
+  it('pads to width with a custom fill character', () => {
+    const csv = generateCodesCsv(2, [column({ mode: 'range', rangeStart: 1, padMode: 'width', padChar: 'X', padLength: 4 })], ' ')
+    expect(csv.split('\n')).toEqual(['XXX1', 'XXX2'])
+  })
+
+  it('pads to width with a multi-character fill', () => {
+    const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 5, padMode: 'width', padChar: 'ab', padLength: 7 })], ' ')
+    expect(csv).toBe('ababab5')
+  })
+
+  it('prepends a fixed pad string in fixed mode regardless of length', () => {
+    const csv = generateCodesCsv(2, [column({ mode: 'range', rangeStart: 9, padMode: 'fixed', padChar: '00', padLength: 4 })], ' ')
+    expect(csv.split('\n')).toEqual(['009', '0010'])
+  })
+
+  it('applies no padding when the pad character is empty', () => {
+    const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 7, padMode: 'width', padChar: '', padLength: 5 })], ' ')
+    expect(csv).toBe('7')
+  })
+
+  it('attaches prefix and postfix directly to the code, with no separator', () => {
     const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 1, padLength: 3, prefix: 'AB', postfix: 'X' })], ' ')
+    expect(csv).toBe('AB001X')
+  })
+
+  it('keeps spaces the user adds inside prefix/postfix', () => {
+    const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 1, padLength: 3, prefix: 'AB ', postfix: ' X' })], ' ')
     expect(csv).toBe('AB 001 X')
   })
 
-  it('omits surrounding spaces when prefix/postfix are empty', () => {
+  it('produces just the code when prefix/postfix are empty', () => {
     const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 7, prefix: '', postfix: '' })], ' ')
     expect(csv).toBe('7')
   })
@@ -39,7 +77,7 @@ describe('generateCodesCsv', () => {
       column({ mode: 'range', rangeStart: 100, prefix: 'B' }),
     ]
     const csv = generateCodesCsv(2, columns, ';')
-    expect(csv.split('\n')).toEqual(['A 1;B 100', 'A 2;B 101'])
+    expect(csv.split('\n')).toEqual(['A1;B100', 'A2;B101'])
   })
 
   it('defaults to a space separator when given an empty string', () => {

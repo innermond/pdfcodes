@@ -3,6 +3,9 @@
 // row lines up with the word positions configured in "Cuvinte".
 export type CodeCharset = 'numeric' | 'alpha' | 'alphanumeric'
 export type CodeMode = 'random' | 'range'
+// How a code is padded: 'width' left-pads with `padChar` up to `padLength`
+// characters; 'fixed' simply prepends `padChar` to every code.
+export type CodePadMode = 'width' | 'fixed'
 
 export interface CodeColumnConfig {
   prefix: string
@@ -12,6 +15,8 @@ export interface CodeColumnConfig {
   length: number
   rangeStart: number
   rangeStep: number
+  padMode: CodePadMode
+  padChar: string
   padLength: number
 }
 
@@ -24,6 +29,8 @@ export function defaultCodeColumn(): CodeColumnConfig {
     length: 6,
     rangeStart: 1,
     rangeStep: 1,
+    padMode: 'width',
+    padChar: '0',
     padLength: 0,
   }
 }
@@ -43,13 +50,24 @@ function randomCode(charset: CodeCharset, length: number): string {
   return result
 }
 
-function codeForRow(column: CodeColumnConfig, rowIndex: number): string {
-  const code =
-    column.mode === 'range'
-      ? String(column.rangeStart + rowIndex * column.rangeStep).padStart(column.padLength, '0')
-      : randomCode(column.charset, column.length)
+function padCode(column: CodeColumnConfig, raw: string): string {
+  if (column.padChar.length === 0) return raw
+  // 'fixed' prepends the pad string verbatim; 'width' left-pads up to the
+  // target length (padStart is a no-op when the code is already long enough).
+  if (column.padMode === 'fixed') return column.padChar + raw
+  return column.padLength > 0 ? raw.padStart(column.padLength, column.padChar) : raw
+}
 
-  return [column.prefix, code, column.postfix].filter((part) => part.length > 0).join(' ')
+function codeForRow(column: CodeColumnConfig, rowIndex: number): string {
+  const raw =
+    column.mode === 'range'
+      ? String(column.rangeStart + rowIndex * column.rangeStep)
+      : randomCode(column.charset, column.length)
+  const code = padCode(column, raw)
+
+  // Prefix/postfix attach directly to the code with no separator; a space (or
+  // any spacer) must be included by the user in the prefix/postfix itself.
+  return column.prefix + code + column.postfix
 }
 
 export function generateCodesCsv(rowCount: number, columns: CodeColumnConfig[], separator: string): string {

@@ -1,5 +1,5 @@
 import { NumberField, Section, SelectField, TextField } from './fields'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
 const CHARSET_OPTIONS: { value: CodeCharset; label: string }[] = [
   { value: 'numeric', label: 'Numeric' },
@@ -10,6 +10,11 @@ const CHARSET_OPTIONS: { value: CodeCharset; label: string }[] = [
 const MODE_OPTIONS: { value: CodeMode; label: string }[] = [
   { value: 'random', label: 'Generat aleator' },
   { value: 'range', label: 'Interval numeric' },
+]
+
+const PAD_MODE_OPTIONS: { value: CodePadMode; label: string }[] = [
+  { value: 'width', label: 'Până la o lățime' },
+  { value: 'fixed', label: 'Text fix adăugat' },
 ]
 
 function CodeColumnEditor({
@@ -58,8 +63,12 @@ function CodeColumnEditor({
           <>
             <NumberField label="Start interval" value={column.rangeStart} onChange={(v) => set('rangeStart', v)} step={1} />
             <NumberField label="Pas" value={column.rangeStep} onChange={(v) => set('rangeStep', v)} step={1} />
-            <NumberField label="Completare cu zerouri (cifre)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
           </>
+        )}
+        <SelectField label="Mod completare" value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
+        <TextField label="Caractere de completare" value={column.padChar} onChange={(v) => set('padChar', v)} />
+        {column.padMode === 'width' && (
+          <NumberField label="Lățime totală (caractere)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
         )}
       </div>
     </fieldset>
@@ -77,6 +86,7 @@ export function CodeSourceSection({
   preview,
   downloadUrl,
   progress,
+  stale,
 }: {
   rowCount: number
   onRowCountChange: (value: number) => void
@@ -89,6 +99,8 @@ export function CodeSourceSection({
   downloadUrl: string | null
   /** Rows written so far while streaming the CSV, or `null` when idle. */
   progress: number | null
+  /** True when settings changed after the last CSV generation. */
+  stale?: boolean
 }) {
   const generating = progress !== null
   function updateColumn(index: number, next: CodeColumnConfig) {
@@ -137,10 +149,20 @@ export function CodeSourceSection({
       <button
         type="button"
         onClick={addColumn}
-        className="self-start rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
       >
         Adaugă cod pe rând
       </button>
+      <p className="text-sm text-gray-500 dark:text-gray-400">
+        Adaugă încă un cod pe fiecare rând. Un rând poate conține mai multe coduri (separate prin separatorul de mai
+        sus) — folosește această opțiune când un card trebuie să afișeze mai multe coduri.
+      </p>
+
+      {stale && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          Setările s-au modificat. Regenerați CSV-ul pentru a putea continua.
+        </p>
+      )}
 
       <div className="flex items-center gap-4">
         <button

@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { MM, type WordStyle } from '../lib/options'
+import { colorToCss } from '../lib/cmyk'
 
 interface TextMetrics {
   width: number
@@ -56,6 +57,61 @@ export function WordOverlay({
     setMetrics({ width: bbox.width, ascent, descent })
   }, [word.text, word.fontSizePt, fontFamily])
 
+  const textWidthPt = metrics?.width ?? 0
+  const safeMarginPt = safeMarginMm * MM
+
+  const xPt =
+    word.xMm !== null
+      ? word.xMm * MM
+      : word.align === 'left'
+        ? safeMarginPt
+        : word.align === 'right'
+          ? cardWidthPt - textWidthPt - safeMarginPt
+          : (cardWidthPt - textWidthPt) / 2
+
+  const yPt = word.yMm * MM
+  const ySvg = cardHeightPt - yPt
+
+  // Arrow keys nudge the selected word. The step is 1/100 of the card
+  // dimension along the axis of movement (width for left/right, height for
+  // up/down), matching how the printed card is proportioned. The handler
+  // closes over the current resolved position, so it re-subscribes when the
+  // word moves.
+  const startXMm = word.xMm ?? xPt / MM
+  const startYMm = word.yMm
+  const stepXMm = cardWidthPt / MM / 100
+  const stepYMm = cardHeightPt / MM / 100
+  useEffect(() => {
+    if (!selected) return
+    function handleKey(e: KeyboardEvent) {
+      let xMm = startXMm
+      let yMm = startYMm
+      switch (e.key) {
+        case 'ArrowLeft':
+          xMm -= stepXMm
+          break
+        case 'ArrowRight':
+          xMm += stepXMm
+          break
+        case 'ArrowUp':
+          yMm += stepYMm
+          break
+        case 'ArrowDown':
+          yMm -= stepYMm
+          break
+        default:
+          return
+      }
+      e.preventDefault()
+      const next: Partial<WordStyle> = { xMm, yMm }
+      // A vertical nudge overrides any snapped vertical alignment.
+      if (yMm !== startYMm) next.valign = 'custom'
+      onChange(next)
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [selected, startXMm, startYMm, stepXMm, stepYMm, onChange])
+
   if (!metrics) {
     return (
       <text
@@ -71,21 +127,6 @@ export function WordOverlay({
     )
   }
 
-  const textWidthPt = metrics.width
-  const safeMarginPt = safeMarginMm * MM
-
-  const xPt =
-    word.xMm !== null
-      ? word.xMm * MM
-      : word.align === 'left'
-        ? safeMarginPt
-        : word.align === 'right'
-          ? cardWidthPt - textWidthPt - safeMarginPt
-          : (cardWidthPt - textWidthPt) / 2
-
-  const yPt = word.yMm * MM
-  const ySvg = cardHeightPt - yPt
-
   const cxSvg = xPt + textWidthPt / 2
   const cySvg = ySvg - (metrics.ascent + metrics.descent) / 2
 
@@ -97,6 +138,12 @@ export function WordOverlay({
     transformParts.push(`rotate(${-word.rotationDeg} ${cxSvg} ${cySvg})`)
   }
   const transform = transformParts.length > 0 ? transformParts.join(' ') : undefined
+
+  // Selection outline geometry (a 2pt margin around the glyph box).
+  const selX = xPt - 2
+  const selY = ySvg - metrics.ascent - 2
+  const selW = textWidthPt + 4
+  const selH = metrics.ascent + metrics.descent + 4
 
   const padPt = backgroundPaddingMm * MM
   const rectWPt = word.backgroundWidthMm !== null ? word.backgroundWidthMm * MM : textWidthPt + 2 * padPt
@@ -123,12 +170,24 @@ export function WordOverlay({
     target.setPointerCapture(e.pointerId)
 
     function handleMove(ev: PointerEvent) {
-      const dxUser = (ev.clientX - startClientX) * scaleX
-      const dyUser = (ev.clientY - startClientY) * scaleY
-      onChange({
+      let dxUser = (ev.clientX - startClientX) * scaleX
+      let dyUser = (ev.clientY - startClientY) * scaleY
+      // Holding Shift locks the drag to a straight line along the dominant
+      // axis (horizontal or vertical), zeroing the smaller component.
+      if (ev.shiftKey) {
+        if (Math.abs(dxUser) >= Math.abs(dyUser)) {
+          dyUser = 0
+        } else {
+          dxUser = 0
+        }
+      }
+      const next: Partial<WordStyle> = {
         xMm: startXMm + dxUser / MM,
         yMm: startYMm - dyUser / MM,
-      })
+      }
+      // Moving the word vertically overrides any snapped vertical alignment.
+      if (dyUser !== 0) next.valign = 'custom'
+      onChange(next)
     }
 
     function handleUp(ev: PointerEvent) {
@@ -148,17 +207,47 @@ export function WordOverlay({
       className="cursor-move"
     >
       {selected && (
-        <rect
-          x={xPt - 2}
-          y={ySvg - metrics.ascent - 2}
-          width={textWidthPt + 4}
-          height={metrics.ascent + metrics.descent + 4}
-          fill="none"
-          stroke="#3b82f6"
-          strokeWidth={0.5}
-          strokeDasharray="2 2"
-          vectorEffect="non-scaling-stroke"
-        />
+        // "Marching ants" selection: a static white dashed track with dark
+        // dashes filling its gaps, both animated in lockstep so the dashes
+        // appear to crawl. The two colors keep it visible on any background.
+        <g pointerEvents="none">
+          <rect
+            x={selX}
+            y={selY}
+            width={selW}
+            height={selH}
+            fill="none"
+            stroke="#ffffff"
+            strokeWidth={0.75}
+            strokeDasharray="4 4"
+            vectorEffect="non-scaling-stroke"
+          >
+            <animate
+              attributeName="stroke-dashoffset"
+              values="0;8"
+              dur="0.5s"
+              repeatCount="indefinite"
+            />
+          </rect>
+          <rect
+            x={selX}
+            y={selY}
+            width={selW}
+            height={selH}
+            fill="none"
+            stroke="#1e3a8a"
+            strokeWidth={0.75}
+            strokeDasharray="4 4"
+            vectorEffect="non-scaling-stroke"
+          >
+            <animate
+              attributeName="stroke-dashoffset"
+              values="4;12"
+              dur="0.5s"
+              repeatCount="indefinite"
+            />
+          </rect>
+        </g>
       )}
       {word.background !== null && (
         <rect
@@ -166,7 +255,7 @@ export function WordOverlay({
           y={rectYSvg}
           width={rectWPt}
           height={rectHPt}
-          fill={word.background}
+          fill={colorToCss(word.background)}
           fillOpacity={word.backgroundAlpha}
           style={{ mixBlendMode: word.backgroundBlendMode }}
         />
@@ -177,7 +266,7 @@ export function WordOverlay({
         y={ySvg}
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
-        fill={word.color}
+        fill={colorToCss(word.color)}
         style={{ mixBlendMode: word.blendMode }}
       >
         {word.text}
@@ -189,7 +278,7 @@ export function WordOverlay({
           fontSize={word.fontSizePt}
           fontFamily={fontFamily}
           fill="none"
-          stroke={word.contourColor}
+          stroke={colorToCss(word.contourColor)}
           strokeWidth={word.contourWidthMm * MM}
           style={{ mixBlendMode: word.contourBlendMode }}
         >

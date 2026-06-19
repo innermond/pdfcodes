@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { unzipSync } from 'fflate'
 import type { GenerateResult } from '../lib/generate'
 
 function formatMetric(value: number | undefined, unit: string, digits = 2): string {
@@ -35,6 +36,86 @@ function usePdfUrl(result: GenerateResult | null): string | null {
   }, [result])
 
   return result ? pdfUrl : null
+}
+
+// A downloadable artifact with an inline preview of the first PDF. When the blob
+// is a ZIP of batched print PDFs we unzip it and preview only the first entry;
+// when it's a single PDF we preview the blob directly. The download link always
+// points at the full artifact (the whole ZIP, or the single PDF).
+export function FileDownload({
+  title,
+  blob,
+  name,
+  note,
+  isZip = false,
+}: {
+  title: string
+  blob: Blob
+  name: string
+  note?: string
+  isZip?: boolean
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(blob)
+    // Object URL is a paired create/revoke browser resource, so it can't be
+    // derived during render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUrl(objectUrl)
+    return () => URL.revokeObjectURL(objectUrl)
+  }, [blob])
+
+  // Build a preview URL for the first PDF: extract entry 0 from the ZIP, or use
+  // the blob as-is when it's already a single PDF.
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+
+    if (!isZip) {
+      objectUrl = URL.createObjectURL(blob)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPreviewUrl(objectUrl)
+    } else {
+      void blob.arrayBuffer().then((buf) => {
+        if (cancelled) return
+        const entries = unzipSync(new Uint8Array(buf))
+        const firstPdf = Object.keys(entries)
+          .sort()
+          .find((n) => n.toLowerCase().endsWith('.pdf'))
+        if (!firstPdf) return
+        objectUrl = URL.createObjectURL(new Blob([entries[firstPdf].slice().buffer], { type: 'application/pdf' }))
+        setPreviewUrl(objectUrl)
+      })
+    }
+
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      setPreviewUrl(null)
+    }
+  }, [blob, isZip])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      {note && <p className="text-sm text-gray-500 dark:text-gray-400">{note}</p>}
+      {previewUrl && (
+        <iframe
+          title={`Previzualizare ${title}`}
+          src={previewUrl}
+          className="h-[600px] w-full rounded border border-gray-200 dark:border-gray-700"
+        />
+      )}
+      {url && (
+        <a href={url} download={name} className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
+          Descarcă {name}
+        </a>
+      )}
+    </div>
+  )
 }
 
 export function ResultPanel({ title, result, downloadName }: { title: string; result: GenerateResult; downloadName: string }) {

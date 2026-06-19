@@ -1,4 +1,5 @@
-import type { ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
 
 export function NumberField({
   label,
@@ -66,12 +67,12 @@ export function CheckboxField({
   onChange: (value: boolean) => void
 }) {
   return (
-    <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+    <label className="-mx-2 flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+        className="h-4 w-4 cursor-pointer rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
       />
       <span className="font-medium">{label}</span>
     </label>
@@ -93,12 +94,15 @@ export function RadioGroupField<T extends string>({
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
       <legend className="font-medium">{label}</legend>
       {options.map((opt) => (
-        <label key={opt.value} className="flex items-start gap-2">
+        <label
+          key={opt.value}
+          className="-mx-2 flex cursor-pointer items-start gap-2 rounded px-2 py-1 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
           <input
             type="radio"
             checked={value === opt.value}
             onChange={() => onChange(opt.value)}
-            className="mt-1 h-4 w-4 border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+            className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
           />
           <span>
             <span className="font-medium">{opt.label}</span>
@@ -139,8 +143,55 @@ export function SelectField<T extends string>({
   )
 }
 
-// A color field with an optional "none" state, used for text backgrounds
-// where `null` means "no background" (the generator's "none" sentinel).
+const CMYK_CHANNELS: { key: keyof Cmyk; label: string }[] = [
+  { key: 'c', label: 'C' },
+  { key: 'm', label: 'M' },
+  { key: 'y', label: 'Y' },
+  { key: 'k', label: 'K' },
+]
+
+const DEFAULT_CMYK = '0:0:0:1' // black
+
+// The picker's color square: hue across X, saturation top->bottom, painted
+// through the print CMYK->RGB conversion (via `squareColor`) so it shows only
+// the colors CMYK can reproduce and darkens with the current black level `k` —
+// matching the swatch and the generated PDF. The click math in the component
+// uses the same axis mapping via `squareToCmyk`. Painting depends on `k`, so the
+// PNGs are cached per quantized K rather than built once.
+const cmySquarePngByK = new Map<number, string>()
+function cmySquareDataUrl(k: number): string {
+  // Quantize K so dragging the slider reuses cached squares instead of
+  // repainting on every sub-step.
+  const kq = Math.round(Math.min(1, Math.max(0, k)) * 100) / 100
+  const cached = cmySquarePngByK.get(kq)
+  if (cached !== undefined) return cached
+  const size = 128
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return ''
+  const img = ctx.createImageData(size, size)
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const { r, g, b } = squareColor(x / (size - 1), y / (size - 1), kq)
+      const i = (y * size + x) * 4
+      img.data[i] = r
+      img.data[i + 1] = g
+      img.data[i + 2] = b
+      img.data[i + 3] = 255
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+  const url = canvas.toDataURL('image/png')
+  cmySquarePngByK.set(kq, url)
+  return url
+}
+
+// A CMYK color field with an optional "none" state. Picking happens in CMYK so
+// colors map directly to print (the generator stores "c:m:y:k"); the swatch is
+// an RGB approximation for on-screen preview. `null` means "no color" (the
+// generator's "none" sentinel), used for text backgrounds and contour.
 export function ColorField({
   label,
   value,
@@ -154,29 +205,137 @@ export function ColorField({
   allowNone?: boolean
   noneLabel?: string
 }) {
+  const cmyk = parseCmyk(value ?? DEFAULT_CMYK)
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  function setChannel(key: keyof Cmyk, percent: number) {
+    const next = { ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 }
+    onChange(formatCmyk(next))
+  }
+
+  // Close the popover when clicking outside it or pressing Escape.
+  useEffect(() => {
+    if (!open) return
+    function handleOutsideClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        // Swallow the click so it only closes the popover and doesn't also
+        // activate whatever control was underneath (a radio/checkbox/button).
+        // Capture phase + stopPropagation keeps the event from reaching the
+        // target or React's delegated handlers; preventDefault blocks the
+        // native default (e.g. toggling a checkbox).
+        e.preventDefault()
+        e.stopPropagation()
+        setOpen(false)
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('click', handleOutsideClick, true)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('click', handleOutsideClick, true)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  // Pick a color from the square: map the pointer position to hue/saturation and
+  // keep the current K. Supports click and drag.
+  function pickFromSquare(e: ReactPointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const xFrac = (e.clientX - rect.left) / rect.width
+    const yFrac = (e.clientY - rect.top) / rect.height
+    onChange(squareToCmyk(xFrac, yFrac, cmyk.k))
+  }
+
+  function handleSquarePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pickFromSquare(e)
+  }
+
+  function handleSquarePointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.buttons !== 1) return
+    pickFromSquare(e)
+  }
+
+  const marker = value !== null ? cmykToSquarePos(value) : null
+
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
-      <span className="font-medium">{label}</span>
-      <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={value ?? '#000000'}
-          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-          className="h-8 w-12 rounded border border-gray-300 dark:border-gray-600"
-        />
+    <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">{label}</span>
         {allowNone && (
-          <label className="flex items-center gap-1 text-xs">
+          <label className="flex cursor-pointer items-center gap-1 text-xs">
             <input
               type="checkbox"
               checked={value === null}
-              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked ? null : '#000000')}
-              className="h-3.5 w-3.5 rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+              onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.checked ? null : DEFAULT_CMYK)}
+              className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
             />
             {noneLabel}
           </label>
         )}
       </div>
-    </label>
+      {value !== null && (
+        <div className="flex items-center gap-3">
+          <div ref={containerRef} className="relative shrink-0">
+            <button
+              type="button"
+              aria-label="Alege culoarea"
+              onClick={() => setOpen((v) => !v)}
+              className="h-10 w-10 rounded border border-gray-300 dark:border-gray-600"
+              style={{ backgroundColor: colorToCss(value) }}
+            />
+            {open && (
+              <div className="absolute z-10 mt-1 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
+                <div
+                  className="relative h-40 w-40 cursor-crosshair rounded"
+                  style={{ backgroundImage: `url(${cmySquareDataUrl(cmyk.k)})`, backgroundSize: '100% 100%' }}
+                  onPointerDown={handleSquarePointerDown}
+                  onPointerMove={handleSquarePointerMove}
+                >
+                  {marker && (
+                    <span
+                      className="pointer-events-none absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow"
+                      style={{ left: `${marker.xFrac * 100}%`, top: `${marker.yFrac * 100}%` }}
+                    />
+                  )}
+                </div>
+                <label className="flex items-center gap-2 text-xs">
+                  <span className="w-4 font-medium">K</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(cmyk.k * 100)}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel('k', Number(e.target.value))}
+                    className="flex-1"
+                  />
+                  <span className="w-8 text-right text-gray-500 dark:text-gray-400">{Math.round(cmyk.k * 100)}%</span>
+                </label>
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {CMYK_CHANNELS.map(({ key, label: ch }) => (
+              <label key={key} className="flex items-center gap-1">
+                <span className="w-4 font-medium">{ch}</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={Math.round(cmyk[key] * 100)}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel(key, Number(e.target.value))}
+                  className="w-14 rounded border border-gray-300 px-1 py-0.5 text-right focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <span className="text-xs text-gray-500 dark:text-gray-400">%</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </fieldset>
   )
 }
 

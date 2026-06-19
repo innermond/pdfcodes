@@ -1,18 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
-import { ResultPanel } from './components/ResultPanel'
-import { generatePdf, type GenerateResult } from './lib/generate'
+import { FileDownload, ResultPanel } from './components/ResultPanel'
+import { type GenerateResult } from './lib/generate'
+import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
-import { ensureDefaultFont, loadFontFile, type LoadedFont } from './lib/fonts'
-import { ensureWasmInit, generate_shape_pdf } from './lib/wasm'
+import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
+import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, type Align, type BlendMode, type PageOptions, type WordStyle } from './lib/options'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
-import { renderPdfBackground, type PdfBackground } from './lib/pdfBackground'
+import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
+import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
 
@@ -26,7 +28,9 @@ type Mode = 'print' | 'contour' | 'both'
 interface Preset {
   version: 1
   sampleText: string
-  splitChars: string
+  codeSeparator: string
+  codeRowCount: number
+  codeColumns: CodeColumnConfig[]
   words: WordStyle[]
   safeMarginMm: number
   backgroundPaddingMm: number
@@ -34,12 +38,17 @@ interface Preset {
   contourBlendMode: BlendMode
   mode: Mode
   pageOptions: PageOptions
+  backgroundSource: BackgroundSource
+  simpleBgWidthMm: number
+  simpleBgHeightMm: number
+  simpleBgColor: string | null
   fontSources: FontSource[]
   googleFontSelections: (GoogleFontSelection | null)[]
   contourSource: ContourSource
   shapeKind: ShapeKind
   shapeInsetMm: number
   shapeCornerRadiusMm: number
+  shapeCornerOrientation: CornerOrientation
 }
 
 // UI-only gate for the "Generare" section. Not a security boundary — the
@@ -48,13 +57,18 @@ interface Preset {
 // section is always shown.
 const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
+const SEPARATOR_DEFAULT = ','
 
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
-  { id: 'aspect', label: 'Aspect & Cuvinte' },
   { id: 'date', label: 'Sursa de date' },
+  { id: 'aspect', label: 'Aspect & Cuvinte' },
   { id: 'generare', label: 'Generare' },
 ] as const
+
+// Pages per generation batch. Each batch is built as its own PDF and freed
+// before the next, bounding peak memory to roughly one batch.
+const PAGES_PER_BATCH = 50
 type WizardStepId = (typeof WIZARD_STEPS)[number]['id']
 
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
@@ -64,15 +78,34 @@ function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
   })
 }
 
+// Human-readable rendering of a separator for warning text. An empty string
+// means "space" (the default used by both splitWords and the CSV generator).
+function describeSeparator(sep: string): string {
+  return sep === '' || sep === ' ' ? 'spațiu' : `„${sep}”`
+}
+
 type FontSource = 'google' | 'custom'
 
+type BackgroundSource = 'upload' | 'simple'
 type ContourSource = 'upload' | 'shape'
-type ShapeKind = 'circle' | 'rectangle' | 'rounded-rectangle'
+type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Cerc' },
+  { value: 'ellipse', label: 'Elipsă' },
   { value: 'rectangle', label: 'Rectangle' },
   { value: 'rounded-rectangle', label: 'Rectangle cu colțuri rotunjite' },
+  { value: 'beveled-rectangle', label: 'Rectangle cu colțuri teșite' },
+  { value: 'heart', label: 'Inimă' },
+]
+
+// Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
+// usual rounded corner), "in" curves them toward the interior (scalloped).
+type CornerOrientation = 'out' | 'in'
+
+const CORNER_ORIENTATION_OPTIONS: { value: CornerOrientation; label: string }[] = [
+  { value: 'out', label: 'În afară' },
+  { value: 'in', label: 'În interior' },
 ]
 
 function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont | null)[] {
@@ -108,19 +141,23 @@ export default function App() {
 
   const [background, setBackground] = useState<PdfBackground | null>(null)
   const [backgroundError, setBackgroundError] = useState<string | null>(null)
+  const [backgroundSource, setBackgroundSource] = useState<BackgroundSource>('upload')
+  const [simpleBgWidthMm, setSimpleBgWidthMm] = useState(86)
+  const [simpleBgHeightMm, setSimpleBgHeightMm] = useState(54)
+  const [simpleBgColor, setSimpleBgColor] = useState<string | null>(null)
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(0.5)
-  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('multiply')
+  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
   const [contourSource, setContourSource] = useState<ContourSource>('upload')
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
   const [shapeInsetMm, setShapeInsetMm] = useState(2)
   const [shapeCornerRadiusMm, setShapeCornerRadiusMm] = useState(3)
+  const [shapeCornerOrientation, setShapeCornerOrientation] = useState<CornerOrientation>('out')
   const [shapeError, setShapeError] = useState<string | null>(null)
 
   const [sampleText, setSampleText] = useState('')
-  const [splitChars, setSplitChars] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
   const [fontSources, setFontSources] = useState<FontSource[]>(() => resizeFontSources([], words.length))
@@ -132,13 +169,19 @@ export default function App() {
   const [safeMarginMm, setSafeMarginMm] = useState(0)
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
+  // While true, code/text colors auto-track a contrasting color over a simple
+  // colored background so they stay visible. Turns off once the user picks a
+  // text color (or loads a preset), after which their choices are kept.
+  const [autoTextColor, setAutoTextColor] = useState(true)
 
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
-  const [printResult, setPrintResult] = useState<GenerateResult | null>(null)
+  const [printArtifact, setPrintArtifact] = useState<PrintArtifact | null>(null)
   const [contourResult, setContourResult] = useState<GenerateResult | null>(null)
+  const [genProgress, setGenProgress] = useState<BatchProgress | null>(null)
+  const cancelGenRef = useRef<(() => void) | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
@@ -146,15 +189,36 @@ export default function App() {
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
   const [codeRowCount, setCodeRowCount] = useState(10)
-  const [codeSeparator, setCodeSeparator] = useState(' ')
+  const [codeSeparator, setCodeSeparator] = useState(SEPARATOR_DEFAULT)
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
+  const [codeCsvStale, setCodeCsvStale] = useState(false)
 
   const codeCsvPreview = useMemo(
     () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
     [codeRowCount, codeColumns, codeSeparator],
   )
+
+  // While editing the data source, mirror the first generated record into the
+  // card preview (split by codeSeparator, the separator the row is built with)
+  // so column/separator/padding tweaks are reflected live on the card.
+  useEffect(() => {
+    if (step !== 'date') return
+    const firstRow = codeCsvPreview.split('\n')[0] ?? ''
+    handleSampleTextChange(firstRow)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, codeCsvPreview, codeSeparator])
+
+  // On the "Aspect & Cuvinte" step, default the selection to the first word so
+  // its editing controls are shown right away. Also recovers from a stale
+  // selection index that points past the current word list.
+  useEffect(() => {
+    if (step !== 'aspect' || words.length === 0) return
+    if (selectedIndex === null || selectedIndex >= words.length) {
+      setSelectedIndex(0)
+    }
+  }, [step, selectedIndex, words.length])
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
@@ -175,6 +239,26 @@ export default function App() {
       return URL.createObjectURL(blob)
     })
     setCodeCsvProgress(null)
+    setCodeCsvStale(false)
+  }
+
+  function invalidateCsv() {
+    if (codeCsvUrl === null) return
+    URL.revokeObjectURL(codeCsvUrl)
+    setCodeCsvUrl(null)
+    setCsvDataFile(null)
+    setCodeCsvProgress(null)
+    setCodeCsvStale(true)
+  }
+
+  function handleCodeRowCountChange(value: number) {
+    setCodeRowCount(value)
+    invalidateCsv()
+  }
+
+  function handleCodeColumnsChange(columns: CodeColumnConfig[]) {
+    setCodeColumns(columns)
+    invalidateCsv()
   }
 
   const [generateUnlocked, setGenerateUnlocked] = useState(
@@ -197,7 +281,9 @@ export default function App() {
     const preset: Preset = {
       version: 1,
       sampleText,
-      splitChars,
+      codeSeparator,
+      codeRowCount,
+      codeColumns,
       words,
       safeMarginMm,
       backgroundPaddingMm,
@@ -205,12 +291,17 @@ export default function App() {
       contourBlendMode,
       mode,
       pageOptions,
+      backgroundSource,
+      simpleBgWidthMm,
+      simpleBgHeightMm,
+      simpleBgColor,
       fontSources,
       googleFontSelections,
       contourSource,
       shapeKind,
       shapeInsetMm,
       shapeCornerRadiusMm,
+      shapeCornerOrientation,
     }
 
     const fontsToBundle = new Map<number, File>()
@@ -262,9 +353,14 @@ export default function App() {
           throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
         }
         setSampleText(preset.sampleText ?? '')
-        setSplitChars(preset.splitChars ?? '')
+        setCodeSeparator(preset.codeSeparator ?? '')
+        if (typeof preset.codeRowCount === 'number') setCodeRowCount(preset.codeRowCount)
+        if (Array.isArray(preset.codeColumns)) setCodeColumns(preset.codeColumns)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
+        // The preset carries its own text colors; don't override them with the
+        // background-contrast default.
+        setAutoTextColor(false)
         setFonts(resizeFonts([], length))
         const sources = resizeFontSources(preset.fontSources ?? [], length)
         const selections = resizeGoogleFontSelections(preset.googleFontSelections ?? [], length)
@@ -277,13 +373,22 @@ export default function App() {
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
+        const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
+        setBackgroundSource(loadedBackgroundSource)
+        if (typeof preset.simpleBgWidthMm === 'number') setSimpleBgWidthMm(preset.simpleBgWidthMm)
+        if (typeof preset.simpleBgHeightMm === 'number') setSimpleBgHeightMm(preset.simpleBgHeightMm)
+        if (preset.simpleBgColor === null || typeof preset.simpleBgColor === 'string') setSimpleBgColor(preset.simpleBgColor)
         if (preset.contourSource === 'upload' || preset.contourSource === 'shape') setContourSource(preset.contourSource)
         if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setShapeKind(preset.shapeKind)
         if (typeof preset.shapeInsetMm === 'number') setShapeInsetMm(preset.shapeInsetMm)
         if (typeof preset.shapeCornerRadiusMm === 'number') setShapeCornerRadiusMm(preset.shapeCornerRadiusMm)
+        if (preset.shapeCornerOrientation === 'in' || preset.shapeCornerOrientation === 'out')
+          setShapeCornerOrientation(preset.shapeCornerOrientation)
 
         // Restore the print/contour background PDFs bundled in the archive, if any.
-        if (bgFile) {
+        // A simple background is regenerated from its saved dimensions/color by
+        // the effect, so the bundled file is only used for the upload source.
+        if (bgFile && loadedBackgroundSource === 'upload') {
           setBackgroundFile(bgFile)
           renderPdfBackground(bgFile)
             .then(setBackground)
@@ -341,14 +446,78 @@ export default function App() {
         setBackground(bg)
         await ensureDefaultFont()
         const maxWidthPt = bg.widthPt * 0.9
-        const separator = splitChars === '' ? ' ' : splitChars[0]
-        const words = [defaultWordStyle(0), defaultWordStyle(1)]
-          .map((style) => randomWordFittingWidth(maxWidthPt, style.fontSizePt))
-          .join(separator)
-        handleSampleTextChange(words)
+        const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+        handleSampleTextChange(word)
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
+
+  function handleBackgroundSourceChange(source: BackgroundSource) {
+    setBackgroundSource(source)
+    setBackgroundError(null)
+    // Switching to upload clears any generated background so the user starts
+    // from a fresh file picker; switching to simple lets the effect below
+    // generate the background from the entered dimensions/color.
+    if (source === 'upload') {
+      setBackground(null)
+      setBackgroundFile(null)
+    }
+  }
+
+  // Generate a simple solid-color (or blank) background PDF whenever the simple
+  // background source is active and its dimensions/color change, feeding it
+  // through the same `backgroundFile`/`background` pipeline as an uploaded PDF.
+  useEffect(() => {
+    if (backgroundSource !== 'simple') return
+    if (!(simpleBgWidthMm > 0) || !(simpleBgHeightMm > 0)) {
+      setBackground(null)
+      setBackgroundFile(null)
+      setBackgroundError('Lățimea și înălțimea fundalului trebuie să fie numere pozitive.')
+      return
+    }
+    let cancelled = false
+    ensureWasmInit()
+      .then(async () => {
+        const bytes = generate_simple_background_pdf(simpleBgWidthMm, simpleBgHeightMm, simpleBgColor ?? '')
+        const file = new File([bytes.buffer as ArrayBuffer], 'fundal-simplu.pdf', { type: 'application/pdf' })
+        if (cancelled) return null
+        setBackgroundFile(file)
+        setBackgroundError(null)
+        await ensureDefaultFont()
+        // Preview the solid color via the app's own CMYK->RGB conversion so it
+        // matches the picker swatch; the print PDF (`file`) stays CMYK.
+        return solidColorBackground(simpleBgColor, simpleBgWidthMm * MM, simpleBgHeightMm * MM)
+      })
+      .then((bg) => {
+        if (cancelled || !bg) return
+        setBackground(bg)
+        // Populate a sample row for the preview, but only when empty so tweaking
+        // the dimensions doesn't clobber text the user already entered.
+        if (!sampleText) {
+          const maxWidthPt = bg.widthPt * 0.9
+          const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+          handleSampleTextChange(word)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setBackgroundError(err instanceof Error ? err.message : String(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
+
+  // Default the code/text color to one that contrasts the simple background so
+  // codes are visible. Stays in effect (also recoloring newly added words) only
+  // until the user picks a text color, then leaves their choices untouched.
+  useEffect(() => {
+    if (backgroundSource !== 'simple' || !autoTextColor) return
+    const target = contrastColor(simpleBgColor)
+    // Syncing a derived default into word state; the equality guard prevents re-renders.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWords((prev) => (prev.every((w) => w.color === target) ? prev : prev.map((w) => ({ ...w, color: target }))))
+  }, [backgroundSource, autoTextColor, simpleBgColor, words.length])
 
   function handleContourBackgroundFileChange(file: File | null) {
     setContourBackground(null)
@@ -378,9 +547,12 @@ export default function App() {
     let cancelled = false
     const cardWidthMm = background.widthPt / MM
     const cardHeightMm = background.heightPt / MM
+    // Stroke the contour in a color that contrasts the background so it stays
+    // visible; for an uploaded background (unknown color) default to black.
+    const strokeColor = backgroundSource === 'simple' ? contrastColor(simpleBgColor) : '0:0:0:1'
     ensureWasmInit()
       .then(() => {
-        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm)
+        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
@@ -398,7 +570,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, background])
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, background, backgroundSource, simpleBgColor])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -432,20 +604,16 @@ export default function App() {
 
   function handleSampleTextChange(value: string) {
     setSampleText(value)
-    const texts = splitWords(value, splitChars)
+    const texts = splitWords(value, codeSeparator)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
     setFontSources((prev) => resizeFontSources(prev, texts.length))
     setGoogleFontSelections((prev) => resizeGoogleFontSelections(prev, texts.length))
   }
 
-  function handleSplitCharsChange(value: string) {
-    setSplitChars(value)
-    const texts = splitWords(sampleText, value)
-    setWords((prev) => resizeWords(prev, texts))
-    setFonts((prev) => resizeFonts(prev, texts.length))
-    setFontSources((prev) => resizeFontSources(prev, texts.length))
-    setGoogleFontSelections((prev) => resizeGoogleFontSelections(prev, texts.length))
+  function handleCodeSeparatorChange(value: string) {
+    setCodeSeparator(value)
+    invalidateCsv()
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -453,6 +621,21 @@ export default function App() {
   }
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
+
+  // The "Fundal" step gates the rest of the wizard: it's done only once both the
+  // print background and the contour are set up. Until then steps 2–4 are locked.
+  const fundalDone = background !== null && contourBackground !== null
+  const fundalLockedHint = 'Configurează fundalul și conturul în pasul „Fundal” pentru a continua.'
+
+  // The "Sursa de date" step adds a second gate: the user must press "Generează
+  // CSV" so the data source is fixed before the remaining steps unlock. The
+  // generated CSV's object URL (only ever set by handleGenerateCsv) is the
+  // signal — a CSV uploaded later in "Generare" doesn't count here.
+  const dataSourceDone = codeCsvUrl !== null
+  const dataSourceLockedHint = 'Apasă „Generează CSV” în pasul „Sursa de date” pentru a continua.'
+
+  // Single hint surfaced on locked steps: whichever gate is currently blocking.
+  const lockedHint = !fundalDone ? fundalLockedHint : dataSourceLockedHint
 
   const needsPrintInput = mode === 'print' || mode === 'both'
   const needsContourInput = mode === 'contour' || mode === 'both'
@@ -479,37 +662,54 @@ export default function App() {
 
     setGenLoading(true)
     setGenError(null)
+    setGenProgress(null)
+    setPrintArtifact(null)
+    setContourResult(null)
     try {
-      const csvData = await csvDataFile.text()
-
-      const nextPrintResult = needsPrintInput
-        ? await generatePdf({
-            csvData,
-            backgroundFile: backgroundFile!,
-            contourBackgroundFile,
-            fontFiles: fontResult.files,
-            options: buildJsOptions(words, splitChars, safeMarginMm, backgroundPaddingMm, pageOptions, false),
-          })
+      const printOptions = needsPrintInput
+        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false)
         : null
-
-      const nextContourResult = needsContourInput
-        ? await generatePdf({
-            csvData,
-            backgroundFile: contourBackgroundFile!,
-            contourBackgroundFile: null,
-            fontFiles: fontResult.files,
-            options: buildJsOptions(words, splitChars, safeMarginMm, backgroundPaddingMm, pageOptions, true),
-          })
+      const contourOptions = needsContourInput
+        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true)
         : null
+      const combine = pageOptions.combine === true
 
-      setPrintResult(nextPrintResult)
-      setContourResult(nextContourResult)
+      const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
+      const contour =
+        (needsContourInput || combine) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
+      const fontBufs = await Promise.all(fontResult.files.map((f) => f.arrayBuffer()))
+      const mode: 'print' | 'contour' | 'both' =
+        needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
+
+      const handle = generateBatched(
+        {
+          mode,
+          background,
+          contour,
+          fonts: fontBufs,
+          printOptions,
+          contourOptions,
+          pagesPerBatch: PAGES_PER_BATCH,
+          totalRows: codeRowCount > 0 ? codeRowCount : null,
+          csv: csvDataFile,
+        },
+        setGenProgress,
+      )
+      cancelGenRef.current = handle.cancel
+      const result = await handle.promise
+      setPrintArtifact(result.print)
+      setContourResult(result.contour)
     } catch (err) {
-      setGenError(err instanceof Error ? err.message : String(err))
-      setPrintResult(null)
+      // A user cancellation is not an error.
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setGenError(err instanceof Error ? err.message : String(err))
+      }
+      setPrintArtifact(null)
       setContourResult(null)
     } finally {
       setGenLoading(false)
+      setGenProgress(null)
+      cancelGenRef.current = null
     }
   }
 
@@ -548,18 +748,51 @@ export default function App() {
       </Section>
 
       <div className="my-4">
-        <WizardNav steps={WIZARD_STEPS} current={step} onSelect={(id) => setStep(id as WizardStepId)} />
+        <WizardNav
+          steps={WIZARD_STEPS}
+          current={step}
+          onSelect={(id) => setStep(id as WizardStepId)}
+          isEnabled={(_step, index) =>
+            index === 0 || (index === 1 ? fundalDone : fundalDone && dataSourceDone)
+          }
+          lockedHint={lockedHint}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="flex flex-col gap-4">
           {step === 'fundal' && (
           <Section title="Fundal">
-            <FileField
-              label="PDF de fundal (un card)"
-              accept="application/pdf"
-              onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
+            <RadioGroupField<BackgroundSource>
+              label="Sursă fundal print"
+              value={backgroundSource}
+              onChange={handleBackgroundSourceChange}
+              options={[
+                { value: 'upload', label: 'Încarcă PDF' },
+                { value: 'simple', label: 'Fundal simplu' },
+              ]}
             />
+            {backgroundSource === 'upload' ? (
+              <FileField
+                label="PDF de fundal (un card)"
+                accept="application/pdf"
+                onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
+              />
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label="Lățime (mm)" value={simpleBgWidthMm} onChange={setSimpleBgWidthMm} />
+                  <NumberField label="Înălțime (mm)" value={simpleBgHeightMm} onChange={setSimpleBgHeightMm} />
+                </div>
+                <ColorField
+                  label="Culoare fundal (opțional)"
+                  value={simpleBgColor}
+                  onChange={setSimpleBgColor}
+                  allowNone
+                  noneLabel="fără culoare"
+                />
+              </>
+            )}
             {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
             {background && (
               <p className="text-sm text-gray-500 dark:text-gray-400">
@@ -593,7 +826,18 @@ export default function App() {
                 />
                 <NumberField label="Margine interioară (mm)" value={shapeInsetMm} onChange={setShapeInsetMm} />
                 {shapeKind === 'rounded-rectangle' && (
-                  <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                  <>
+                    <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                    <SelectField
+                      label="Orientare"
+                      value={shapeCornerOrientation}
+                      options={CORNER_ORIENTATION_OPTIONS}
+                      onChange={setShapeCornerOrientation}
+                    />
+                  </>
+                )}
+                {shapeKind === 'beveled-rectangle' && (
+                  <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
                 )}
                 {!background && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
@@ -623,15 +867,9 @@ export default function App() {
           <>
           <Section title="Text exemplu">
             <TextField
-              label="Rând CSV exemplu (cuvinte separate prin spațiu)"
+              label={`Rând CSV exemplu (separator: ${describeSeparator(codeSeparator)})`}
               value={sampleText}
               onChange={handleSampleTextChange}
-            />
-            <TextField
-              label="Caractere separator cuvinte (implicit: spațiu)"
-              value={splitChars}
-              onChange={handleSplitCharsChange}
-              placeholder=" "
             />
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
@@ -663,7 +901,7 @@ export default function App() {
               <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <SelectField<Align>
-                  label="Aliniere"
+                  label="Aliniere orizontală"
                   value={selected.align}
                   onChange={(v) => updateWord(selectedIndex, { align: v, xMm: null })}
                   options={[
@@ -672,13 +910,44 @@ export default function App() {
                     { value: 'right', label: 'dreapta' },
                   ]}
                 />
-                <NumberField label="Y (mm)" value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v })} />
+                <SelectField<VAlign>
+                  label="Aliniere verticală"
+                  value={selected.valign}
+                  onChange={(v) =>
+                    updateWord(selectedIndex, {
+                      valign: v,
+                      yMm: background
+                        ? verticalAlignYMm(
+                            v,
+                            selected,
+                            fontFamilyForWord(fonts, selectedIndex),
+                            background.heightPt / MM,
+                            safeMarginMm,
+                          )
+                        : selected.yMm,
+                    })
+                  }
+                  options={[
+                    { value: 'top', label: 'sus' },
+                    { value: 'middle', label: 'mijloc' },
+                    { value: 'bottom', label: 'jos' },
+                    { value: 'custom', label: 'personalizat' },
+                  ]}
+                />
+                <NumberField label="Y (mm)" value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v, valign: 'custom' })} />
                 <NumberField
                   label="X (mm, gol = automat după aliniere)"
                   value={selected.xMm ?? NaN}
                   onChange={(v) => updateWord(selectedIndex, { xMm: Number.isNaN(v) ? null : v })}
                 />
-                <ColorField label="Culoare text" value={selected.color} onChange={(v) => updateWord(selectedIndex, { color: v ?? '#000000' })} />
+                <ColorField
+                  label="Culoare text"
+                  value={selected.color}
+                  onChange={(v) => {
+                    setAutoTextColor(false)
+                    updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
+                  }}
+                />
                 <SelectField
                   label="Mod îmbinare text"
                   value={selected.blendMode}
@@ -769,15 +1038,16 @@ export default function App() {
           {step === 'date' && (
           <CodeSourceSection
             rowCount={codeRowCount}
-            onRowCountChange={setCodeRowCount}
+            onRowCountChange={handleCodeRowCountChange}
             separator={codeSeparator}
-            onSeparatorChange={setCodeSeparator}
+            onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
-            onColumnsChange={setCodeColumns}
+            onColumnsChange={handleCodeColumnsChange}
             onGenerate={handleGenerateCsv}
             preview={codeCsvPreview}
             downloadUrl={codeCsvUrl}
             progress={codeCsvProgress}
+            stale={codeCsvStale}
           />
           )}
 
@@ -875,14 +1145,32 @@ export default function App() {
               </>
             )}
 
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={genLoading}
-              className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
-            >
-              {genLoading ? 'Se generează…' : 'Generează PDF'}
-            </button>
+            {genLoading ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => cancelGenRef.current?.()}
+                  className="self-start rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  Anulează
+                </button>
+                <span className="text-sm text-gray-600 dark:text-gray-400">
+                  {genProgress
+                    ? `${genProgress.phase === 'contour' ? 'Contur' : 'Print'}: ${genProgress.rowsDone.toLocaleString('ro-RO')}${
+                        genProgress.totalRows ? ` / ${genProgress.totalRows.toLocaleString('ro-RO')}` : ''
+                      } rânduri · ${genProgress.batchesDone} loturi · ${Math.round(genProgress.wasmBytes / 1048576)} MB`
+                    : 'Se generează…'}
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleGenerate}
+                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+              >
+                Generează PDF
+              </button>
+            )}
             {genError && <p className="text-sm text-red-600 dark:text-red-400">{genError}</p>}
               </>
             )}
@@ -890,11 +1178,18 @@ export default function App() {
           </>
           )}
 
+          {step === 'fundal' && !fundalDone && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">{fundalLockedHint}</p>
+          )}
+          {step === 'date' && !dataSourceDone && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">{dataSourceLockedHint}</p>
+          )}
           <WizardFooter
             stepIndex={stepIndex}
             stepCount={WIZARD_STEPS.length}
             onBack={() => setStep(WIZARD_STEPS[stepIndex - 1].id)}
             onNext={() => setStep(WIZARD_STEPS[stepIndex + 1].id)}
+            nextDisabled={(step === 'fundal' && !fundalDone) || (step === 'date' && !dataSourceDone)}
           />
         </div>
 
@@ -923,9 +1218,17 @@ export default function App() {
             )}
           </Section>
 
-          {(printResult || contourResult) && (
+          {(printArtifact || contourResult) && (
             <Section title="Rezultat">
-              {printResult && <ResultPanel title="Print" result={printResult} downloadName="print.pdf" />}
+              {printArtifact && (
+                <FileDownload
+                  title="Print"
+                  blob={printArtifact.blob}
+                  name={printArtifact.name}
+                  isZip={printArtifact.isZip}
+                  note={printArtifact.isZip ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri (previzualizarea arată primul PDF).' : undefined}
+                />
+              )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
             </Section>
           )}
