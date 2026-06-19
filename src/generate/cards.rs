@@ -22,8 +22,12 @@ pub(crate) fn build_card_xobjects(
     let card_w = layout.card_w;
     let card_box = layout.card_box.clone();
 
+    // Rows are \n-separated; fields within a row are separated by split_chars
+    // (any character, not necessarily the CSV standard comma).
+    let sep = opts.split_chars.as_bytes().first().copied().unwrap_or(b' ');
     let mut rdr = ReaderBuilder::new()
         .has_headers(false)
+        .delimiter(sep)
         .from_reader(csv_data.as_bytes());
 
     let kerning_adjustment = 0.3;
@@ -31,9 +35,9 @@ pub(crate) fn build_card_xobjects(
 
     let mut card_ids = Vec::new();
     for result in rdr.records() {
-        let txt = result?.get(0).ok_or("Missing CSV field")?.to_string();
-        let split_chars = if opts.split_chars.is_empty() { " " } else { opts.split_chars.as_str() };
-        let texts: Vec<&str> = txt.split(split_chars).collect();
+        let record = result?;
+        let texts: Vec<&str> = record.iter().collect();
+        let txt = texts.join(std::str::from_utf8(&[sep]).unwrap_or(" "));
 
         if texts.len() > opts.font_sizes.len() || texts.len() > opts.text_y_mm.len() {
             return Err(format!(

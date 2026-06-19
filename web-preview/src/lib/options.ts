@@ -130,9 +130,9 @@ export function verticalAlignYMm(
 }
 
 // Split a sample CSV-style record into words, matching `txt.split(split_chars)`
-// in src/generate/cards.rs. An empty `splitChars` defaults to a single space.
-export function splitWords(sample: string, splitChars: string = ' '): string[] {
-  const sep = splitChars === '' ? ' ' : splitChars
+// in src/generate/cards.rs. An empty separator defaults to a single space.
+export function splitWords(sample: string, separator: string = ' '): string[] {
+  const sep = separator === '' ? ' ' : separator
   return sample.split(sep).filter((w) => w.length > 0)
 }
 
@@ -176,7 +176,7 @@ export const defaultPageOptions: PageOptions = {
 // the main app's form.
 export function buildJsOptions(
   words: WordStyle[],
-  splitChars: string,
+  separator: string,
   safeMarginMm: number,
   backgroundPaddingMm: number,
   page: PageOptions,
@@ -225,6 +225,6 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
-    splitChars,
+    splitChars: separator,
   }
 }

@@ -80,7 +80,6 @@ export function CodeSourceSection({
   onRowCountChange,
   separator,
   onSeparatorChange,
-  separatorWarning,
   columns,
   onColumnsChange,
   onGenerate,
@@ -92,8 +91,6 @@ export function CodeSourceSection({
   onRowCountChange: (value: number) => void
   separator: string
   onSeparatorChange: (value: string) => void
-  /** Shown when the code separator diverges from the word separator. */
-  separatorWarning?: string | null
   columns: CodeColumnConfig[]
   onColumnsChange: (columns: CodeColumnConfig[]) => void
   onGenerate: () => void
@@ -132,10 +129,6 @@ export function CodeSourceSection({
           placeholder=" "
         />
       </div>
-
-      {separatorWarning && (
-        <p className="text-sm text-amber-600 dark:text-amber-400">{separatorWarning}</p>
-      )}
 
       <div className="flex flex-col gap-3">
         {columns.map((column, index) => (

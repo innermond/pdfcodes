@@ -28,7 +28,6 @@ type Mode = 'print' | 'contour' | 'both'
 interface Preset {
   version: 1
   sampleText: string
-  splitChars: string
   codeSeparator: string
   words: WordStyle[]
   safeMarginMm: number
@@ -56,6 +55,7 @@ interface Preset {
 // section is always shown.
 const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
+const SEPARATOR_DEFAULT = ','
 
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
@@ -156,7 +156,6 @@ export default function App() {
   const [shapeError, setShapeError] = useState<string | null>(null)
 
   const [sampleText, setSampleText] = useState('')
-  const [splitChars, setSplitChars] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
   const [fontSources, setFontSources] = useState<FontSource[]>(() => resizeFontSources([], words.length))
@@ -188,26 +187,10 @@ export default function App() {
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
   const [codeRowCount, setCodeRowCount] = useState(10)
-  const [codeSeparator, setCodeSeparator] = useState('')
-  // `codeSeparator` mirrors `splitChars` until the user edits it directly. Once
-  // touched it keeps its own value and becomes the source of truth: the CSV rows
-  // are joined with it, so generation must split them back with the same char.
-  const [codeSeparatorTouched, setCodeSeparatorTouched] = useState(false)
+  const [codeSeparator, setCodeSeparator] = useState(SEPARATOR_DEFAULT)
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
-
-  useEffect(() => {
-    if (!codeSeparatorTouched) setCodeSeparator(splitChars)
-  }, [splitChars, codeSeparatorTouched])
-
-  // The two separators normally agree (codeSeparator follows splitChars). They
-  // can only diverge after the user edits codeSeparator, in which case the
-  // preview word-split (splitChars) won't match the generated CSV.
-  const separatorsMismatch = codeSeparator !== splitChars
-  const separatorMismatchWarning = separatorsMismatch
-    ? `Separatorul codurilor (${describeSeparator(codeSeparator)}) diferă de separatorul cuvintelor (${describeSeparator(splitChars)}). La generare se folosește separatorul codurilor.`
-    : null
 
   const codeCsvPreview = useMemo(
     () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
@@ -220,7 +203,7 @@ export default function App() {
   useEffect(() => {
     if (step !== 'date') return
     const firstRow = codeCsvPreview.split('\n')[0] ?? ''
-    handleSampleTextChange(firstRow, codeSeparator)
+    handleSampleTextChange(firstRow)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, codeCsvPreview, codeSeparator])
 
@@ -275,7 +258,6 @@ export default function App() {
     const preset: Preset = {
       version: 1,
       sampleText,
-      splitChars,
       codeSeparator,
       words,
       safeMarginMm,
@@ -346,14 +328,7 @@ export default function App() {
           throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
         }
         setSampleText(preset.sampleText ?? '')
-        const loadedSplitChars = preset.splitChars ?? ''
-        setSplitChars(loadedSplitChars)
-        // Older presets predate codeSeparator; fall back to splitChars (no
-        // divergence). A stored value that differs counts as user-edited so the
-        // sync effect leaves it alone and the mismatch warning shows.
-        const loadedCodeSeparator = preset.codeSeparator ?? loadedSplitChars
-        setCodeSeparator(loadedCodeSeparator)
-        setCodeSeparatorTouched(loadedCodeSeparator !== loadedSplitChars)
+        setCodeSeparator(preset.codeSeparator ?? '')
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
@@ -600,18 +575,9 @@ export default function App() {
     setFonts((prev) => prev.map((f, i) => (i === index ? font : f)))
   }
 
-  function handleSampleTextChange(value: string, separator: string = splitChars) {
+  function handleSampleTextChange(value: string) {
     setSampleText(value)
-    const texts = splitWords(value, separator)
-    setWords((prev) => resizeWords(prev, texts))
-    setFonts((prev) => resizeFonts(prev, texts.length))
-    setFontSources((prev) => resizeFontSources(prev, texts.length))
-    setGoogleFontSelections((prev) => resizeGoogleFontSelections(prev, texts.length))
-  }
-
-  function handleSplitCharsChange(value: string) {
-    setSplitChars(value)
-    const texts = splitWords(sampleText, value)
+    const texts = splitWords(value, codeSeparator)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
     setFontSources((prev) => resizeFontSources(prev, texts.length))
@@ -620,7 +586,6 @@ export default function App() {
 
   function handleCodeSeparatorChange(value: string) {
     setCodeSeparator(value)
-    setCodeSeparatorTouched(true)
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -874,19 +839,10 @@ export default function App() {
           <>
           <Section title="Text exemplu">
             <TextField
-              label="Rând CSV exemplu (cuvinte separate prin spațiu)"
+              label={`Rând CSV exemplu (separator: ${describeSeparator(codeSeparator)})`}
               value={sampleText}
               onChange={handleSampleTextChange}
             />
-            <TextField
-              label="Caractere separator cuvinte (implicit: spațiu)"
-              value={splitChars}
-              onChange={handleSplitCharsChange}
-              placeholder=" "
-            />
-            {separatorMismatchWarning && (
-              <p className="text-sm text-amber-600 dark:text-amber-400">{separatorMismatchWarning}</p>
-            )}
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
@@ -1057,7 +1013,6 @@ export default function App() {
             onRowCountChange={setCodeRowCount}
             separator={codeSeparator}
             onSeparatorChange={handleCodeSeparatorChange}
-            separatorWarning={separatorMismatchWarning}
             columns={codeColumns}
             onColumnsChange={setCodeColumns}
             onGenerate={handleGenerateCsv}
