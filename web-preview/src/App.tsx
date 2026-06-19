@@ -29,6 +29,8 @@ interface Preset {
   version: 1
   sampleText: string
   codeSeparator: string
+  codeRowCount: number
+  codeColumns: CodeColumnConfig[]
   words: WordStyle[]
   safeMarginMm: number
   backgroundPaddingMm: number
@@ -280,6 +282,8 @@ export default function App() {
       version: 1,
       sampleText,
       codeSeparator,
+      codeRowCount,
+      codeColumns,
       words,
       safeMarginMm,
       backgroundPaddingMm,
@@ -350,6 +354,8 @@ export default function App() {
         }
         setSampleText(preset.sampleText ?? '')
         setCodeSeparator(preset.codeSeparator ?? '')
+        if (typeof preset.codeRowCount === 'number') setCodeRowCount(preset.codeRowCount)
+        if (Array.isArray(preset.codeColumns)) setCodeColumns(preset.codeColumns)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
