@@ -86,6 +86,7 @@ export function CodeSourceSection({
   preview,
   downloadUrl,
   progress,
+  stale,
 }: {
   rowCount: number
   onRowCountChange: (value: number) => void
@@ -98,6 +99,8 @@ export function CodeSourceSection({
   downloadUrl: string | null
   /** Rows written so far while streaming the CSV, or `null` when idle. */
   progress: number | null
+  /** True when settings changed after the last CSV generation. */
+  stale?: boolean
 }) {
   const generating = progress !== null
   function updateColumn(index: number, next: CodeColumnConfig) {
@@ -154,6 +157,12 @@ export function CodeSourceSection({
         Adaugă încă un cod pe fiecare rând. Un rând poate conține mai multe coduri (separate prin separatorul de mai
         sus) — folosește această opțiune când un card trebuie să afișeze mai multe coduri.
       </p>
+
+      {stale && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          Setările s-au modificat. Regenerați CSV-ul pentru a putea continua.
+        </p>
+      )}
 
       <div className="flex items-center gap-4">
         <button

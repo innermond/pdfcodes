@@ -191,6 +191,7 @@ export default function App() {
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
+  const [codeCsvStale, setCodeCsvStale] = useState(false)
 
   const codeCsvPreview = useMemo(
     () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
@@ -236,6 +237,26 @@ export default function App() {
       return URL.createObjectURL(blob)
     })
     setCodeCsvProgress(null)
+    setCodeCsvStale(false)
+  }
+
+  function invalidateCsv() {
+    if (codeCsvUrl === null) return
+    URL.revokeObjectURL(codeCsvUrl)
+    setCodeCsvUrl(null)
+    setCsvDataFile(null)
+    setCodeCsvProgress(null)
+    setCodeCsvStale(true)
+  }
+
+  function handleCodeRowCountChange(value: number) {
+    setCodeRowCount(value)
+    invalidateCsv()
+  }
+
+  function handleCodeColumnsChange(columns: CodeColumnConfig[]) {
+    setCodeColumns(columns)
+    invalidateCsv()
   }
 
   const [generateUnlocked, setGenerateUnlocked] = useState(
@@ -586,6 +607,7 @@ export default function App() {
 
   function handleCodeSeparatorChange(value: string) {
     setCodeSeparator(value)
+    invalidateCsv()
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -1010,15 +1032,16 @@ export default function App() {
           {step === 'date' && (
           <CodeSourceSection
             rowCount={codeRowCount}
-            onRowCountChange={setCodeRowCount}
+            onRowCountChange={handleCodeRowCountChange}
             separator={codeSeparator}
             onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
-            onColumnsChange={setCodeColumns}
+            onColumnsChange={handleCodeColumnsChange}
             onGenerate={handleGenerateCsv}
             preview={codeCsvPreview}
             downloadUrl={codeCsvUrl}
             progress={codeCsvProgress}
+            stale={codeCsvStale}
           />
           )}
 
