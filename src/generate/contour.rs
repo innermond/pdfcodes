@@ -105,11 +105,17 @@ pub(crate) fn build_grid_contour_page(
     // Col 0: bottom → top (ly0 → ly1)
     // Col 1: top → bottom (ly1 → ly0)
     // Col n: alternates — even index starts at bottom, odd at top.
+    //
+    // Each line is stroked on its own (m … l … S) so it stays a separate path:
+    // a downstream cutter treats every line as a distinct cuttable path rather
+    // than one continuous toolpath. Serpentine ordering is kept only to minimize
+    // plotter travel between successive cuts.
     for col in 0..=cols {
         let x = col_x(col);
         let (from_y, to_y) = if col % 2 == 0 { (ly0, ly1) } else { (ly1, ly0) };
         operations.push(Operation::new("m", vec![Object::Real(x), Object::Real(from_y)]));
         operations.push(Operation::new("l", vec![Object::Real(x), Object::Real(to_y)]));
+        operations.push(Operation::new("S", vec![]));
     }
 
     // --- Horizontal lines in serpentine order, picking up from where the last
@@ -129,10 +135,10 @@ pub(crate) fn build_grid_contour_page(
         let (from_x, to_x) = if i % 2 == 0 { (lx1, lx0) } else { (lx0, lx1) };
         operations.push(Operation::new("m", vec![Object::Real(from_x), Object::Real(y)]));
         operations.push(Operation::new("l", vec![Object::Real(to_x), Object::Real(y)]));
+        operations.push(Operation::new("S", vec![]));
     }
 
-    // Stroke all segments in one pass, then draw registration circles.
-    operations.push(Operation::new("S", vec![]));
+    // Each line was stroked individually above; now draw registration circles.
     operations.extend(layout.registration_circles());
 
     let content = Content { operations };
