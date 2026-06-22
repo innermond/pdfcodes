@@ -12,7 +12,7 @@ import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } f
 import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
-import { defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
@@ -25,10 +25,13 @@ type Mode = 'print' | 'contour' | 'both'
 // which aren't representable as JSON and are provided separately per session.
 // Per-word Google Font selections *are* representable (just family + style
 // strings) and are re-fetched on load.
+type CodeDataMode = 'generate' | 'upload'
+
 interface Preset {
   version: 1
   sampleText: string
   codeSeparator: string
+  codeDataMode: CodeDataMode
   codeRowCount: number
   codeColumns: CodeColumnConfig[]
   words: WordStyle[]
@@ -175,6 +178,10 @@ export default function App() {
   const [autoTextColor, setAutoTextColor] = useState(true)
 
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null)
+  // User-editable target card dimensions for an uploaded background PDF.
+  // NaN = no override; pre-filled with the detected MediaBox on file load.
+  const [bgTargetWidthMm, setBgTargetWidthMm] = useState<number>(NaN)
+  const [bgTargetHeightMm, setBgTargetHeightMm] = useState<number>(NaN)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
@@ -185,6 +192,9 @@ export default function App() {
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
+  const [codeDataMode, setCodeDataMode] = useState<CodeDataMode>('generate')
+  const [uploadedCsvPreview, setUploadedCsvPreview] = useState('')
+  const [uploadedCsvRowCount, setUploadedCsvRowCount] = useState(0)
   const [presetError, setPresetError] = useState<string | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
@@ -200,15 +210,18 @@ export default function App() {
     [codeRowCount, codeColumns, codeSeparator],
   )
 
-  // While editing the data source, mirror the first generated record into the
-  // card preview (split by codeSeparator, the separator the row is built with)
-  // so column/separator/padding tweaks are reflected live on the card.
+  // Active preview shown in the data-source step: the uploaded file's rows
+  // when in upload mode, the generated preview otherwise.
+  const activePreview = codeDataMode === 'upload' ? uploadedCsvPreview : codeCsvPreview
+
+  // While editing the data source, mirror the first record into the card
+  // preview so separator/column tweaks are reflected live on the card.
   useEffect(() => {
     if (step !== 'date') return
-    const firstRow = codeCsvPreview.split('\n')[0] ?? ''
+    const firstRow = activePreview.split('\n')[0] ?? ''
     handleSampleTextChange(firstRow)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, codeCsvPreview, codeSeparator])
+  }, [step, activePreview, codeSeparator])
 
   // On the "Aspect & Cuvinte" step, default the selection to the first word so
   // its editing controls are shown right away. Also recovers from a stale
@@ -251,6 +264,33 @@ export default function App() {
     setCodeCsvStale(true)
   }
 
+  async function handleCsvUpload(file: File | null) {
+    if (!file) {
+      setCsvDataFile(null)
+      setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
+      setUploadedCsvPreview('')
+      setUploadedCsvRowCount(0)
+      return
+    }
+    const text = await file.text()
+    const allLines = text.split('\n').filter((l) => l.trim().length > 0)
+    setCsvDataFile(file)
+    setUploadedCsvPreview(allLines.slice(0, CSV_PREVIEW_ROW_COUNT).join('\n'))
+    setUploadedCsvRowCount(allLines.length)
+    setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
+    setCodeCsvStale(false)
+  }
+
+  function handleCodeDataModeChange(mode: CodeDataMode) {
+    setCodeDataMode(mode)
+    // Clear the current CSV when switching so the gate re-opens cleanly.
+    setCsvDataFile(null)
+    setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
+    setUploadedCsvPreview('')
+    setUploadedCsvRowCount(0)
+    setCodeCsvStale(false)
+  }
+
   function handleCodeRowCountChange(value: number) {
     setCodeRowCount(value)
     invalidateCsv()
@@ -282,6 +322,7 @@ export default function App() {
       version: 1,
       sampleText,
       codeSeparator,
+      codeDataMode,
       codeRowCount,
       codeColumns,
       words,
@@ -400,7 +441,11 @@ export default function App() {
             .then(setContourBackground)
             .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
         }
-        if (csvFile) {
+        const loadedDataMode: CodeDataMode = preset.codeDataMode === 'upload' ? 'upload' : 'generate'
+        setCodeDataMode(loadedDataMode)
+        if (csvFile && loadedDataMode === 'upload') {
+          void handleCsvUpload(csvFile)
+        } else if (csvFile) {
           setCsvDataFile(csvFile)
         }
 
@@ -440,10 +485,14 @@ export default function App() {
     setBackground(null)
     setBackgroundError(null)
     setBackgroundFile(file)
+    setBgTargetWidthMm(NaN)
+    setBgTargetHeightMm(NaN)
     if (!file) return
     renderPdfBackground(file)
       .then(async (bg) => {
         setBackground(bg)
+        setBgTargetWidthMm(bg.widthPt / MM)
+        setBgTargetHeightMm(bg.heightPt / MM)
         await ensureDefaultFont()
         const maxWidthPt = bg.widthPt * 0.9
         const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
@@ -461,6 +510,8 @@ export default function App() {
     if (source === 'upload') {
       setBackground(null)
       setBackgroundFile(null)
+      setBgTargetWidthMm(NaN)
+      setBgTargetHeightMm(NaN)
     }
   }
 
@@ -539,14 +590,23 @@ export default function App() {
     }
   }
 
+  // Effective card dimensions: use user overrides when set (upload mode only),
+  // otherwise fall back to what the PDF or simple-background source reports.
+  const effectiveCardWidthMm = backgroundSource === 'upload' && background && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0
+    ? bgTargetWidthMm
+    : (background ? background.widthPt / MM : 0)
+  const effectiveCardHeightMm = backgroundSource === 'upload' && background && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0
+    ? bgTargetHeightMm
+    : (background ? background.heightPt / MM : 0)
+
   // Generate a preset-shape contour PDF whenever the shape source is active
   // and the shape/inset/corner-radius/card size changes, feeding it through
   // the same `contourBackgroundFile` pipeline as an uploaded contour PDF.
   useEffect(() => {
     if (contourSource !== 'shape' || !background) return
     let cancelled = false
-    const cardWidthMm = background.widthPt / MM
-    const cardHeightMm = background.heightPt / MM
+    const cardWidthMm = effectiveCardWidthMm
+    const cardHeightMm = effectiveCardHeightMm
     // Stroke the contour in a color that contrasts the background so it stays
     // visible; for an uploaded background (unknown color) default to black.
     const strokeColor = backgroundSource === 'simple' ? contrastColor(simpleBgColor) : '0:0:0:1'
@@ -570,7 +630,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, background, backgroundSource, simpleBgColor])
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -613,7 +673,7 @@ export default function App() {
 
   function handleCodeSeparatorChange(value: string) {
     setCodeSeparator(value)
-    invalidateCsv()
+    if (codeDataMode === 'generate') invalidateCsv()
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -666,11 +726,14 @@ export default function App() {
     setPrintArtifact(null)
     setContourResult(null)
     try {
+      const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
+      const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false)
+        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride)
         : null
+      const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
       const contourOptions = needsContourInput
-        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true)
+        ? { ...buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
       const combine = pageOptions.combine === true
 
@@ -794,10 +857,22 @@ export default function App() {
               </>
             )}
             {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
-            {background && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Dimensiune card: {(background.widthPt / MM).toFixed(1)} × {(background.heightPt / MM).toFixed(1)} mm
-              </p>
+            {backgroundSource === 'upload' && background && (
+              <>
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm dark:border-sky-800 dark:bg-sky-950/40">
+                  <span className="text-xs font-medium uppercase tracking-wide text-sky-500 dark:text-sky-500">Dimensiuni detectate</span>
+                  <span className="font-semibold tabular-nums text-sky-700 dark:text-sky-300">
+                    {(background.widthPt / MM).toFixed(1)} × {(background.heightPt / MM).toFixed(1)} mm
+                  </span>
+                  <span className="text-xs text-sky-500 dark:text-sky-600">
+                    ({background.widthPt.toFixed(0)} × {background.heightPt.toFixed(0)} pt)
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label="Lățime țintă (mm)" value={bgTargetWidthMm} onChange={setBgTargetWidthMm} />
+                  <NumberField label="Înălțime țintă (mm)" value={bgTargetHeightMm} onChange={setBgTargetHeightMm} />
+                </div>
+              </>
             )}
 
             <RadioGroupField<ContourSource>
@@ -1037,6 +1112,10 @@ export default function App() {
 
           {step === 'date' && (
           <CodeSourceSection
+            dataMode={codeDataMode}
+            onDataModeChange={handleCodeDataModeChange}
+            onCsvUpload={(f) => void handleCsvUpload(f)}
+            uploadRowCount={uploadedCsvRowCount}
             rowCount={codeRowCount}
             onRowCountChange={handleCodeRowCountChange}
             separator={codeSeparator}
@@ -1044,8 +1123,8 @@ export default function App() {
             columns={codeColumns}
             onColumnsChange={handleCodeColumnsChange}
             onGenerate={handleGenerateCsv}
-            preview={codeCsvPreview}
-            downloadUrl={codeCsvUrl}
+            preview={activePreview}
+            downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
             progress={codeCsvProgress}
             stale={codeCsvStale}
           />
@@ -1198,8 +1277,8 @@ export default function App() {
             {background ? (
               <CardCanvas
                 backgroundImageUrl={background.imageUrl}
-                cardWidthPt={background.widthPt}
-                cardHeightPt={background.heightPt}
+                cardWidthPt={effectiveCardWidthMm * MM}
+                cardHeightPt={effectiveCardHeightMm * MM}
                 contourImageUrl={contourBackground?.imageUrl ?? null}
                 contourWidthPt={contourBackground?.widthPt ?? 0}
                 contourHeightPt={contourBackground?.heightPt ?? 0}

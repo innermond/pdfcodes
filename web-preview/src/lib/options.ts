@@ -181,6 +181,8 @@ export function buildJsOptions(
   backgroundPaddingMm: number,
   page: PageOptions,
   contour: boolean,
+  cardWidthMm?: number | null,
+  cardHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -226,5 +228,7 @@ export function buildJsOptions(
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
     splitChars: separator,
+    ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
+    ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
   }
 }

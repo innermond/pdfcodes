@@ -5,10 +5,29 @@ pub mod shapes;
 
 use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}};
 
+use crate::color::TextColor;
 use crate::fonts::{embed_fonts, MONTSERRAT_BOLD_TTF};
 use crate::geometry::CardLayout;
 use crate::measure::{measure_stroked_paths, PathMetrics};
 use crate::options::Options;
+
+// Extract the first CMYK or RGB stroke-color operator from a decoded content
+// stream. Used to read the stroke color embedded by `build_shape_pdf` so the
+// grid-lines contour mode can reuse it without an extra round-trip parameter.
+fn extract_stroke_color(content_bytes: &[u8]) -> Option<TextColor> {
+    let content = Content::decode(content_bytes).ok()?;
+    for op in &content.operations {
+        let f = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        match op.operator.as_str() {
+            "K" if op.operands.len() == 4 =>
+                return Some(TextColor::Cmyk(f(&op.operands[0]), f(&op.operands[1]), f(&op.operands[2]), f(&op.operands[3]))),
+            "RG" if op.operands.len() == 3 =>
+                return Some(TextColor::Rgb(f(&op.operands[0]), f(&op.operands[1]), f(&op.operands[2]))),
+            _ => {}
+        }
+    }
+    None
+}
 
 // Result of generating a PDF: the document bytes plus, when requested, the
 // stroked-path measurements of the contour background (excluding the 3
@@ -101,19 +120,39 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let media_box_obj = bg_page_dict.get(b"MediaBox")?;
     let media_box_orig = media_box_obj.as_array()?.clone();
 
-    let card_w = match &media_box_orig[2] {
+    let orig_w = match &media_box_orig[2] {
         Object::Integer(w) => *w as f32,
         Object::Real(w) => *w,
         _ => 595.0,
     };
-    let card_h = match &media_box_orig[3] {
+    let orig_h = match &media_box_orig[3] {
         Object::Integer(h) => *h as f32,
         Object::Real(h) => *h,
         _ => 842.0,
     };
 
     // Get background content bytes for XObject
-    let bg_content_bytes = doc.get_page_content(*bg_page_id)?;
+    let bg_content_bytes_raw = doc.get_page_content(*bg_page_id)?;
+
+    // Apply user-specified card dimensions via a PDF `cm` scale transform.
+    // This rescales the background content without rasterization; the BBox
+    // and grid layout then use the target size so codes land correctly.
+    let (card_w, card_h, bg_content_bytes) = match (opts.card_width_mm, opts.card_height_mm) {
+        (Some(tw_mm), Some(th_mm)) if tw_mm > 0.0 && th_mm > 0.0 => {
+            let target_w = tw_mm * crate::geometry::MM;
+            let target_h = th_mm * crate::geometry::MM;
+            if (target_w - orig_w).abs() > 0.1 || (target_h - orig_h).abs() > 0.1 {
+                let sx = target_w / orig_w;
+                let sy = target_h / orig_h;
+                let prefix = format!("q {sx:.6} 0 0 {sy:.6} 0 0 cm\n").into_bytes();
+                let content = [prefix, bg_content_bytes_raw, b"\nQ".to_vec()].concat();
+                (target_w, target_h, content)
+            } else {
+                (orig_w, orig_h, bg_content_bytes_raw)
+            }
+        }
+        _ => (orig_w, orig_h, bg_content_bytes_raw),
+    };
 
     // Compute grid layout on the host page.
     let layout = CardLayout::compute(card_w, card_h, opts);
@@ -128,16 +167,6 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     }
     let bg_form = Stream::new(bg_xobj_dict, bg_content_bytes.clone());
     let bg_form_id = doc.add_object(bg_form);
-
-    // Resolve the font(s) used for label text. If none are supplied, fall
-    // back to the bundled Montserrat Bold. A single font is used for every
-    // word; otherwise each word position uses its own font by index.
-    let font_bytes_list: Vec<&[u8]> = if opts.font_data.is_empty() {
-        vec![MONTSERRAT_BOLD_TTF]
-    } else {
-        opts.font_data.iter().map(|v| v.as_slice()).collect()
-    };
-    let embedded_fonts = embed_fonts(&mut doc, &font_bytes_list)?;
 
     // Get pages root
     let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
@@ -163,7 +192,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // dimensions, offsets and registration circles), with every cell showing
     // just the background and no label text.
     if opts.contour {
-        let cutting_metrics = if opts.measure_paths {
+        let cutting_metrics = if opts.measure_paths && !opts.contour_as_grid {
             let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
             // The contour PDF is a single sheet, but the cutting machine
             // will run it once per sheet needed to cover every CSV record.
@@ -177,7 +206,13 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             None
         };
 
-        let page_id = contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout)?;
+        let page_id = if opts.contour_as_grid {
+            let stroke = extract_stroke_color(&bg_content_bytes)
+                .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
+            contour::build_grid_contour_page(&mut doc, pages_id, &layout, stroke)?
+        } else {
+            contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout)?
+        };
 
         let pages_obj = doc.get_object(pages_id)?;
         let pages_dict_orig = pages_obj.as_dict()?;
@@ -203,6 +238,16 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             time_cutting_total_s: cutting_metrics.as_ref().map(|m| m.time_cutting_total_s),
         });
     }
+
+    // Contour PDFs contain no text — skip font embedding entirely so they
+    // stay small and import cleanly into cutting-software (Inkscape, etc.).
+    // Fonts are only needed for the print path below.
+    let font_bytes_list: Vec<&[u8]> = if opts.font_data.is_empty() {
+        vec![MONTSERRAT_BOLD_TTF]
+    } else {
+        opts.font_data.iter().map(|v| v.as_slice()).collect()
+    };
+    let embedded_fonts = embed_fonts(&mut doc, &font_bytes_list)?;
 
     // Load CSV
     let csv_data = csv_data.ok_or("csv data is required unless contour is set")?;
@@ -402,6 +447,19 @@ mod tests {
         assert!(out.sharp_turn_count_total.is_none());
         assert!(out.time_cutting_per_card_s.is_none());
         assert!(out.time_cutting_total_s.is_none());
+    }
+
+    #[test]
+    fn generate_print_pdf_with_card_size_override() {
+        let opts = Options {
+            card_width_mm: Some(100.0),
+            card_height_mm: Some(60.0),
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("resized generation should succeed");
+        assert!(out.pdf.starts_with(b"%PDF"));
+        assert!(out.cards_per_page >= 1);
     }
 
     #[test]
