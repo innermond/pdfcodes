@@ -186,6 +186,9 @@ pub fn generate(
         text_background_alphas,
         text_background_blend_modes,
         split_chars,
+        card_width_mm: None,
+        card_height_mm: None,
+        contour_as_grid: false,
         text_contour_colors,
         text_contour_widths_mm,
         text_contour_blend_modes,
@@ -243,6 +246,9 @@ struct JsOptions {
     text_background_alphas: Vec<f32>,
     text_background_blend_modes: Vec<String>,
     split_chars: String,
+    card_width_mm: Option<f32>,
+    card_height_mm: Option<f32>,
+    contour_as_grid: bool,
     text_contours: Vec<String>,
     text_contour_widths_mm: Vec<f32>,
     text_contour_blend_modes: Vec<String>,
@@ -281,6 +287,9 @@ impl Default for JsOptions {
             text_background_alphas: Vec::new(),
             text_background_blend_modes: Vec::new(),
             split_chars: base.split_chars,
+            card_width_mm: None,
+            card_height_mm: None,
+            contour_as_grid: false,
             text_contours: Vec::new(),
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
@@ -312,8 +321,12 @@ pub fn cards_per_page(background: &[u8], options: JsValue) -> Result<usize, JsEr
         Object::Real(v) => *v,
         _ => 0.0,
     };
-    let card_w = dim(&media_box[2]);
-    let card_h = dim(&media_box[3]);
+    let orig_w = dim(&media_box[2]);
+    let orig_h = dim(&media_box[3]);
+    // Honour the caller's dimension override so batch sizes match what
+    // generate_with_options will actually produce.
+    let card_w = js_opts.card_width_mm.map(|mm| mm * crate::geometry::MM).unwrap_or(orig_w);
+    let card_h = js_opts.card_height_mm.map(|mm| mm * crate::geometry::MM).unwrap_or(orig_h);
 
     // Only the layout fields affect the grid; the rest fall back to defaults.
     let opts = Options {
@@ -407,6 +420,9 @@ pub fn generate_with_options(
         text_background_alphas: js_opts.text_background_alphas,
         text_background_blend_modes,
         split_chars: js_opts.split_chars,
+        card_width_mm: js_opts.card_width_mm,
+        card_height_mm: js_opts.card_height_mm,
+        contour_as_grid: js_opts.contour_as_grid,
         text_contour_colors,
         text_contour_widths_mm: js_opts.text_contour_widths_mm,
         text_contour_blend_modes,

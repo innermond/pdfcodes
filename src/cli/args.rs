@@ -1,3 +1,15 @@
+pub(crate) fn get_flag_opt(args: &[String], name: &str) -> Option<f32> {
+    let prefix = format!("--{}=", name);
+    for a in args {
+        if let Some(v) = a.strip_prefix(prefix.as_str()) {
+            if let Ok(f) = v.parse::<f32>() {
+                return Some(f);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn get_flag(args: &[String], name: &str, default: f32) -> f32 {
     let prefix = format!("--{}=", name);
     for a in args {

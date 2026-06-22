@@ -171,7 +171,11 @@ async function run(d: StartData) {
     // only when path measurement is enabled — otherwise skip loading it.
     const needCsv = d.contourOptions.measurePaths === true && d.csv !== null
     const csvText = needCsv ? await d.csv!.text() : undefined
-    const out = generate_with_options(csvText, contourBg, undefined, fonts, d.contourOptions)
+    // Pass no fonts: contour PDFs contain no text so embedding fonts is
+    // wasteful. The Rust side also skips embed_fonts in contour mode, but
+    // passing an empty array here makes the intent explicit and prevents
+    // accidental font bloat if that guard ever changes.
+    const out = generate_with_options(csvText, contourBg, undefined, [], d.contourOptions)
     contour = extractContour(out)
   }
 
