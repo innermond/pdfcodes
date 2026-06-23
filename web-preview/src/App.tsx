@@ -15,6 +15,7 @@ import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, 
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
+import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
@@ -917,7 +918,58 @@ export default function App() {
     }
   }
 
+  // Eyedropper: when a ColorField requests a sample, arm a one-shot pointer
+  // capture over the preview. The next click on the preview reads that pixel of
+  // the background image (a same-origin data URL, so getImageData is allowed)
+  // and resolves the stored color; Esc or a click off the preview cancels.
+  // Capturing on `window` pre-empts word dragging and the picker's outside-click
+  // close. Works in every browser — no EyeDropper API needed.
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [colorSamplingActive, setColorSamplingActive] = useState(false)
+  async function requestColorSample(): Promise<string | null> {
+    if (!background || !previewRef.current?.querySelector('svg')) return null
+    // Rasterize the background up front so the click samples synchronously.
+    let canvas: HTMLCanvasElement
+    try {
+      canvas = await imageUrlToCanvas(background.imageUrl)
+    } catch {
+      return null
+    }
+    return new Promise<string | null>((resolve) => {
+      let settled = false
+      function finish(result: string | null) {
+        if (settled) return
+        settled = true
+        window.removeEventListener('pointerdown', onPointerDown, true)
+        window.removeEventListener('keydown', onKeyDown, true)
+        setColorSamplingActive(false)
+        resolve(result)
+      }
+      function onKeyDown(e: KeyboardEvent) {
+        if (e.key === 'Escape') finish(null)
+      }
+      function onPointerDown(e: PointerEvent) {
+        const svg = previewRef.current?.querySelector('svg')
+        const rect = svg?.getBoundingClientRect()
+        const fx = rect ? (e.clientX - rect.left) / rect.width : -1
+        const fy = rect ? (e.clientY - rect.top) / rect.height : -1
+        if (fx < 0 || fx > 1 || fy < 0 || fy > 1) {
+          finish(null) // clicked off the preview → cancel
+          return
+        }
+        // Claim the click so it can't drag a word or dismiss the picker.
+        e.preventDefault()
+        e.stopPropagation()
+        finish(sampleCanvasColorAt(canvas, fx, fy))
+      }
+      setColorSamplingActive(true)
+      window.addEventListener('pointerdown', onPointerDown, true)
+      window.addEventListener('keydown', onKeyDown, true)
+    })
+  }
+
   return (
+    <ColorSampleContext.Provider value={background ? requestColorSample : null}>
     <div className="mx-auto max-w-6xl px-4 py-8 dark:bg-gray-950 dark:text-gray-100">
       <div className="mb-1 flex items-start justify-between gap-4">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">pdfcodes preview</h1>
@@ -1419,23 +1471,30 @@ export default function App() {
         <div className="flex flex-col gap-4">
           <Section title="Previzualizare">
             {background ? (
-              <CardCanvas
-                backgroundImageUrl={background.imageUrl}
-                cardWidthPt={effectiveCardWidthMm * MM}
-                cardHeightPt={effectiveCardHeightMm * MM}
-                contourImageUrl={contourBackground?.imageUrl ?? null}
-                contourWidthPt={contourBackground?.widthPt ?? 0}
-                contourHeightPt={contourBackground?.heightPt ?? 0}
-                contourOpacity={contourOpacity}
-                contourBlendMode={contourBlendMode}
-                words={words}
-                fonts={fonts}
-                safeMarginMm={safeMarginMm}
-                backgroundPaddingMm={backgroundPaddingMm}
-                selectedIndex={selectedIndex}
-                onSelect={setSelectedIndex}
-                onChangeWord={updateWord}
-              />
+              <div ref={previewRef} className={colorSamplingActive ? 'cursor-crosshair [&_*]:!cursor-crosshair' : undefined}>
+                <CardCanvas
+                  backgroundImageUrl={background.imageUrl}
+                  cardWidthPt={effectiveCardWidthMm * MM}
+                  cardHeightPt={effectiveCardHeightMm * MM}
+                  contourImageUrl={contourBackground?.imageUrl ?? null}
+                  contourWidthPt={contourBackground?.widthPt ?? 0}
+                  contourHeightPt={contourBackground?.heightPt ?? 0}
+                  contourOpacity={contourOpacity}
+                  contourBlendMode={contourBlendMode}
+                  words={words}
+                  fonts={fonts}
+                  safeMarginMm={safeMarginMm}
+                  backgroundPaddingMm={backgroundPaddingMm}
+                  selectedIndex={selectedIndex}
+                  onSelect={setSelectedIndex}
+                  onChangeWord={updateWord}
+                />
+                {colorSamplingActive && (
+                  <p className="mt-2 text-center text-xs text-blue-600 dark:text-blue-400">
+                    Click pe previzualizare pentru a alege culoarea · Esc pentru anulare
+                  </p>
+                )}
+              </div>
             ) : (
               <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă un PDF de fundal pentru a vedea previzualizarea.</p>
             )}
@@ -1458,5 +1517,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </ColorSampleContext.Provider>
   )
 }

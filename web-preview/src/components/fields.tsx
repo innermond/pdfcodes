@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
+import { ColorSampleContext } from '../lib/colorSample'
 
 export function NumberField({
   label,
@@ -274,6 +275,15 @@ export function ColorField({
   // caller opted into hiding it (e.g. a deliberate "none").
   const showPicker = value !== null || !hideWhenNull
   const marker = cmykToSquarePos(effectiveColor)
+  // Eyedropper: sample a color straight from the live preview (works in every
+  // browser — no EyeDropper API needed). Offered only while a preview exists,
+  // which is exactly when the context provides a sampler.
+  const requestColorSample = useContext(ColorSampleContext)
+  async function pickFromPreview() {
+    if (!requestColorSample) return
+    const sampled = await requestColorSample()
+    if (sampled !== null) onChange(sampled)
+  }
 
   return (
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -328,6 +338,20 @@ export function ColorField({
                   />
                   <span className="w-8 text-right text-gray-500 dark:text-gray-400">{Math.round(cmyk.k * 100)}%</span>
                 </label>
+                {requestColorSample && (
+                  <button
+                    type="button"
+                    onClick={pickFromPreview}
+                    aria-label="Alege o culoare din previzualizare"
+                    title="Alege o culoare din previzualizare"
+                    className="flex items-center justify-center gap-1.5 rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                      <path d="M15 11.25l1.5 1.5.75-.75V8.758l2.276-.61a3 3 0 10-3.675-3.675l-.61 2.277H12l-.75.75 1.5 1.5M15 11.25l-8.47 8.47c-.34.34-.8.53-1.28.53s-.94.19-1.28.53l-.97.97-.75-.75.97-.97c.34-.34.53-.8.53-1.28s.19-.94.53-1.28L12.75 9M15 11.25L12.75 9" />
+                    </svg>
+                    Pipetă
+                  </button>
+                )}
               </div>
             )}
           </div>

@@ -12,6 +12,10 @@ interface TextMetrics {
   // turns the visible glyphs in place rather than around the padded line box.
   inkAscent: number
   inkDescent: number
+  // Horizontal offset from the text's `x` origin to the ink's left edge (the
+  // first glyph's left side bearing). Lets the selection box and flip pivot
+  // track the visible glyphs instead of the advance origin.
+  inkLeft: number
 }
 
 export function WordOverlay({
@@ -54,6 +58,11 @@ export function WordOverlay({
     const baseline = el.y.baseVal.numberOfItems > 0 ? el.y.baseVal.getItem(0).value : 0
     const inkAscent = baseline - bbox.y
     const inkDescent = bbox.y + bbox.height - baseline
+    // Likewise horizontally: the text's `x` origin is 0 for the hidden measure
+    // pass and `xPt` once positioned, so subtract it to get the ink's left edge
+    // relative to the advance origin (the first glyph's left side bearing).
+    const originX = el.x.baseVal.numberOfItems > 0 ? el.x.baseVal.getItem(0).value : 0
+    const inkLeft = bbox.x - originX
 
     // Layout uses the font's own ascent/descent (not the tight glyph bbox),
     // matching how src/generate/cards.rs derives `ascent`/`descent` from
@@ -70,7 +79,7 @@ export function WordOverlay({
       descent = tm.fontBoundingBoxDescent
     }
 
-    setMetrics({ width: bbox.width, ascent, descent, inkAscent, inkDescent })
+    setMetrics({ width: bbox.width, ascent, descent, inkAscent, inkDescent, inkLeft })
   }, [word.text, word.fontSizePt, word.charSpacingPt, fontFamily])
 
   const textWidthPt = metrics?.width ?? 0
@@ -144,7 +153,10 @@ export function WordOverlay({
     )
   }
 
-  const cxSvg = xPt + textWidthPt / 2
+  // Horizontal pivot: the centre of the *visible glyph ink* (`xPt + inkLeft` is
+  // the ink's left edge, not the advance origin `xPt`), so mirror-X turns the
+  // glyphs in place instead of shifting them by the side bearing.
+  const cxSvg = xPt + metrics.inkLeft + textWidthPt / 2
   // Pivot for flip/rotate: the centre of the *visible glyph ink*, so mirroring or
   // rotating keeps the text in place. In SVG (y down) the ink spans
   // `ySvg - inkAscent` (top) to `ySvg + inkDescent` (bottom), both metrics
@@ -162,8 +174,10 @@ export function WordOverlay({
   }
   const transform = transformParts.length > 0 ? transformParts.join(' ') : undefined
 
-  // Selection outline geometry (a 2pt margin around the glyph box).
-  const selX = xPt - 2
+  // Selection outline geometry (a 2pt margin around the glyph box). Anchor X to
+  // the ink's left edge (`xPt + inkLeft`), not the advance origin, so the box
+  // wraps the visible glyphs symmetrically instead of sitting off to one side.
+  const selX = xPt + metrics.inkLeft - 2
   const selY = ySvg - metrics.ascent - 2
   const selW = textWidthPt + 4
   const selH = metrics.ascent + metrics.descent + 4
@@ -224,16 +238,18 @@ export function WordOverlay({
   }
 
   return (
-    <g
-      transform={transform}
-      onPointerDown={handlePointerDown}
-      className="cursor-move"
-    >
+    // The flip/rotate `transform` is applied to each child individually rather
+    // than to this wrapping group on purpose: a transformed group forms its own
+    // stacking context, which isolates the children's `mix-blend-mode` so they
+    // can no longer composite against the background image below. The transform
+    // is defined in this (untransformed) parent space, so applying it per child
+    // is visually identical to transforming the group.
+    <g onPointerDown={handlePointerDown} className="cursor-move">
       {selected && (
         // "Marching ants" selection: a static white dashed track with dark
         // dashes filling its gaps, both animated in lockstep so the dashes
         // appear to crawl. The two colors keep it visible on any background.
-        <g pointerEvents="none">
+        <g transform={transform} pointerEvents="none">
           <rect
             x={selX}
             y={selY}
@@ -274,6 +290,7 @@ export function WordOverlay({
       )}
       {word.background !== null && (
         <rect
+          transform={transform}
           x={rectXPt}
           y={rectYSvg}
           width={rectWPt}
@@ -285,6 +302,7 @@ export function WordOverlay({
       )}
       <text
         ref={measureRef}
+        transform={transform}
         x={xPt}
         y={ySvg}
         fontSize={word.fontSizePt}
@@ -297,6 +315,7 @@ export function WordOverlay({
       </text>
       {word.contourColor !== null && (
         <text
+          transform={transform}
           x={xPt}
           y={ySvg}
           fontSize={word.fontSizePt}
