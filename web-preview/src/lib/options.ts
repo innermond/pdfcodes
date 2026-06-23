@@ -79,7 +79,12 @@ export function defaultWordStyle(index: number): WordStyle {
     text: '',
     fontSizePt: index === 0 ? 9 : 14,
     align: 'center',
-    valign: 'custom',
+    // The primary word starts dead-centre on the card: `align: 'center'` +
+    // `xMm: null` centres it horizontally, and `valign: 'middle'` centres it
+    // vertically (re-snapped to the live card height by the effect in App).
+    // Extra words keep an explicit position so a multi-word code doesn't pile
+    // up on the same centre line.
+    valign: index === 0 ? 'middle' : 'custom',
     xMm: null,
     yMm: index === 0 ? 10 : 3,
     color: '0:0:0:1', // CMYK black

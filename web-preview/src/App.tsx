@@ -262,14 +262,27 @@ export default function App() {
     }
   }, [step, selectedIndex, words.length])
 
+  // Effective card dimensions: use user overrides when set (upload mode only),
+  // otherwise fall back to what the PDF or simple-background source reports.
+  // Declared here (above the effects that depend on it) so a change to the
+  // target size re-snaps and re-scales word positions just like a new PDF would.
+  const effectiveCardWidthMm = backgroundSource === 'upload' && background && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0
+    ? bgTargetWidthMm
+    : (background ? background.widthPt / MM : 0)
+  const effectiveCardHeightMm = backgroundSource === 'upload' && background && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0
+    ? bgTargetHeightMm
+    : (background ? background.heightPt / MM : 0)
+
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
   // size in effect when it was picked. Re-snap whenever the font family, size,
-  // text, card height or safe margin change so the alignment keeps holding;
-  // words set to "custom" keep their explicit position untouched.
+  // text, effective card height or safe margin change so the alignment keeps
+  // holding — this is what re-centres an unmoved "middle" code when the user
+  // edits the card dimensions. Words set to "custom" keep their explicit
+  // (ratio-scaled) position untouched.
   useEffect(() => {
-    if (!background) return
-    const cardHeightMm = background.heightPt / MM
+    if (!background || !(effectiveCardHeightMm > 0)) return
+    const cardHeightMm = effectiveCardHeightMm
     setWords((prev) => {
       let changed = false
       const next = prev.map((word, index) => {
@@ -281,7 +294,7 @@ export default function App() {
       })
       return changed ? next : prev
     })
-  }, [fonts, background, safeMarginMm, words])
+  }, [fonts, background, effectiveCardHeightMm, safeMarginMm, words])
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
@@ -686,14 +699,36 @@ export default function App() {
     }
   }
 
-  // Effective card dimensions: use user overrides when set (upload mode only),
-  // otherwise fall back to what the PDF or simple-background source reports.
-  const effectiveCardWidthMm = backgroundSource === 'upload' && background && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0
-    ? bgTargetWidthMm
-    : (background ? background.widthPt / MM : 0)
-  const effectiveCardHeightMm = backgroundSource === 'upload' && background && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0
-    ? bgTargetHeightMm
-    : (background ? background.heightPt / MM : 0)
+  // Keep each word's fractional position within the card constant when the card
+  // dimensions change: a word's stored position is scaled by the new/old size
+  // ratio, so a code placed at (x, y) over the old width/height lands at the
+  // same fraction of the new width/height. Horizontal auto-centering
+  // (`xMm === null`) and snapped vertical alignment (`valign !== 'custom'`) are
+  // left to the align/valign machinery, which already tracks the card size — so
+  // a word that was dead-centre stays dead-centre across a resize. The first
+  // valid size only establishes the baseline (no scaling on initial placement).
+  const prevCardDimsRef = useRef<{ w: number; h: number } | null>(null)
+  useEffect(() => {
+    const w = effectiveCardWidthMm
+    const h = effectiveCardHeightMm
+    const prev = prevCardDimsRef.current
+    if (prev && prev.w > 0 && prev.h > 0 && w > 0 && h > 0 && (prev.w !== w || prev.h !== h)) {
+      const sx = w / prev.w
+      const sy = h / prev.h
+      setWords((words) => {
+        let changed = false
+        const next = words.map((word) => {
+          const xMm = word.xMm !== null && sx !== 1 ? word.xMm * sx : word.xMm
+          const yMm = word.valign === 'custom' && sy !== 1 ? word.yMm * sy : word.yMm
+          if (xMm === word.xMm && yMm === word.yMm) return word
+          changed = true
+          return { ...word, xMm, yMm }
+        })
+        return changed ? next : words
+      })
+    }
+    prevCardDimsRef.current = w > 0 && h > 0 ? { w, h } : null
+  }, [effectiveCardWidthMm, effectiveCardHeightMm])
 
   // Generate a preset-shape contour PDF whenever the shape source is active
   // and the shape/inset/corner-radius/card size changes, feeding it through
