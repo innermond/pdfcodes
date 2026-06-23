@@ -86,6 +86,15 @@ pub struct Options {
     // field into "words" for per-word layout. Empty defaults to a single
     // space character.
     pub split_chars: String,
+    // Override the card dimensions (in mm) derived from the background PDF's
+    // MediaBox. When both are set, the background content is scaled via a PDF
+    // `cm` transform to fill the target size without rasterization.
+    pub card_width_mm: Option<f32>,
+    pub card_height_mm: Option<f32>,
+    // When true and the contour source is a plain rectangle with zero inset,
+    // the contour page draws spanning grid lines instead of tiling individual
+    // rectangles — eliminating the double-stroke along shared card edges.
+    pub contour_as_grid: bool,
     // Stroke color drawn around each text part's glyphs, one per word
     // position (or a single entry for every word). `None` means no contour
     // for that word. Empty means no contours at all.
@@ -97,6 +106,11 @@ pub struct Options {
     // Blend mode for `text_contour_colors`, one per word position (or a
     // single entry for every word). Empty means `Normal` for every word.
     pub text_contour_blend_modes: Vec<BlendMode>,
+    // Extra spacing (in points) inserted between characters of each word,
+    // emitted as the PDF `Tc` operator. One per word position (or a single
+    // entry for every word). Empty defaults to no extra tracking (0.0) for
+    // every word.
+    pub text_char_spacing_pt: Vec<f32>,
 }
 
 impl Options {
@@ -138,9 +152,13 @@ impl Default for Options {
             text_background_alphas: Vec::new(),
             text_background_blend_modes: Vec::new(),
             split_chars: " ".to_string(),
+            card_width_mm: None,
+            card_height_mm: None,
+            contour_as_grid: false,
             text_contour_colors: Vec::new(),
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
+            text_char_spacing_pt: Vec::new(),
         }
     }
 }

@@ -31,6 +31,22 @@ describe('generateCodesCsv', () => {
     }
   })
 
+  it('uses custom padChar (not default 0) for random numeric codes when padLength > length', () => {
+    const csv = generateCodesCsv(20, [column({ mode: 'random', charset: 'numeric', length: 3, padChar: 'X', padLength: 6 })], ' ')
+    for (const line of csv.split('\n')) {
+      expect(line).toHaveLength(6)
+      expect(line).toMatch(/^X+[0-9]{3}$/)
+    }
+  })
+
+  it('applies no padding for random codes when padLength equals length', () => {
+    const csv = generateCodesCsv(20, [column({ mode: 'random', charset: 'numeric', length: 6, padChar: 'X', padLength: 6 })], ' ')
+    for (const line of csv.split('\n')) {
+      expect(line).toHaveLength(6)
+      expect(line).toMatch(/^[0-9]{6}$/)
+    }
+  })
+
   it('leaves codes untouched when padLength is shorter than the code', () => {
     const csv = generateCodesCsv(1, [column({ mode: 'range', rangeStart: 12345, padLength: 3 })], ' ')
     expect(csv).toBe('12345')

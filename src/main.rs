@@ -3,7 +3,7 @@ mod cli;
 use std::env;
 use pdfcodes::{generate_pdf, parse_color, parse_color_or_none, BlendMode, Options, TextAlign};
 
-use cli::args::{default_output_path, get_bool_list_flag, get_flag, get_float_list_flag, get_string_flag, get_string_list_flag, with_suffix};
+use cli::args::{default_output_path, get_bool_list_flag, get_flag, get_flag_opt, get_float_list_flag, get_string_flag, get_string_list_flag, with_suffix};
 use cli::config::Config;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -144,6 +144,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         split_chars: get_string_flag(&args, "split-chars")
             .or_else(|| config.split_chars.clone())
             .unwrap_or_else(|| " ".to_string()),
+        card_width_mm: get_flag_opt(&args, "card-width"),
+        card_height_mm: get_flag_opt(&args, "card-height"),
+        contour_as_grid: args.iter().any(|a| a == "--contour-as-grid"),
         text_contour_colors: get_string_list_flag(&args, "text-contours")
             .or_else(|| config.text_contours.clone())
             .unwrap_or_default()
@@ -159,6 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|s| s.parse::<BlendMode>())
             .collect::<Result<Vec<BlendMode>, String>>()?,
+        text_char_spacing_pt: get_float_list_flag(&args, "text-char-spacings")
+            .or_else(|| config.text_char_spacings.clone())
+            .unwrap_or_default(),
     };
 
     run(csv_path.as_deref(), &background_path, &output_path, &opts, &contour_background_path)?;

@@ -70,6 +70,8 @@ export interface WordStyle {
   contourColor: string | null
   contourWidthMm: number
   contourBlendMode: BlendMode
+  // Extra spacing (in points) inserted between characters (PDF `Tc`).
+  charSpacingPt: number
 }
 
 export function defaultWordStyle(index: number): WordStyle {
@@ -77,7 +79,12 @@ export function defaultWordStyle(index: number): WordStyle {
     text: '',
     fontSizePt: index === 0 ? 9 : 14,
     align: 'center',
-    valign: 'custom',
+    // The primary word starts dead-centre on the card: `align: 'center'` +
+    // `xMm: null` centres it horizontally, and `valign: 'middle'` centres it
+    // vertically (re-snapped to the live card height by the effect in App).
+    // Extra words keep an explicit position so a multi-word code doesn't pile
+    // up on the same centre line.
+    valign: index === 0 ? 'middle' : 'custom',
     xMm: null,
     yMm: index === 0 ? 10 : 3,
     color: '0:0:0:1', // CMYK black
@@ -92,6 +99,7 @@ export function defaultWordStyle(index: number): WordStyle {
     contourColor: null,
     contourWidthMm: 0.25,
     contourBlendMode: 'normal',
+    charSpacingPt: 0.0,
   }
 }
 
@@ -181,6 +189,8 @@ export function buildJsOptions(
   backgroundPaddingMm: number,
   page: PageOptions,
   contour: boolean,
+  cardWidthMm?: number | null,
+  cardHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -225,6 +235,9 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
+    textCharSpacingsPt: new Float32Array(words.map((w) => w.charSpacingPt)),
     splitChars: separator,
+    ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
+    ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
   }
 }

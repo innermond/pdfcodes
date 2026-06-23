@@ -4,8 +4,14 @@ import { colorToCss } from '../lib/cmyk'
 
 interface TextMetrics {
   width: number
+  // Font line metrics (include empty padding): used for layout — the background
+  // rect and selection box — so they stay synced with the PDF generator.
   ascent: number
   descent: number
+  // Tight glyph-ink extent: used as the flip/rotate pivot so mirroring/rotating
+  // turns the visible glyphs in place rather than around the padded line box.
+  inkAscent: number
+  inkDescent: number
 }
 
 export function WordOverlay({
@@ -38,14 +44,24 @@ export function WordOverlay({
     const el = measureRef.current
     if (!el) return
     const bbox = el.getBBox()
+    // Tight ink extent of these exact glyphs, relative to the baseline, taken
+    // from the same SVG bbox as `width` so the flip/rotate pivot matches what's
+    // actually rendered. `bbox` is in the element's own space (the parent's flip
+    // transform doesn't affect it), where the baseline sits at the text's `y`
+    // attribute — which is 0 for the hidden first-measure pass and `ySvg` once
+    // positioned, so we subtract it to stay position-independent. (Canvas
+    // measureText's ink metrics differ subtly from SVG and made the flip jump.)
+    const baseline = el.y.baseVal.numberOfItems > 0 ? el.y.baseVal.getItem(0).value : 0
+    const inkAscent = baseline - bbox.y
+    const inkDescent = bbox.y + bbox.height - baseline
 
-    // Use the font's own ascent/descent (not the tight glyph bbox) for
-    // vertical placement, matching how src/generate/cards.rs derives
-    // `ascent`/`descent` from `face.ascender()`/`face.descender()`. The
-    // glyph bbox varies per word (e.g. no descenders => zero descent),
-    // which would desync the background rect's Y position from the PDF.
-    let ascent = -bbox.y
-    let descent = bbox.height + bbox.y
+    // Layout uses the font's own ascent/descent (not the tight glyph bbox),
+    // matching how src/generate/cards.rs derives `ascent`/`descent` from
+    // `face.ascender()`/`face.descender()`. The glyph bbox varies per word
+    // (e.g. no descenders => zero descent), which would desync the background
+    // rect's Y position from the PDF.
+    let ascent = inkAscent
+    let descent = inkDescent
     const ctx = document.createElement('canvas').getContext('2d')
     if (ctx) {
       ctx.font = `${word.fontSizePt}px ${fontFamily}`
@@ -54,8 +70,8 @@ export function WordOverlay({
       descent = tm.fontBoundingBoxDescent
     }
 
-    setMetrics({ width: bbox.width, ascent, descent })
-  }, [word.text, word.fontSizePt, fontFamily])
+    setMetrics({ width: bbox.width, ascent, descent, inkAscent, inkDescent })
+  }, [word.text, word.fontSizePt, word.charSpacingPt, fontFamily])
 
   const textWidthPt = metrics?.width ?? 0
   const safeMarginPt = safeMarginMm * MM
@@ -120,6 +136,7 @@ export function WordOverlay({
         y={0}
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
+        letterSpacing={word.charSpacingPt}
         opacity={0}
       >
         {word.text}
@@ -128,7 +145,13 @@ export function WordOverlay({
   }
 
   const cxSvg = xPt + textWidthPt / 2
-  const cySvg = ySvg - (metrics.ascent + metrics.descent) / 2
+  // Pivot for flip/rotate: the centre of the *visible glyph ink*, so mirroring or
+  // rotating keeps the text in place. In SVG (y down) the ink spans
+  // `ySvg - inkAscent` (top) to `ySvg + inkDescent` (bottom), both metrics
+  // positive, so the midpoint is `ySvg - (inkAscent - inkDescent) / 2`. Using
+  // the font line box instead leaves its empty ascent/descent padding off
+  // centre, which shifts text whose glyphs don't fill the box on a vertical flip.
+  const cySvg = ySvg - (metrics.inkAscent - metrics.inkDescent) / 2
 
   const transformParts: string[] = []
   if (word.flipX || word.flipY) {
@@ -266,6 +289,7 @@ export function WordOverlay({
         y={ySvg}
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
+        letterSpacing={word.charSpacingPt}
         fill={colorToCss(word.color)}
         style={{ mixBlendMode: word.blendMode }}
       >
@@ -277,6 +301,7 @@ export function WordOverlay({
           y={ySvg}
           fontSize={word.fontSizePt}
           fontFamily={fontFamily}
+          letterSpacing={word.charSpacingPt}
           fill="none"
           stroke={colorToCss(word.contourColor)}
           strokeWidth={word.contourWidthMm * MM}

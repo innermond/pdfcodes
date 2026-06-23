@@ -151,6 +151,9 @@ const CMYK_CHANNELS: { key: keyof Cmyk; label: string }[] = [
 ]
 
 const DEFAULT_CMYK = '0:0:0:1' // black
+// A `null` value has no ink and renders as the white card; show the picker
+// seeded with this so its swatch/square/inputs reflect that white.
+const NULL_CMYK = '0:0:0:0' // white
 
 // The picker's color square: hue across X, saturation top->bottom, painted
 // through the print CMYK->RGB conversion (via `squareColor`) so it shows only
@@ -198,14 +201,22 @@ export function ColorField({
   onChange,
   allowNone = false,
   noneLabel = 'fără fundal',
+  hideWhenNull = false,
 }: {
   label: string
   value: string | null
   onChange: (value: string | null) => void
   allowNone?: boolean
   noneLabel?: string
+  // By default a `null` value still shows the picker, seeded with white (its
+  // rendered color). Set this to collapse the picker entirely while `null`
+  // instead — e.g. when `null` means a deliberate "none" toggled via `allowNone`.
+  hideWhenNull?: boolean
 }) {
-  const cmyk = parseCmyk(value ?? DEFAULT_CMYK)
+  // `null` renders as white, so seed the picker (swatch, square, inputs) with
+  // white when there's no explicit color.
+  const effectiveColor = value ?? NULL_CMYK
+  const cmyk = parseCmyk(effectiveColor)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -259,7 +270,10 @@ export function ColorField({
     pickFromSquare(e)
   }
 
-  const marker = value !== null ? cmykToSquarePos(value) : null
+  // Show the picker whenever there's a color, and also for `null` unless the
+  // caller opted into hiding it (e.g. a deliberate "none").
+  const showPicker = value !== null || !hideWhenNull
+  const marker = cmykToSquarePos(effectiveColor)
 
   return (
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -277,7 +291,7 @@ export function ColorField({
           </label>
         )}
       </div>
-      {value !== null && (
+      {showPicker && (
         <div className="flex items-center gap-3">
           <div ref={containerRef} className="relative shrink-0">
             <button
@@ -285,7 +299,7 @@ export function ColorField({
               aria-label="Alege culoarea"
               onClick={() => setOpen((v) => !v)}
               className="h-10 w-10 rounded border border-gray-300 dark:border-gray-600"
-              style={{ backgroundColor: colorToCss(value) }}
+              style={{ backgroundColor: colorToCss(effectiveColor) }}
             />
             {open && (
               <div className="absolute z-10 mt-1 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
