@@ -378,10 +378,14 @@ export default function App() {
     // separators at all.
     setCodeSeparator(parsed.delimiter)
     setUploadedRawFile(file)
-    setUploadedCsvInfo(
-      `${forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'}: ${describeDelimiter(parsed.delimiter)} · ` +
-        `${parsed.rows.length.toLocaleString('ro-RO')} rânduri · ${parsed.columnCount} coloane`,
-    )
+    const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
+    if (parsed.columnCount <= 1) {
+      // A single code per row needs no separator, so don't mention one.
+      setUploadedCsvInfo(`Un singur cod pe rând · ${rowsLabel}`)
+    } else {
+      const prefix = forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'
+      setUploadedCsvInfo(`${prefix}: ${describeDelimiter(parsed.delimiter)} · ${rowsLabel} · ${parsed.columnCount} coloane`)
+    }
     setUploadedCsvWarnings(parsed.warnings)
     applyUploadedCsvRows(parsed.rows)
   }
