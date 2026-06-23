@@ -89,4 +89,7 @@ pub(crate) struct Config {
     // Character combination used to split each CSV field into "words".
     // Defaults to a single space character.
     pub split_chars: Option<String>,
+    // Extra spacing (in points) between characters of each word, one per word
+    // position (or a single entry for every word). Defaults to 0.0pt.
+    pub text_char_spacings: Option<Vec<f32>>,
 }

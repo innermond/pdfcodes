@@ -70,6 +70,8 @@ export interface WordStyle {
   contourColor: string | null
   contourWidthMm: number
   contourBlendMode: BlendMode
+  // Extra spacing (in points) inserted between characters (PDF `Tc`).
+  charSpacingPt: number
 }
 
 export function defaultWordStyle(index: number): WordStyle {
@@ -92,6 +94,7 @@ export function defaultWordStyle(index: number): WordStyle {
     contourColor: null,
     contourWidthMm: 0.25,
     contourBlendMode: 'normal',
+    charSpacingPt: 0.0,
   }
 }
 
@@ -227,6 +230,7 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
+    textCharSpacingsPt: new Float32Array(words.map((w) => w.charSpacingPt)),
     splitChars: separator,
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),

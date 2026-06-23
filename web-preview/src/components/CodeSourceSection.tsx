@@ -88,6 +88,8 @@ export function CodeSourceSection({
   onDataModeChange,
   onCsvUpload,
   uploadRowCount,
+  uploadInfo,
+  uploadWarnings,
   rowCount,
   onRowCountChange,
   separator,
@@ -104,6 +106,10 @@ export function CodeSourceSection({
   onDataModeChange: (mode: CodeDataMode) => void
   onCsvUpload: (file: File | null) => void
   uploadRowCount: number
+  /** Human-readable summary of the detected delimiter / row & column counts. */
+  uploadInfo?: string | null
+  /** Non-fatal issues found while parsing the uploaded CSV. */
+  uploadWarnings?: string[]
   rowCount: number
   onRowCountChange: (value: number) => void
   separator: string
@@ -148,24 +154,36 @@ export function CodeSourceSection({
       {dataMode === 'upload' ? (
         <>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Încarcă un fișier CSV existent. Fiecare rând devine un card; câmpurile de pe fiecare rând sunt separate
-            de separatorul de mai jos (același separator trebuie setat în pasul „Aspect &amp; Cuvinte").
+            Încarcă un fișier CSV existent. Fiecare rând devine un card. Separatorul (virgulă, punct și virgulă, tab
+            etc.) este detectat automat — nu trebuie să știi nimic despre formatul CSV.
           </p>
           <FileField
             label="Fișier CSV"
             accept=".csv,text/csv,text/plain"
             onChange={(files) => onCsvUpload(files?.[0] ?? null)}
           />
-          <TextField
-            label="Separator între coduri pe rând"
-            value={separator}
-            onChange={onSeparatorChange}
-            placeholder=" "
-          />
+          {uploadInfo && (
+            <p className="text-sm font-medium text-green-700 dark:text-green-400">{uploadInfo}</p>
+          )}
+          {uploadWarnings && uploadWarnings.length > 0 && (
+            <ul className="list-disc space-y-1 pl-5 text-sm text-amber-600 dark:text-amber-400">
+              {uploadWarnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
           {uploadRowCount > 0 && (
-            <p className="text-sm text-gray-500 dark:text-gray-400">
-              {uploadRowCount.toLocaleString('ro-RO')} rânduri detectate
-            </p>
+            <details className="text-sm text-gray-500 dark:text-gray-400">
+              <summary className="cursor-pointer select-none">Separator detectat greșit? Corectează manual</summary>
+              <div className="mt-2">
+                <TextField
+                  label="Separator între coduri pe rând"
+                  value={separator}
+                  onChange={onSeparatorChange}
+                  placeholder=","
+                />
+              </div>
+            </details>
           )}
         </>
       ) : (

@@ -192,6 +192,8 @@ pub fn generate(
         text_contour_colors,
         text_contour_widths_mm,
         text_contour_blend_modes,
+        // The positional entry point keeps the previous fixed spacing.
+        text_char_spacing_pt: Vec::new(),
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -252,6 +254,7 @@ struct JsOptions {
     text_contours: Vec<String>,
     text_contour_widths_mm: Vec<f32>,
     text_contour_blend_modes: Vec<String>,
+    text_char_spacings_pt: Vec<f32>,
 }
 
 impl Default for JsOptions {
@@ -293,6 +296,7 @@ impl Default for JsOptions {
             text_contours: Vec::new(),
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
+            text_char_spacings_pt: Vec::new(),
         }
     }
 }
@@ -426,6 +430,7 @@ pub fn generate_with_options(
         text_contour_colors,
         text_contour_widths_mm: js_opts.text_contour_widths_mm,
         text_contour_blend_modes,
+        text_char_spacing_pt: js_opts.text_char_spacings_pt,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

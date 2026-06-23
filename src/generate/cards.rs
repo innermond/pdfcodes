@@ -9,6 +9,11 @@ use crate::fonts::EmbeddedFont;
 use crate::geometry::{CardLayout, MM};
 use crate::options::Options;
 
+// Default character spacing (PDF `Tc`, in points) when `text_char_spacing_pt`
+// doesn't specify a value for a word. Zero means glyphs use their natural
+// advances with no extra tracking.
+const DEFAULT_CHAR_SPACING_PT: f32 = 0.0;
+
 // Build a Form XObject (background + label text) for each CSV row, returning
 // the object IDs of the generated cards.
 pub(crate) fn build_card_xobjects(
@@ -30,7 +35,6 @@ pub(crate) fn build_card_xobjects(
         .delimiter(sep)
         .from_reader(csv_data.as_bytes());
 
-    let kerning_adjustment = 0.3;
     let y_positions: Vec<f32> = opts.text_y_mm.iter().map(|y| y * MM).collect();
 
     let mut card_ids = Vec::new();
@@ -149,6 +153,15 @@ pub(crate) fn build_card_xobjects(
             let align_idx = if opts.align.len() == 1 { 0 } else { idx };
             let align = opts.align[align_idx];
 
+            // Per-word character spacing (PDF `Tc`), falling back to the default
+            // when unset. A single entry applies to every word.
+            let char_spacing = if opts.text_char_spacing_pt.is_empty() {
+                DEFAULT_CHAR_SPACING_PT
+            } else {
+                let sp_idx = if opts.text_char_spacing_pt.len() == 1 { 0 } else { idx };
+                opts.text_char_spacing_pt[sp_idx]
+            };
+
             // Calculate text width using ttf-parser
             let mut base_text_width = 0.0f32;
             for ch in text.chars() {
@@ -158,9 +171,11 @@ pub(crate) fn build_card_xobjects(
                 base_text_width += char_width;
             }
 
-            // Account for Tc kerning (0.3 points between each character)
-            let num_chars = text.len() as f32;
-            let text_width = base_text_width + (kerning_adjustment * (num_chars - 1.0));
+            // Account for Tc spacing applied between each character. Count
+            // Unicode scalar values, not UTF-8 bytes, so multi-byte characters
+            // don't over-inflate the width (which would mis-center the text).
+            let num_chars = text.chars().count() as f32;
+            let text_width = base_text_width + (char_spacing * (num_chars - 1.0));
 
             let safe_margin = opts.safe_margin_mm * MM;
             let x = if !opts.text_x_mm.is_empty() {
@@ -319,7 +334,7 @@ pub(crate) fn build_card_xobjects(
             }
             operations.push(Operation::new("BT", vec![]));
             operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
-            operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)])); // add slight kerning
+            operations.push(Operation::new("Tc", vec![Object::Real(char_spacing)])); // character spacing
             operations.push(Operation::new("Tr", vec![Object::Integer(0)])); // fill only
             operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
             operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
@@ -347,7 +362,7 @@ pub(crate) fn build_card_xobjects(
                 operations.push(Operation::new("w", vec![Object::Real(contour_width_mm * MM)]));
                 operations.push(Operation::new("BT", vec![]));
                 operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
-                operations.push(Operation::new("Tc", vec![Object::Real(kerning_adjustment)]));
+                operations.push(Operation::new("Tc", vec![Object::Real(char_spacing)]));
                 operations.push(Operation::new("Tr", vec![Object::Integer(1)])); // stroke only
                 operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
                 operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
