@@ -1,0 +1,108 @@
+// Robust parsing of a *user-uploaded* CSV file. Unlike the codes we generate
+// ourselves (a clean, known format), an uploaded file can use any delimiter
+// (comma, semicolon, tab, pipe, space), carry a UTF-8 BOM, mix CRLF/LF line
+// endings, or quote fields that contain the delimiter. We lean on PapaParse —
+// the de-facto standard browser CSV parser — to handle all of that and to
+// auto-detect the delimiter, so the user never has to know what a "separator"
+// even is.
+import Papa from 'papaparse'
+
+export interface ParsedCsv {
+  // One entry per record, each a list of field values (already unquoted and
+  // with the BOM stripped by PapaParse).
+  rows: string[][]
+  // The delimiter PapaParse detected in the file (e.g. ',' or ';' or '\t').
+  delimiter: string
+  // Number of fields in the first record — what we treat as the column count.
+  columnCount: number
+  // Human-readable issues to surface to the user. Never throws for these;
+  // we parse as much as we can and report what looked off.
+  warnings: string[]
+}
+
+// Delimiters PapaParse will try when auto-detecting. We add space and pipe to
+// its defaults so space- or pipe-separated files are recognised too.
+const DELIMITERS_TO_GUESS = [',', ';', '\t', '|', ' ']
+
+const DELIMITER_LABELS: Record<string, string> = {
+  ',': 'virgulă (,)',
+  ';': 'punct și virgulă (;)',
+  '\t': 'tab',
+  '|': 'bară verticală (|)',
+  ' ': 'spațiu',
+}
+
+// Friendly, Romanian-language name for a detected delimiter (the UI language).
+export function describeDelimiter(delimiter: string): string {
+  return DELIMITER_LABELS[delimiter] ?? `„${delimiter}”`
+}
+
+// Parse an uploaded CSV file. Resolves with the parsed rows plus metadata; only
+// rejects if the file genuinely cannot be read. Pass `forcedDelimiter` to
+// override auto-detection (e.g. when the user corrects a mis-guessed separator).
+export function parseUploadedCsv(file: File, forcedDelimiter?: string): Promise<ParsedCsv> {
+  return new Promise((resolve, reject) => {
+    Papa.parse<string[]>(file, {
+      // No header row: every record is data. Each card maps to one record.
+      header: false,
+      // Auto-detect the delimiter from the candidates below, unless forced.
+      delimiter: forcedDelimiter ?? '',
+      delimitersToGuess: DELIMITERS_TO_GUESS,
+      skipEmptyLines: 'greedy',
+      complete: (results) => {
+        const rows = (results.data as unknown[][])
+          .map((row) => row.map((cell) => String(cell ?? '')))
+          // Drop records that are entirely empty (e.g. a trailing blank line).
+          .filter((row) => row.some((cell) => cell.trim().length > 0))
+
+        const delimiter = results.meta.delimiter || ','
+        const columnCount = rows.length > 0 ? rows[0].length : 0
+        const warnings = collectWarnings(rows, results.errors)
+
+        resolve({ rows, delimiter, columnCount, warnings })
+      },
+      error: (err) => reject(err),
+    })
+  })
+}
+
+function collectWarnings(rows: string[][], errors: Papa.ParseError[]): string[] {
+  const warnings: string[] = []
+
+  if (rows.length === 0) {
+    warnings.push('Fișierul nu conține niciun rând de date.')
+    return warnings
+  }
+
+  // Rows with a different field count than the first row usually mean the wrong
+  // delimiter was guessed or the file is irregular — worth flagging.
+  const expected = rows[0].length
+  const ragged = rows.filter((row) => row.length !== expected).length
+  if (ragged > 0) {
+    warnings.push(
+      `${ragged} rând(uri) au un număr diferit de coloane față de primul rând (${expected}). ` +
+        'Verifică separatorul detectat.',
+    )
+  }
+
+  // A field that contains the original delimiter (a quoted "a,b") is handled
+  // correctly downstream — PapaParse unquotes it and the app re-joins fields
+  // with a collision-safe separator — so it no longer needs a warning.
+
+  // Surface a single representative parse error if PapaParse reported any.
+  if (errors.length > 0) {
+    warnings.push(`Avertisment la citire: ${errors[0].message}`)
+  }
+
+  return warnings
+}
+
+// Re-serialise parsed rows into the clean, single-delimiter CSV text that the
+// rest of the pipeline (worker + wasm) expects: each record on its own line,
+// fields joined by `separator`. PapaParse has already unquoted and BOM-stripped
+// the input, so this output is normalised regardless of the original file's
+// quirks.
+export function serializeRows(rows: string[][], separator: string): string {
+  const sep = separator === '' ? ' ' : separator
+  return rows.map((row) => row.join(sep)).join('\n')
+}

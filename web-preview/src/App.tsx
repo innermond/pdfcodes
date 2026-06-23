@@ -13,6 +13,7 @@ import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } fr
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
@@ -61,6 +62,14 @@ interface Preset {
 const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
 const SEPARATOR_DEFAULT = ','
+
+// Internal field separator used for *uploaded* CSVs. PapaParse splits the file
+// into clean fields (honouring quoting), and we re-join them with this ASCII
+// Unit Separator — a control character that never appears in real CSV text — so
+// the downstream renderer can split rows safely even when a field legitimately
+// contains the file's original delimiter (e.g. a quoted "a,b"). The friendly
+// detected delimiter is still what the user sees; this is plumbing only.
+const UPLOAD_SEPARATOR = '\u001F'
 
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
@@ -195,6 +204,11 @@ export default function App() {
   const [codeDataMode, setCodeDataMode] = useState<CodeDataMode>('generate')
   const [uploadedCsvPreview, setUploadedCsvPreview] = useState('')
   const [uploadedCsvRowCount, setUploadedCsvRowCount] = useState(0)
+  const [uploadedCsvInfo, setUploadedCsvInfo] = useState<string | null>(null)
+  const [uploadedCsvWarnings, setUploadedCsvWarnings] = useState<string[]>([])
+  // The raw file the user uploaded, kept so a manual separator correction can
+  // re-parse it with the forced delimiter.
+  const [uploadedRawFile, setUploadedRawFile] = useState<File | null>(null)
   const [presetError, setPresetError] = useState<string | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
@@ -210,9 +224,24 @@ export default function App() {
     [codeRowCount, codeColumns, codeSeparator],
   )
 
+  // The separator the renderer actually splits rows by. Generated CSVs use the
+  // user's chosen separator; uploaded CSVs are re-joined with the collision-safe
+  // `UPLOAD_SEPARATOR`, so that's what they must be split by downstream.
+  const effectiveSeparator = codeDataMode === 'upload' ? UPLOAD_SEPARATOR : codeSeparator
+
   // Active preview shown in the data-source step: the uploaded file's rows
-  // when in upload mode, the generated preview otherwise.
+  // when in upload mode, the generated preview otherwise. In upload mode the
+  // rows are joined with `UPLOAD_SEPARATOR` (so the card sample splits into the
+  // exact parsed fields); the visible separator is restored only for display.
   const activePreview = codeDataMode === 'upload' ? uploadedCsvPreview : codeCsvPreview
+  const displayPreview =
+    codeDataMode === 'upload'
+      ? activePreview.split(UPLOAD_SEPARATOR).join(codeSeparator || ' ')
+      : activePreview
+  // The sample-row field is user-editable, so it always shows/edits with the
+  // friendly separator even though uploaded samples are stored sentinel-joined.
+  const sampleTextDisplay =
+    codeDataMode === 'upload' ? sampleText.split(UPLOAD_SEPARATOR).join(codeSeparator || ' ') : sampleText
 
   // While editing the data source, mirror the first record into the card
   // preview so separator/column tweaks are reflected live on the card.
@@ -221,7 +250,7 @@ export default function App() {
     const firstRow = activePreview.split('\n')[0] ?? ''
     handleSampleTextChange(firstRow)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, activePreview, codeSeparator])
+  }, [step, activePreview, effectiveSeparator])
 
   // On the "Aspect & Cuvinte" step, default the selection to the first word so
   // its editing controls are shown right away. Also recovers from a stale
@@ -232,6 +261,27 @@ export default function App() {
       setSelectedIndex(0)
     }
   }, [step, selectedIndex, words.length])
+
+  // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
+  // descent, so the snapped `yMm` only matches the chosen edge for the font and
+  // size in effect when it was picked. Re-snap whenever the font family, size,
+  // text, card height or safe margin change so the alignment keeps holding;
+  // words set to "custom" keep their explicit position untouched.
+  useEffect(() => {
+    if (!background) return
+    const cardHeightMm = background.heightPt / MM
+    setWords((prev) => {
+      let changed = false
+      const next = prev.map((word, index) => {
+        if (word.valign === 'custom') return word
+        const yMm = verticalAlignYMm(word.valign, word, fontFamilyForWord(fonts, index), cardHeightMm, safeMarginMm)
+        if (Math.abs(yMm - word.yMm) < 1e-6) return word
+        changed = true
+        return { ...word, yMm }
+      })
+      return changed ? next : prev
+    })
+  }, [fonts, background, safeMarginMm, words])
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
@@ -264,30 +314,76 @@ export default function App() {
     setCodeCsvStale(true)
   }
 
-  async function handleCsvUpload(file: File | null) {
-    if (!file) {
-      setCsvDataFile(null)
-      setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
-      setUploadedCsvPreview('')
-      setUploadedCsvRowCount(0)
-      return
-    }
-    const text = await file.text()
-    const allLines = text.split('\n').filter((l) => l.trim().length > 0)
+  function clearUploadedCsv() {
+    setCsvDataFile(null)
+    setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
+    setUploadedCsvPreview('')
+    setUploadedCsvRowCount(0)
+    setUploadedCsvInfo(null)
+    setUploadedCsvWarnings([])
+    setUploadedRawFile(null)
+  }
+
+  // Build the normalised downstream CSV File (and its preview/download URL) from
+  // parsed records. PapaParse has already resolved each row into clean fields
+  // (honouring quoting/BOM/line endings), so we re-join them with the
+  // collision-safe `UPLOAD_SEPARATOR`: the worker and wasm split rows by that
+  // same separator, which can't clash with field content even when a field
+  // contained the file's original delimiter. The preview keeps the separator so
+  // the card sample (split by `effectiveSeparator`) recovers the exact fields;
+  // it's only swapped for a readable one at display time (`displayPreview`).
+  function applyUploadedCsvRows(rows: string[][]) {
+    const file = new File([serializeRows(rows, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
     setCsvDataFile(file)
-    setUploadedCsvPreview(allLines.slice(0, CSV_PREVIEW_ROW_COUNT).join('\n'))
-    setUploadedCsvRowCount(allLines.length)
+    setUploadedCsvPreview(serializeRows(rows.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
+    setUploadedCsvRowCount(rows.length)
     setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
     setCodeCsvStale(false)
+  }
+
+  // Read a file (the original upload, or a re-parse with a corrected delimiter)
+  // and fold the result into state. `auto` distinguishes the message wording.
+  async function ingestCsvFile(file: File, forcedDelimiter?: string) {
+    let parsed
+    try {
+      parsed = await parseUploadedCsv(file, forcedDelimiter)
+    } catch (err) {
+      clearUploadedCsv()
+      setUploadedCsvWarnings([`Fișierul nu a putut fi citit: ${err instanceof Error ? err.message : String(err)}`])
+      return
+    }
+    if (parsed.rows.length === 0) {
+      clearUploadedCsv()
+      setUploadedRawFile(file)
+      setUploadedCsvWarnings(parsed.warnings.length > 0 ? parsed.warnings : ['Fișierul nu conține date.'])
+      return
+    }
+    // Remember the detected delimiter as the displayed separator (the friendly
+    // label and the "detected wrong?" override field). The actual downstream
+    // split uses `UPLOAD_SEPARATOR`, so the user never has to know about CSV
+    // separators at all.
+    setCodeSeparator(parsed.delimiter)
+    setUploadedRawFile(file)
+    setUploadedCsvInfo(
+      `${forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'}: ${describeDelimiter(parsed.delimiter)} · ` +
+        `${parsed.rows.length.toLocaleString('ro-RO')} rânduri · ${parsed.columnCount} coloane`,
+    )
+    setUploadedCsvWarnings(parsed.warnings)
+    applyUploadedCsvRows(parsed.rows)
+  }
+
+  async function handleCsvUpload(file: File | null) {
+    if (!file) {
+      clearUploadedCsv()
+      return
+    }
+    await ingestCsvFile(file)
   }
 
   function handleCodeDataModeChange(mode: CodeDataMode) {
     setCodeDataMode(mode)
     // Clear the current CSV when switching so the gate re-opens cleanly.
-    setCsvDataFile(null)
-    setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
-    setUploadedCsvPreview('')
-    setUploadedCsvRowCount(0)
+    clearUploadedCsv()
     setCodeCsvStale(false)
   }
 
@@ -662,9 +758,13 @@ export default function App() {
     setFonts((prev) => prev.map((f, i) => (i === index ? font : f)))
   }
 
-  function handleSampleTextChange(value: string) {
+  // Splits `value` into per-word texts. Defaults to `effectiveSeparator` (the
+  // sentinel for uploaded rows mirrored from the file); the manually editable
+  // sample field passes the friendly `codeSeparator` so the user can type and
+  // see ordinary separators.
+  function handleSampleTextChange(value: string, separator: string = effectiveSeparator) {
     setSampleText(value)
-    const texts = splitWords(value, codeSeparator)
+    const texts = splitWords(value, separator)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
     setFontSources((prev) => resizeFontSources(prev, texts.length))
@@ -673,7 +773,13 @@ export default function App() {
 
   function handleCodeSeparatorChange(value: string) {
     setCodeSeparator(value)
-    if (codeDataMode === 'generate') invalidateCsv()
+    if (codeDataMode === 'generate') {
+      invalidateCsv()
+    } else if (uploadedRawFile && value.length > 0) {
+      // Manual override after auto-detection: re-parse the original file with
+      // the corrected delimiter so fields split (and re-join) correctly.
+      void ingestCsvFile(uploadedRawFile, value)
+    }
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
@@ -729,11 +835,11 @@ export default function App() {
       const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
       const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride)
         : null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
       const contourOptions = needsContourInput
-        ? { ...buildJsOptions(words, codeSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
       const combine = pageOptions.combine === true
 
@@ -943,8 +1049,8 @@ export default function App() {
           <Section title="Text exemplu">
             <TextField
               label={`Rând CSV exemplu (separator: ${describeSeparator(codeSeparator)})`}
-              value={sampleText}
-              onChange={handleSampleTextChange}
+              value={sampleTextDisplay}
+              onChange={(v) => handleSampleTextChange(v, codeSeparator)}
             />
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
@@ -975,6 +1081,7 @@ export default function App() {
             {selected && selectedIndex !== null && (
               <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
+                <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
                 <SelectField<Align>
                   label="Aliniere orizontală"
                   value={selected.align}
@@ -1116,6 +1223,8 @@ export default function App() {
             onDataModeChange={handleCodeDataModeChange}
             onCsvUpload={(f) => void handleCsvUpload(f)}
             uploadRowCount={uploadedCsvRowCount}
+            uploadInfo={uploadedCsvInfo}
+            uploadWarnings={uploadedCsvWarnings}
             rowCount={codeRowCount}
             onRowCountChange={handleCodeRowCountChange}
             separator={codeSeparator}
@@ -1123,7 +1232,7 @@ export default function App() {
             columns={codeColumns}
             onColumnsChange={handleCodeColumnsChange}
             onGenerate={handleGenerateCsv}
-            preview={activePreview}
+            preview={displayPreview}
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
             progress={codeCsvProgress}
             stale={codeCsvStale}

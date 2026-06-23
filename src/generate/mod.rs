@@ -788,4 +788,69 @@ mod tests {
         });
         assert_eq!(bm, Some("Multiply"));
     }
+
+    #[test]
+    fn generate_print_pdf_emits_per_word_char_spacing_as_tc() {
+        // Two words, two distinct character-spacing values.
+        let opts = Options {
+            text_char_spacing_pt: vec![0.5, 1.25],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("generation should succeed");
+
+        let operations = first_card_operations(&out.pdf);
+        let tc = operations
+            .iter()
+            .filter(|op| op.operator == "Tc")
+            .map(|op| op.operands.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(tc, vec![vec![Object::Real(0.5)], vec![Object::Real(1.25)]]);
+    }
+
+    #[test]
+    fn generate_print_pdf_centers_multibyte_text_by_char_count() {
+        // A single multi-byte character ("é" is 2 UTF-8 bytes) has no gaps
+        // between characters, so its centered x must not depend on the spacing
+        // value. The previous byte-count logic added one spacing's worth of
+        // width and shifted the glyph left.
+        let td_x = |spacing: f32| -> f32 {
+            let opts = Options {
+                font_sizes: vec![9.0],
+                text_y_mm: vec![10.0],
+                text_char_spacing_pt: vec![spacing],
+                ..Options::default()
+            };
+            let out = generate_pdf(Some("é\n"), BACKGROUND_PDF, None, &opts)
+                .expect("generation should succeed");
+            let operations = first_card_operations(&out.pdf);
+            let td = operations.iter().find(|op| op.operator == "Td").expect("Td present");
+            match &td.operands[0] {
+                Object::Real(v) => *v,
+                other => panic!("unexpected Td x operand: {other:?}"),
+            }
+        };
+        assert_eq!(td_x(0.0), td_x(50.0));
+    }
+
+    #[test]
+    fn generate_print_pdf_defaults_char_spacing_when_unset() {
+        // Empty `text_char_spacing_pt` falls back to no extra tracking (0.0pt).
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &Options::default())
+            .expect("generation should succeed");
+
+        // lopdf serializes 0.0 without a decimal point, so it decodes back as
+        // an Integer — compare numeric values rather than the exact variant.
+        let operations = first_card_operations(&out.pdf);
+        let tc = operations
+            .iter()
+            .filter(|op| op.operator == "Tc")
+            .map(|op| match op.operands[0] {
+                Object::Real(v) => v,
+                Object::Integer(v) => v as f32,
+                ref other => panic!("unexpected Tc operand: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tc, vec![0.0, 0.0]);
+    }
 }

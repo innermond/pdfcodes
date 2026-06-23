@@ -106,6 +106,11 @@ pub struct Options {
     // Blend mode for `text_contour_colors`, one per word position (or a
     // single entry for every word). Empty means `Normal` for every word.
     pub text_contour_blend_modes: Vec<BlendMode>,
+    // Extra spacing (in points) inserted between characters of each word,
+    // emitted as the PDF `Tc` operator. One per word position (or a single
+    // entry for every word). Empty defaults to no extra tracking (0.0) for
+    // every word.
+    pub text_char_spacing_pt: Vec<f32>,
 }
 
 impl Options {
@@ -153,6 +158,7 @@ impl Default for Options {
             text_contour_colors: Vec::new(),
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
+            text_char_spacing_pt: Vec::new(),
         }
     }
 }

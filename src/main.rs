@@ -162,6 +162,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|s| s.parse::<BlendMode>())
             .collect::<Result<Vec<BlendMode>, String>>()?,
+        text_char_spacing_pt: get_float_list_flag(&args, "text-char-spacings")
+            .or_else(|| config.text_char_spacings.clone())
+            .unwrap_or_default(),
     };
 
     run(csv_path.as_deref(), &background_path, &output_path, &opts, &contour_background_path)?;

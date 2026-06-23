@@ -55,7 +55,7 @@ export function WordOverlay({
     }
 
     setMetrics({ width: bbox.width, ascent, descent })
-  }, [word.text, word.fontSizePt, fontFamily])
+  }, [word.text, word.fontSizePt, word.charSpacingPt, fontFamily])
 
   const textWidthPt = metrics?.width ?? 0
   const safeMarginPt = safeMarginMm * MM
@@ -120,6 +120,7 @@ export function WordOverlay({
         y={0}
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
+        letterSpacing={word.charSpacingPt}
         opacity={0}
       >
         {word.text}
@@ -266,6 +267,7 @@ export function WordOverlay({
         y={ySvg}
         fontSize={word.fontSizePt}
         fontFamily={fontFamily}
+        letterSpacing={word.charSpacingPt}
         fill={colorToCss(word.color)}
         style={{ mixBlendMode: word.blendMode }}
       >
@@ -277,6 +279,7 @@ export function WordOverlay({
           y={ySvg}
           fontSize={word.fontSizePt}
           fontFamily={fontFamily}
+          letterSpacing={word.charSpacingPt}
           fill="none"
           stroke={colorToCss(word.contourColor)}
           strokeWidth={word.contourWidthMm * MM}
