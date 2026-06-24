@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
@@ -197,16 +198,24 @@ export function CodeSourceSection({
   stale?: boolean
 }) {
   const generating = progress !== null
+  // Which code (column) is shown in the editor. The columns render as tabs
+  // rather than a stack, so only the active one is expanded at a time.
+  const [activeColumn, setActiveColumn] = useState(0)
+  const active = Math.min(activeColumn, columns.length - 1)
+
   function updateColumn(index: number, next: CodeColumnConfig) {
     onColumnsChange(columns.map((col, i) => (i === index ? next : col)))
   }
 
   function removeColumn(index: number) {
     onColumnsChange(columns.filter((_, i) => i !== index))
+    // Keep the active tab valid: shift left when removing at/before it.
+    setActiveColumn((prev) => (index <= prev ? Math.max(0, prev - 1) : prev))
   }
 
   function addColumn() {
     onColumnsChange([...columns, defaultCodeColumn()])
+    setActiveColumn(columns.length)
   }
 
   const previewRowCount = dataMode === 'upload' ? uploadRowCount : rowCount
@@ -282,26 +291,39 @@ export function CodeSourceSection({
             />
           </div>
 
-          <div className="flex flex-col gap-3">
-            {columns.map((column, index) => (
-              <CodeColumnEditor
+          <div className="flex flex-wrap gap-2 border-t border-gray-200 pt-4 mt-2 dark:border-gray-700">
+            {columns.map((_, index) => (
+              <button
                 key={index}
-                index={index}
-                column={column}
-                onChange={(next) => updateColumn(index, next)}
-                onRemove={() => removeColumn(index)}
-                canRemove={columns.length > 1}
-              />
+                type="button"
+                onClick={() => setActiveColumn(index)}
+                className={`rounded-full px-3 py-1 text-sm font-medium ${
+                  active === index
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                }`}
+              >
+                Cod {index + 1}
+              </button>
             ))}
+            <button
+              type="button"
+              onClick={addColumn}
+              className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:text-gray-100"
+            >
+              + Adaugă cod
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={addColumn}
-            className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-          >
-            Adaugă cod pe rând
-          </button>
+          {columns[active] && (
+            <CodeColumnEditor
+              index={active}
+              column={columns[active]}
+              onChange={(next) => updateColumn(active, next)}
+              onRemove={() => removeColumn(active)}
+              canRemove={columns.length > 1}
+            />
+          )}
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Adaugă încă un cod pe fiecare rând. Un rând poate conține mai multe coduri (separate prin separatorul de mai
             sus) — folosește această opțiune când un card trebuie să afișeze mai multe coduri.
@@ -313,7 +335,7 @@ export function CodeSourceSection({
             </p>
           )}
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 my-3">
             <button
               type="button"
               onClick={onGenerate}
