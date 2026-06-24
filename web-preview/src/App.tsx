@@ -75,9 +75,10 @@ const UPLOAD_SEPARATOR = '\u001F'
 
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
-  { id: 'date', label: 'Sursa de date' },
-  { id: 'aspect', label: 'Aspect & Cuvinte' },
-  { id: 'generare', label: 'Generare' },
+  { id: 'contur', label: 'Contur' },
+  { id: 'date', label: 'Date' },
+  { id: 'aspect', label: 'Coduri' },
+  { id: 'generare', label: 'PDF' },
 ] as const
 
 // Pages per generation batch. Each batch is built as its own PDF and freed
@@ -123,9 +124,9 @@ type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'bev
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Cerc' },
   { value: 'ellipse', label: 'Elipsă' },
-  { value: 'rectangle', label: 'Rectangle' },
-  { value: 'rounded-rectangle', label: 'Rectangle cu colțuri rotunjite' },
-  { value: 'beveled-rectangle', label: 'Rectangle cu colțuri teșite' },
+  { value: 'rectangle', label: 'Dreptunghi' },
+  { value: 'rounded-rectangle', label: 'Dreptunghi cu colțuri rotunjite' },
+  { value: 'beveled-rectangle', label: 'Dreptunghi cu colțuri teșite' },
   { value: 'heart', label: 'Inimă' },
 ]
 
@@ -901,20 +902,27 @@ export default function App() {
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
 
-  // The "Fundal" step gates the rest of the wizard: it's done only once both the
-  // print background and the contour are set up. Until then steps 2–4 are locked.
-  const fundalDone = background !== null && contourBackground !== null
-  const fundalLockedHint = 'Configurează fundalul și conturul în pasul „Fundal” pentru a continua.'
+  // The "Fundal" and "Contur" steps each gate the rest of the wizard: the print
+  // background must be set before the contour step unlocks, and the contour must
+  // be set before the data step unlocks.
+  const backgroundDone = background !== null
+  const contourDone = contourBackground !== null
+  const backgroundLockedHint = 'Configurează fundalul în pasul „Fundal” pentru a continua.'
+  const contourLockedHint = 'Configurează conturul în pasul „Contur” pentru a continua.'
 
-  // The "Sursa de date" step adds a second gate: the user must press "Generează
-  // CSV" so the data source is fixed before the remaining steps unlock. The
-  // generated CSV's object URL (only ever set by handleGenerateCsv) is the
-  // signal — a CSV uploaded later in "Generare" doesn't count here.
+  // The "Date" step adds a further gate: the user must press "Generează CSV" so
+  // the data source is fixed before the remaining steps unlock. The generated
+  // CSV's object URL (only ever set by handleGenerateCsv) is the signal — a CSV
+  // uploaded later in "Generare" doesn't count here.
   const dataSourceDone = codeCsvUrl !== null
-  const dataSourceLockedHint = 'Apasă „Generează CSV” în pasul „Sursa de date” pentru a continua.'
+  const dataSourceLockedHint = 'Apasă „Generează CSV” în pasul „Date” pentru a continua.'
 
   // Single hint surfaced on locked steps: whichever gate is currently blocking.
-  const lockedHint = !fundalDone ? fundalLockedHint : dataSourceLockedHint
+  const lockedHint = !backgroundDone
+    ? backgroundLockedHint
+    : !contourDone
+      ? contourLockedHint
+      : dataSourceLockedHint
 
   const needsPrintInput = mode === 'print' || mode === 'both'
   const needsContourInput = mode === 'contour' || mode === 'both'
@@ -1085,8 +1093,14 @@ export default function App() {
           steps={WIZARD_STEPS}
           current={step}
           onSelect={(id) => setStep(id as WizardStepId)}
-          isEnabled={(_step, index) =>
-            index === 0 || (index === 1 ? fundalDone : fundalDone && dataSourceDone)
+          isEnabled={(s) =>
+            s.id === 'fundal'
+              ? true
+              : s.id === 'contur'
+                ? backgroundDone
+                : s.id === 'date'
+                  ? backgroundDone && contourDone
+                  : backgroundDone && contourDone && dataSourceDone
           }
           lockedHint={lockedHint}
         />
@@ -1144,18 +1158,20 @@ export default function App() {
                 </div>
               </>
             )}
+          </Section>
+          )}
 
-            <div className="mt-4">
-              <RadioGroupField<ContourSource>
-                label="Sursă fundal contur"
-                value={contourSource}
-                onChange={handleContourSourceChange}
-                options={[
-                  { value: 'upload', label: 'Încarcă PDF' },
-                  { value: 'shape', label: 'Formă presetată' },
-                ]}
-              />
-            </div>
+          {step === 'contur' && (
+          <Section title="Contur">
+            <RadioGroupField<ContourSource>
+              label="Sursă fundal contur"
+              value={contourSource}
+              onChange={handleContourSourceChange}
+              options={[
+                { value: 'upload', label: 'Încarcă PDF' },
+                { value: 'shape', label: 'Formă presetată' },
+              ]}
+            />
 
             {contourSource === 'upload' ? (
               <FileField
@@ -1226,7 +1242,7 @@ export default function App() {
             {fontsNotice && <p className="text-sm text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
 
-          <Section title="Cuvinte">
+          <Section title="Coduri">
             <div className="flex flex-wrap gap-2">
               {words.map((word, index) => (
                 <button
@@ -1546,8 +1562,11 @@ export default function App() {
           </>
           )}
 
-          {step === 'fundal' && !fundalDone && (
-            <p className="text-sm text-amber-600 dark:text-amber-400">{fundalLockedHint}</p>
+          {step === 'fundal' && !backgroundDone && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">{backgroundLockedHint}</p>
+          )}
+          {step === 'contur' && !contourDone && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">{contourLockedHint}</p>
           )}
           {step === 'date' && !dataSourceDone && (
             <p className="text-sm text-amber-600 dark:text-amber-400">{dataSourceLockedHint}</p>
@@ -1557,7 +1576,11 @@ export default function App() {
             stepCount={WIZARD_STEPS.length}
             onBack={() => setStep(WIZARD_STEPS[stepIndex - 1].id)}
             onNext={() => setStep(WIZARD_STEPS[stepIndex + 1].id)}
-            nextDisabled={(step === 'fundal' && !fundalDone) || (step === 'date' && !dataSourceDone)}
+            nextDisabled={
+              (step === 'fundal' && !backgroundDone) ||
+              (step === 'contur' && !contourDone) ||
+              (step === 'date' && !dataSourceDone)
+            }
           />
         </div>
 
