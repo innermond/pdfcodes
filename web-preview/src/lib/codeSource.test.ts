@@ -4,6 +4,7 @@ import {
   defaultCodeColumn,
   generateCodesCsv,
   generateCsvPreview,
+  mergeFields,
   streamCodesCsv,
   type CodeColumnConfig,
 } from './codeSource'
@@ -11,6 +12,53 @@ import {
 function column(overrides: Partial<CodeColumnConfig>): CodeColumnConfig {
   return { ...defaultCodeColumn(), ...overrides }
 }
+
+describe('mergeFields', () => {
+  it('returns the pieces unchanged when no gaps are merged', () => {
+    expect(mergeFields(['1A', '1'], new Set(), ' ')).toEqual(['1A', '1'])
+  })
+
+  it('merges adjacent pieces across a merged gap, re-joining with the separator', () => {
+    expect(mergeFields(['1A', '1'], new Set([0]), ' ')).toEqual(['1A 1'])
+  })
+
+  it('regroups a multi-field row by its merged gaps', () => {
+    // "1A 1 2B 2" → pieces, merging gaps 0 and 2 → ["1A 1", "2B 2"]
+    expect(mergeFields(['1A', '1', '2B', '2'], new Set([0, 2]), ' ')).toEqual(['1A 1', '2B 2'])
+  })
+
+  it('handles empty input', () => {
+    expect(mergeFields([], new Set([0]), ' ')).toEqual([])
+  })
+
+  it('trims edge whitespace introduced by merging empty pieces', () => {
+    // A trailing empty piece (from a trailing delimiter) must not leave a
+    // trailing space, which would shift the centred text in the PDF.
+    expect(mergeFields(['1A', '1', ''], new Set([0, 1]), ' ')).toEqual(['1A 1'])
+    expect(mergeFields(['', '1A', '1'], new Set([0, 1]), ' ')).toEqual(['1A 1'])
+  })
+
+  it('removes an internal tab joiner entirely (zero width, not a space)', () => {
+    // A tab has no defined print width, so a tab-delimited upload's joined field
+    // must not keep it — the pieces glue together. (A real space would be kept.)
+    expect(mergeFields(['1A', '1'], new Set([0]), '\t')).toEqual(['1A1'])
+    expect(mergeFields(['1A', '1', ''], new Set([0, 1]), '\t')).toEqual(['1A1'])
+  })
+
+  it('keeps a real space but collapses runs of spaces', () => {
+    expect(mergeFields(['1A', '1'], new Set([0]), ' ')).toEqual(['1A 1'])
+    expect(mergeFields(['1A ', ' 1'], new Set([0]), ' ')).toEqual(['1A 1'])
+  })
+
+  it('strips stray edge separators left by empty pieces (non-space separator)', () => {
+    // A trailing/leading delimiter (comma) must not survive at the field edge,
+    // or the generator (advance width) and preview (ink box) would centre it
+    // differently. Internal separators are kept.
+    expect(mergeFields(['1A', '1', ''], new Set([0, 1]), ',')).toEqual(['1A,1'])
+    expect(mergeFields(['', '1A', '1'], new Set([0, 1]), ',')).toEqual(['1A,1'])
+    expect(mergeFields(['1A', '1'], new Set([0]), ',')).toEqual(['1A,1'])
+  })
+})
 
 describe('generateCodesCsv', () => {
   it('generates one line per row, separated by newlines', () => {

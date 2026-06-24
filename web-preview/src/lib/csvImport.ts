@@ -89,9 +89,21 @@ function collectWarnings(rows: string[][], errors: Papa.ParseError[]): string[] 
   // correctly downstream — PapaParse unquotes it and the app re-joins fields
   // with a collision-safe separator — so it no longer needs a warning.
 
-  // Surface a single representative parse error if PapaParse reported any.
-  if (errors.length > 0) {
-    warnings.push(`Avertisment la citire: ${errors[0].message}`)
+  // PapaParse also reports parse errors, but two kinds are noise here:
+  //  - 'Delimiter' (UndetectableDelimiter): emitted for single-column files,
+  //    where there is genuinely no separator to find and the default ',' is
+  //    harmless because nothing gets split.
+  //  - 'FieldMismatch': inconsistent column counts, already reported in
+  //    Romanian by the ragged-row check above.
+  // Anything left is a rare structural issue (e.g. mismatched quotes); surface
+  // it in Romanian rather than passing through PapaParse's English message.
+  const structuralError = errors.some(
+    (e) => e.type !== 'Delimiter' && e.type !== 'FieldMismatch',
+  )
+  if (structuralError) {
+    warnings.push(
+      'Fișierul CSV pare să aibă un format neobișnuit (de ex. ghilimele nepotrivite). Verifică fișierul.',
+    )
   }
 
   return warnings

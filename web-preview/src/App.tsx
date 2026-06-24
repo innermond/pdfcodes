@@ -11,10 +11,11 @@ import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
 import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
+import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
@@ -35,6 +36,7 @@ interface Preset {
   codeDataMode: CodeDataMode
   codeRowCount: number
   codeColumns: CodeColumnConfig[]
+  codeFieldMerges: number[]
   words: WordStyle[]
   safeMarginMm: number
   backgroundPaddingMm: number
@@ -84,10 +86,26 @@ const PAGES_PER_BATCH = 50
 type WizardStepId = (typeof WIZARD_STEPS)[number]['id']
 
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
-  return texts.map((text, index) => {
-    const existing = words[index] ?? defaultWordStyle(index)
-    return { ...existing, text }
+  const result: WordStyle[] = []
+  texts.forEach((text, index) => {
+    const existing = words[index]
+    if (existing) {
+      result.push({ ...existing, text })
+      return
+    }
+    // A code added beyond the current list stacks directly under the previous
+    // one. `yMm` is the baseline measured up from the card bottom, so "under"
+    // means a smaller y; offset by a line height of the larger of the two fonts.
+    const base = defaultWordStyle(index)
+    const prev = result[index - 1]
+    if (prev) {
+      const spacingMm = (Math.max(prev.fontSizePt, base.fontSizePt) * 1.2) / MM
+      result.push({ ...base, valign: 'custom', yMm: Math.max(0, prev.yMm - spacingMm), text })
+    } else {
+      result.push({ ...base, text })
+    }
   })
+  return result
 }
 
 // Human-readable rendering of a separator for warning text. An empty string
@@ -110,6 +128,22 @@ const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'beveled-rectangle', label: 'Rectangle cu colțuri teșite' },
   { value: 'heart', label: 'Inimă' },
 ]
+
+// Tight bounding box (in card-mm coords, measured from the card's bottom-left)
+// of a preset contour shape, mirroring how `build_shape_pdf` in
+// src/generate/shapes.rs draws each shape inside the card inset by `insetMm`.
+// A circle uses `min(w, h)` and stays centered (so it doesn't grow along the
+// longer axis); every other shape fills the inset box. Used to re-position codes
+// relative to the cut shape when the card is resized.
+function contourBoxMm(shape: ShapeKind, cardWMm: number, cardHMm: number, insetMm: number) {
+  const iw = cardWMm - 2 * insetMm
+  const ih = cardHMm - 2 * insetMm
+  if (shape === 'circle') {
+    const d = Math.min(iw, ih)
+    return { x: (cardWMm - d) / 2, y: (cardHMm - d) / 2, w: d, h: d }
+  }
+  return { x: insetMm, y: insetMm, w: iw, h: ih }
+}
 
 // Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
 // usual rounded corner), "in" curves them toward the interior (scalloped).
@@ -215,6 +249,11 @@ export default function App() {
   const [codeRowCount, setCodeRowCount] = useState(10)
   const [codeSeparator, setCodeSeparator] = useState(SEPARATOR_DEFAULT)
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
+  // For an uploaded CSV whose delimiter was auto-detected wrongly: the raw parsed
+  // rows, plus the gap indices the user merged back into one field (so a value
+  // like "1A 1" mis-split into ["1A","1"] becomes a single field again).
+  const [uploadedRows, setUploadedRows] = useState<string[][]>([])
+  const [codeFieldMerges, setCodeFieldMerges] = useState<number[]>([])
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
   const [codeCsvStale, setCodeCsvStale] = useState(false)
@@ -335,6 +374,8 @@ export default function App() {
     setUploadedCsvInfo(null)
     setUploadedCsvWarnings([])
     setUploadedRawFile(null)
+    setUploadedRows([])
+    setCodeFieldMerges([])
   }
 
   // Build the normalised downstream CSV File (and its preview/download URL) from
@@ -345,13 +386,24 @@ export default function App() {
   // contained the file's original delimiter. The preview keeps the separator so
   // the card sample (split by `effectiveSeparator`) recovers the exact fields;
   // it's only swapped for a readable one at display time (`displayPreview`).
-  function applyUploadedCsvRows(rows: string[][]) {
-    const file = new File([serializeRows(rows, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
+  // `gaps` merges adjacent parsed fields back into one (when detection over-split
+  // a value that contained the delimiter), re-joined with `joiner` (the delimiter).
+  function applyUploadedCsvRows(rows: string[][], gaps: number[], joiner: string) {
+    setUploadedRows(rows)
+    const gapSet = new Set(gaps)
+    const merged = rows.map((r) => mergeFields(r, gapSet, joiner))
+    const file = new File([serializeRows(merged, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
     setCsvDataFile(file)
-    setUploadedCsvPreview(serializeRows(rows.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
+    setUploadedCsvPreview(serializeRows(merged.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
     setUploadedCsvRowCount(rows.length)
     setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
     setCodeCsvStale(false)
+  }
+
+  // Re-apply merges to the already-parsed rows when the user toggles a field gap.
+  function handleUploadFieldMergesChange(gaps: number[]) {
+    setCodeFieldMerges(gaps)
+    applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ')
   }
 
   // Read a file (the original upload, or a re-parse with a corrected delimiter)
@@ -376,13 +428,19 @@ export default function App() {
     // split uses `UPLOAD_SEPARATOR`, so the user never has to know about CSV
     // separators at all.
     setCodeSeparator(parsed.delimiter)
+    // A fresh parse changes the field layout, so drop any previous merges.
+    setCodeFieldMerges([])
     setUploadedRawFile(file)
-    setUploadedCsvInfo(
-      `${forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'}: ${describeDelimiter(parsed.delimiter)} · ` +
-        `${parsed.rows.length.toLocaleString('ro-RO')} rânduri · ${parsed.columnCount} coloane`,
-    )
+    const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
+    if (parsed.columnCount <= 1) {
+      // A single code per row needs no separator, so don't mention one.
+      setUploadedCsvInfo(`Un singur cod pe rând · ${rowsLabel}`)
+    } else {
+      const prefix = forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'
+      setUploadedCsvInfo(`${prefix}: ${describeDelimiter(parsed.delimiter)} · ${rowsLabel} · ${parsed.columnCount} coloane`)
+    }
     setUploadedCsvWarnings(parsed.warnings)
-    applyUploadedCsvRows(parsed.rows)
+    applyUploadedCsvRows(parsed.rows, [], parsed.delimiter || ' ')
   }
 
   async function handleCsvUpload(file: File | null) {
@@ -434,6 +492,7 @@ export default function App() {
       codeDataMode,
       codeRowCount,
       codeColumns,
+      codeFieldMerges,
       words,
       safeMarginMm,
       backgroundPaddingMm,
@@ -506,6 +565,7 @@ export default function App() {
         setCodeSeparator(preset.codeSeparator ?? '')
         if (typeof preset.codeRowCount === 'number') setCodeRowCount(preset.codeRowCount)
         if (Array.isArray(preset.codeColumns)) setCodeColumns(preset.codeColumns)
+        setCodeFieldMerges(Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : [])
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
@@ -699,36 +759,52 @@ export default function App() {
     }
   }
 
-  // Keep each word's fractional position within the card constant when the card
-  // dimensions change: a word's stored position is scaled by the new/old size
-  // ratio, so a code placed at (x, y) over the old width/height lands at the
-  // same fraction of the new width/height. Horizontal auto-centering
-  // (`xMm === null`) and snapped vertical alignment (`valign !== 'custom'`) are
-  // left to the align/valign machinery, which already tracks the card size — so
-  // a word that was dead-centre stays dead-centre across a resize. The first
-  // valid size only establishes the baseline (no scaling on initial placement).
+  // Keep each word's fractional position within the contour box constant when the
+  // card dimensions change: a word's stored position is remapped to the same
+  // fraction of the reference box's new size. For a preset shape the reference is
+  // the contour's tight bbox (the card inset on all sides), so a code placed
+  // inside the cut shape keeps its spot inside the shape; otherwise the reference
+  // is the full card. Horizontal auto-centering (`xMm === null`) and snapped
+  // vertical alignment (`valign !== 'custom'`) are left to the align/valign
+  // machinery, which already tracks the card size — so a word that was dead-centre
+  // stays dead-centre across a resize. The first valid size only establishes the
+  // baseline (no scaling on initial placement).
   const prevCardDimsRef = useRef<{ w: number; h: number } | null>(null)
   useEffect(() => {
     const w = effectiveCardWidthMm
     const h = effectiveCardHeightMm
     const prev = prevCardDimsRef.current
     if (prev && prev.w > 0 && prev.h > 0 && w > 0 && h > 0 && (prev.w !== w || prev.h !== h)) {
-      const sx = w / prev.w
-      const sy = h / prev.h
-      setWords((words) => {
-        let changed = false
-        const next = words.map((word) => {
-          const xMm = word.xMm !== null && sx !== 1 ? word.xMm * sx : word.xMm
-          const yMm = word.valign === 'custom' && sy !== 1 ? word.yMm * sy : word.yMm
-          if (xMm === word.xMm && yMm === word.yMm) return word
-          changed = true
-          return { ...word, xMm, yMm }
+      // Reference box: the contour's tight bbox for a preset shape, or the full
+      // card otherwise. Remapping uses the box's origin AND size so a code keeps
+      // its fraction within the shape — including a circle, whose box is capped to
+      // `min(w, h)` and re-centred (so it doesn't grow along the longer axis).
+      const useContour = contourSource === 'shape'
+      const oldBox = useContour
+        ? contourBoxMm(shapeKind, prev.w, prev.h, shapeInsetMm)
+        : { x: 0, y: 0, w: prev.w, h: prev.h }
+      const newBox = useContour
+        ? contourBoxMm(shapeKind, w, h, shapeInsetMm)
+        : { x: 0, y: 0, w, h }
+      // Skip a degenerate box (e.g. inset ≥ half a side) to avoid divide-by-zero.
+      if (oldBox.w > 0 && oldBox.h > 0 && newBox.w > 0 && newBox.h > 0) {
+        const sx = newBox.w / oldBox.w
+        const sy = newBox.h / oldBox.h
+        setWords((words) => {
+          let changed = false
+          const next = words.map((word) => {
+            const xMm = word.xMm !== null ? newBox.x + (word.xMm - oldBox.x) * sx : word.xMm
+            const yMm = word.valign === 'custom' ? newBox.y + (word.yMm - oldBox.y) * sy : word.yMm
+            if (xMm === word.xMm && yMm === word.yMm) return word
+            changed = true
+            return { ...word, xMm, yMm }
+          })
+          return changed ? next : words
         })
-        return changed ? next : words
-      })
+      }
     }
     prevCardDimsRef.current = w > 0 && h > 0 ? { w, h } : null
-  }, [effectiveCardWidthMm, effectiveCardHeightMm])
+  }, [effectiveCardWidthMm, effectiveCardHeightMm, contourSource, shapeKind, shapeInsetMm])
 
   // Generate a preset-shape contour PDF whenever the shape source is active
   // and the shape/inset/corner-radius/card size changes, feeding it through
@@ -808,6 +884,8 @@ export default function App() {
 
   function handleCodeSeparatorChange(value: string) {
     setCodeSeparator(value)
+    // The split structure changes, so previously chosen merges no longer line up.
+    setCodeFieldMerges([])
     if (codeDataMode === 'generate') {
       invalidateCsv()
     } else if (uploadedRawFile && value.length > 0) {
@@ -917,7 +995,58 @@ export default function App() {
     }
   }
 
+  // Eyedropper: when a ColorField requests a sample, arm a one-shot pointer
+  // capture over the preview. The next click on the preview reads that pixel of
+  // the background image (a same-origin data URL, so getImageData is allowed)
+  // and resolves the stored color; Esc or a click off the preview cancels.
+  // Capturing on `window` pre-empts word dragging and the picker's outside-click
+  // close. Works in every browser — no EyeDropper API needed.
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [colorSamplingActive, setColorSamplingActive] = useState(false)
+  async function requestColorSample(): Promise<string | null> {
+    if (!background || !previewRef.current?.querySelector('svg')) return null
+    // Rasterize the background up front so the click samples synchronously.
+    let canvas: HTMLCanvasElement
+    try {
+      canvas = await imageUrlToCanvas(background.imageUrl)
+    } catch {
+      return null
+    }
+    return new Promise<string | null>((resolve) => {
+      let settled = false
+      function finish(result: string | null) {
+        if (settled) return
+        settled = true
+        window.removeEventListener('pointerdown', onPointerDown, true)
+        window.removeEventListener('keydown', onKeyDown, true)
+        setColorSamplingActive(false)
+        resolve(result)
+      }
+      function onKeyDown(e: KeyboardEvent) {
+        if (e.key === 'Escape') finish(null)
+      }
+      function onPointerDown(e: PointerEvent) {
+        const svg = previewRef.current?.querySelector('svg')
+        const rect = svg?.getBoundingClientRect()
+        const fx = rect ? (e.clientX - rect.left) / rect.width : -1
+        const fy = rect ? (e.clientY - rect.top) / rect.height : -1
+        if (fx < 0 || fx > 1 || fy < 0 || fy > 1) {
+          finish(null) // clicked off the preview → cancel
+          return
+        }
+        // Claim the click so it can't drag a word or dismiss the picker.
+        e.preventDefault()
+        e.stopPropagation()
+        finish(sampleCanvasColorAt(canvas, fx, fy))
+      }
+      setColorSamplingActive(true)
+      window.addEventListener('pointerdown', onPointerDown, true)
+      window.addEventListener('keydown', onKeyDown, true)
+    })
+  }
+
   return (
+    <ColorSampleContext.Provider value={background ? requestColorSample : null}>
     <div className="mx-auto max-w-6xl px-4 py-8 dark:bg-gray-950 dark:text-gray-100">
       <div className="mb-1 flex items-start justify-between gap-4">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">pdfcodes preview</h1>
@@ -933,7 +1062,7 @@ export default function App() {
         Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
       </p>
 
-      <Section title="Setări">
+      <Section title="Setări" collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-3">
           <button
             type="button"
@@ -1016,15 +1145,17 @@ export default function App() {
               </>
             )}
 
-            <RadioGroupField<ContourSource>
-              label="Sursă fundal contur"
-              value={contourSource}
-              onChange={handleContourSourceChange}
-              options={[
-                { value: 'upload', label: 'Încarcă PDF' },
-                { value: 'shape', label: 'Formă presetată' },
-              ]}
-            />
+            <div className="mt-4">
+              <RadioGroupField<ContourSource>
+                label="Sursă fundal contur"
+                value={contourSource}
+                onChange={handleContourSourceChange}
+                options={[
+                  { value: 'upload', label: 'Încarcă PDF' },
+                  { value: 'shape', label: 'Formă presetată' },
+                ]}
+              />
+            </div>
 
             {contourSource === 'upload' ? (
               <FileField
@@ -1117,14 +1248,31 @@ export default function App() {
               <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
-                <SelectField<Align>
+                <SelectField<Align | 'custom'>
                   label="Aliniere orizontală"
-                  value={selected.align}
-                  onChange={(v) => updateWord(selectedIndex, { align: v, xMm: null })}
+                  value={selected.xMm !== null ? 'custom' : selected.align}
+                  onChange={(v) =>
+                    v === 'custom'
+                      ? updateWord(selectedIndex, {
+                          xMm:
+                            selected.xMm ??
+                            (effectiveCardWidthMm > 0
+                              ? horizontalAlignXMm(
+                                  selected.align,
+                                  selected,
+                                  fontFamilyForWord(fonts, selectedIndex),
+                                  effectiveCardWidthMm,
+                                  safeMarginMm,
+                                )
+                              : 0),
+                        })
+                      : updateWord(selectedIndex, { align: v, xMm: null })
+                  }
                   options={[
                     { value: 'left', label: 'stânga' },
                     { value: 'center', label: 'centru' },
                     { value: 'right', label: 'dreapta' },
+                    { value: 'custom', label: 'personalizat' },
                   ]}
                 />
                 <SelectField<VAlign>
@@ -1266,6 +1414,9 @@ export default function App() {
             onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
             onColumnsChange={handleCodeColumnsChange}
+            fieldPieces={uploadedRows[0] ?? []}
+            fieldMerges={codeFieldMerges}
+            onFieldMergesChange={handleUploadFieldMergesChange}
             onGenerate={handleGenerateCsv}
             preview={displayPreview}
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
@@ -1330,12 +1481,6 @@ export default function App() {
                 { value: 'contour', label: 'Contur', description: 'Generează PDF-ul cu linii de tăiere folosind fundalul de contur.' },
                 { value: 'both', label: 'Print + Contur', description: 'Generează ambele PDF-uri.' },
               ]}
-            />
-
-            <FileField
-              label="Fișier CSV cu date (necesar pentru generare)"
-              accept=".csv,text/csv"
-              onChange={(files) => setCsvDataFile(files?.[0] ?? null)}
             />
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
@@ -1419,23 +1564,30 @@ export default function App() {
         <div className="flex flex-col gap-4">
           <Section title="Previzualizare">
             {background ? (
-              <CardCanvas
-                backgroundImageUrl={background.imageUrl}
-                cardWidthPt={effectiveCardWidthMm * MM}
-                cardHeightPt={effectiveCardHeightMm * MM}
-                contourImageUrl={contourBackground?.imageUrl ?? null}
-                contourWidthPt={contourBackground?.widthPt ?? 0}
-                contourHeightPt={contourBackground?.heightPt ?? 0}
-                contourOpacity={contourOpacity}
-                contourBlendMode={contourBlendMode}
-                words={words}
-                fonts={fonts}
-                safeMarginMm={safeMarginMm}
-                backgroundPaddingMm={backgroundPaddingMm}
-                selectedIndex={selectedIndex}
-                onSelect={setSelectedIndex}
-                onChangeWord={updateWord}
-              />
+              <div ref={previewRef} className={colorSamplingActive ? 'cursor-crosshair [&_*]:!cursor-crosshair' : undefined}>
+                <CardCanvas
+                  backgroundImageUrl={background.imageUrl}
+                  cardWidthPt={effectiveCardWidthMm * MM}
+                  cardHeightPt={effectiveCardHeightMm * MM}
+                  contourImageUrl={contourBackground?.imageUrl ?? null}
+                  contourWidthPt={contourBackground?.widthPt ?? 0}
+                  contourHeightPt={contourBackground?.heightPt ?? 0}
+                  contourOpacity={contourOpacity}
+                  contourBlendMode={contourBlendMode}
+                  words={words}
+                  fonts={fonts}
+                  safeMarginMm={safeMarginMm}
+                  backgroundPaddingMm={backgroundPaddingMm}
+                  selectedIndex={selectedIndex}
+                  onSelect={setSelectedIndex}
+                  onChangeWord={updateWord}
+                />
+                {colorSamplingActive && (
+                  <p className="mt-2 text-center text-xs text-blue-600 dark:text-blue-400">
+                    Click pe previzualizare pentru a alege culoarea · Esc pentru anulare
+                  </p>
+                )}
+              </div>
             ) : (
               <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă un PDF de fundal pentru a vedea previzualizarea.</p>
             )}
@@ -1458,5 +1610,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </ColorSampleContext.Provider>
   )
 }

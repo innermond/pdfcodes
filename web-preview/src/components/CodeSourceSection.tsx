@@ -1,5 +1,5 @@
 import { FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
 type CodeDataMode = 'generate' | 'upload'
 
@@ -83,6 +83,70 @@ function CodeColumnEditor({
   )
 }
 
+// Lets the user fix an uploaded CSV whose delimiter was auto-detected wrongly:
+// the first row's parsed fields are shown as pieces with a clickable control in
+// each gap to merge two pieces back into a single field.
+function FieldBoundaryEditor({
+  pieces,
+  joiner,
+  mergedGaps,
+  onChange,
+}: {
+  pieces: string[]
+  joiner: string
+  mergedGaps: number[]
+  onChange: (gaps: number[]) => void
+}) {
+  if (pieces.length <= 1) return null
+
+  const gapSet = new Set(mergedGaps)
+  const fields = mergeFields(pieces, gapSet, joiner)
+
+  function toggleGap(i: number) {
+    const next = new Set(gapSet)
+    if (next.has(i)) next.delete(i)
+    else next.add(i)
+    onChange([...next].sort((a, b) => a - b))
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded border border-gray-200 p-3 dark:border-gray-700">
+      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Câmpuri pe rând</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Apasă pe spațiul dintre două bucăți pentru a le uni într-un singur cod — util când un cod conține separatorul (ex. „1A 1").
+      </p>
+      <div className="flex flex-wrap items-center gap-1">
+        {pieces.map((piece, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <span className="rounded bg-gray-100 px-2 py-1 font-mono text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+              {piece}
+            </span>
+            {i < pieces.length - 1 && (
+              <button
+                type="button"
+                onClick={() => toggleGap(i)}
+                aria-pressed={gapSet.has(i)}
+                title={gapSet.has(i) ? 'Unite — apasă pentru a separa' : 'Separate — apasă pentru a uni'}
+                className={
+                  'rounded px-1.5 py-1 text-xs font-medium transition ' +
+                  (gapSet.has(i)
+                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                    : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600')
+                }
+              >
+                {gapSet.has(i) ? '∪' : '|'}
+              </button>
+            )}
+          </span>
+        ))}
+      </div>
+      <p className="text-xs text-gray-600 dark:text-gray-400">
+        Rezultă {fields.length} {fields.length === 1 ? 'câmp' : 'câmpuri'}: {fields.map((f) => `„${f}"`).join('   ')}
+      </p>
+    </div>
+  )
+}
+
 export function CodeSourceSection({
   dataMode,
   onDataModeChange,
@@ -96,6 +160,9 @@ export function CodeSourceSection({
   onSeparatorChange,
   columns,
   onColumnsChange,
+  fieldPieces,
+  fieldMerges,
+  onFieldMergesChange,
   onGenerate,
   preview,
   downloadUrl,
@@ -116,6 +183,11 @@ export function CodeSourceSection({
   onSeparatorChange: (value: string) => void
   columns: CodeColumnConfig[]
   onColumnsChange: (columns: CodeColumnConfig[]) => void
+  /** Raw parsed fields of the first uploaded row (for the merge editor). */
+  fieldPieces: string[]
+  /** Indices of gaps (between parsed fields) merged into one field. */
+  fieldMerges: number[]
+  onFieldMergesChange: (gaps: number[]) => void
   onGenerate: () => void
   preview: string
   downloadUrl: string | null
@@ -185,6 +257,12 @@ export function CodeSourceSection({
               </div>
             </details>
           )}
+          <FieldBoundaryEditor
+            pieces={fieldPieces}
+            joiner={separator || ' '}
+            mergedGaps={fieldMerges}
+            onChange={onFieldMergesChange}
+          />
         </>
       ) : (
         <>
