@@ -77,7 +77,7 @@ export interface WordStyle {
 export function defaultWordStyle(index: number): WordStyle {
   return {
     text: '',
-    fontSizePt: index === 0 ? 9 : 14,
+    fontSizePt: 9,
     align: 'center',
     // The primary word starts dead-centre on the card: `align: 'center'` +
     // `xMm: null` centres it horizontally, and `valign: 'middle'` centres it
@@ -134,6 +134,37 @@ export function verticalAlignYMm(
       return safeMarginMm + descentMm
     case 'middle':
       return cardHeightMm / 2 - (ascentMm - descentMm) / 2
+  }
+}
+
+// Resolve a horizontal alignment into an explicit baseline `xMm` (distance from
+// the left of the card to the text's start, matching `WordStyle.xMm` and the
+// left/center/right math in src/generate/cards.rs). Uses the same canvas
+// measurement the preview relies on, so freezing an aligned word into "custom"
+// keeps it visually in place.
+export function horizontalAlignXMm(
+  align: Align,
+  word: WordStyle,
+  fontFamily: string,
+  cardWidthMm: number,
+  safeMarginMm: number,
+): number {
+  let textWidthMm = (word.fontSizePt * 0.6 * Math.max(1, word.text.length)) / MM
+  const ctx = document.createElement('canvas').getContext('2d')
+  if (ctx) {
+    ctx.font = `${word.fontSizePt}px ${fontFamily}`
+    const charCount = Math.max(1, word.text.length)
+    const measured = ctx.measureText(word.text || 'X').width + word.charSpacingPt * (charCount - 1)
+    textWidthMm = measured / MM
+  }
+
+  switch (align) {
+    case 'left':
+      return safeMarginMm
+    case 'center':
+      return cardWidthMm / 2 - textWidthMm / 2
+    case 'right':
+      return cardWidthMm - textWidthMm - safeMarginMm
   }
 }
 

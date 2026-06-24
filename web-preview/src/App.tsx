@@ -11,7 +11,7 @@ import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
 import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
@@ -85,10 +85,26 @@ const PAGES_PER_BATCH = 50
 type WizardStepId = (typeof WIZARD_STEPS)[number]['id']
 
 function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
-  return texts.map((text, index) => {
-    const existing = words[index] ?? defaultWordStyle(index)
-    return { ...existing, text }
+  const result: WordStyle[] = []
+  texts.forEach((text, index) => {
+    const existing = words[index]
+    if (existing) {
+      result.push({ ...existing, text })
+      return
+    }
+    // A code added beyond the current list stacks directly under the previous
+    // one. `yMm` is the baseline measured up from the card bottom, so "under"
+    // means a smaller y; offset by a line height of the larger of the two fonts.
+    const base = defaultWordStyle(index)
+    const prev = result[index - 1]
+    if (prev) {
+      const spacingMm = (Math.max(prev.fontSizePt, base.fontSizePt) * 1.2) / MM
+      result.push({ ...base, valign: 'custom', yMm: Math.max(0, prev.yMm - spacingMm), text })
+    } else {
+      result.push({ ...base, text })
+    }
   })
+  return result
 }
 
 // Human-readable rendering of a separator for warning text. An empty string
@@ -1175,14 +1191,31 @@ export default function App() {
               <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
-                <SelectField<Align>
+                <SelectField<Align | 'custom'>
                   label="Aliniere orizontală"
-                  value={selected.align}
-                  onChange={(v) => updateWord(selectedIndex, { align: v, xMm: null })}
+                  value={selected.xMm !== null ? 'custom' : selected.align}
+                  onChange={(v) =>
+                    v === 'custom'
+                      ? updateWord(selectedIndex, {
+                          xMm:
+                            selected.xMm ??
+                            (effectiveCardWidthMm > 0
+                              ? horizontalAlignXMm(
+                                  selected.align,
+                                  selected,
+                                  fontFamilyForWord(fonts, selectedIndex),
+                                  effectiveCardWidthMm,
+                                  safeMarginMm,
+                                )
+                              : 0),
+                        })
+                      : updateWord(selectedIndex, { align: v, xMm: null })
+                  }
                   options={[
                     { value: 'left', label: 'stânga' },
                     { value: 'center', label: 'centru' },
                     { value: 'right', label: 'dreapta' },
+                    { value: 'custom', label: 'personalizat' },
                   ]}
                 />
                 <SelectField<VAlign>
