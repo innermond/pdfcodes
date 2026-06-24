@@ -12,7 +12,7 @@ import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } f
 import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
 import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
@@ -36,6 +36,7 @@ interface Preset {
   codeDataMode: CodeDataMode
   codeRowCount: number
   codeColumns: CodeColumnConfig[]
+  codeFieldMerges: number[]
   words: WordStyle[]
   safeMarginMm: number
   backgroundPaddingMm: number
@@ -248,6 +249,11 @@ export default function App() {
   const [codeRowCount, setCodeRowCount] = useState(10)
   const [codeSeparator, setCodeSeparator] = useState(SEPARATOR_DEFAULT)
   const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
+  // For an uploaded CSV whose delimiter was auto-detected wrongly: the raw parsed
+  // rows, plus the gap indices the user merged back into one field (so a value
+  // like "1A 1" mis-split into ["1A","1"] becomes a single field again).
+  const [uploadedRows, setUploadedRows] = useState<string[][]>([])
+  const [codeFieldMerges, setCodeFieldMerges] = useState<number[]>([])
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
   const [codeCsvStale, setCodeCsvStale] = useState(false)
@@ -368,6 +374,8 @@ export default function App() {
     setUploadedCsvInfo(null)
     setUploadedCsvWarnings([])
     setUploadedRawFile(null)
+    setUploadedRows([])
+    setCodeFieldMerges([])
   }
 
   // Build the normalised downstream CSV File (and its preview/download URL) from
@@ -378,13 +386,24 @@ export default function App() {
   // contained the file's original delimiter. The preview keeps the separator so
   // the card sample (split by `effectiveSeparator`) recovers the exact fields;
   // it's only swapped for a readable one at display time (`displayPreview`).
-  function applyUploadedCsvRows(rows: string[][]) {
-    const file = new File([serializeRows(rows, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
+  // `gaps` merges adjacent parsed fields back into one (when detection over-split
+  // a value that contained the delimiter), re-joined with `joiner` (the delimiter).
+  function applyUploadedCsvRows(rows: string[][], gaps: number[], joiner: string) {
+    setUploadedRows(rows)
+    const gapSet = new Set(gaps)
+    const merged = rows.map((r) => mergeFields(r, gapSet, joiner))
+    const file = new File([serializeRows(merged, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
     setCsvDataFile(file)
-    setUploadedCsvPreview(serializeRows(rows.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
+    setUploadedCsvPreview(serializeRows(merged.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
     setUploadedCsvRowCount(rows.length)
     setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
     setCodeCsvStale(false)
+  }
+
+  // Re-apply merges to the already-parsed rows when the user toggles a field gap.
+  function handleUploadFieldMergesChange(gaps: number[]) {
+    setCodeFieldMerges(gaps)
+    applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ')
   }
 
   // Read a file (the original upload, or a re-parse with a corrected delimiter)
@@ -409,6 +428,8 @@ export default function App() {
     // split uses `UPLOAD_SEPARATOR`, so the user never has to know about CSV
     // separators at all.
     setCodeSeparator(parsed.delimiter)
+    // A fresh parse changes the field layout, so drop any previous merges.
+    setCodeFieldMerges([])
     setUploadedRawFile(file)
     const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
     if (parsed.columnCount <= 1) {
@@ -419,7 +440,7 @@ export default function App() {
       setUploadedCsvInfo(`${prefix}: ${describeDelimiter(parsed.delimiter)} · ${rowsLabel} · ${parsed.columnCount} coloane`)
     }
     setUploadedCsvWarnings(parsed.warnings)
-    applyUploadedCsvRows(parsed.rows)
+    applyUploadedCsvRows(parsed.rows, [], parsed.delimiter || ' ')
   }
 
   async function handleCsvUpload(file: File | null) {
@@ -471,6 +492,7 @@ export default function App() {
       codeDataMode,
       codeRowCount,
       codeColumns,
+      codeFieldMerges,
       words,
       safeMarginMm,
       backgroundPaddingMm,
@@ -543,6 +565,7 @@ export default function App() {
         setCodeSeparator(preset.codeSeparator ?? '')
         if (typeof preset.codeRowCount === 'number') setCodeRowCount(preset.codeRowCount)
         if (Array.isArray(preset.codeColumns)) setCodeColumns(preset.codeColumns)
+        setCodeFieldMerges(Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : [])
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
@@ -861,6 +884,8 @@ export default function App() {
 
   function handleCodeSeparatorChange(value: string) {
     setCodeSeparator(value)
+    // The split structure changes, so previously chosen merges no longer line up.
+    setCodeFieldMerges([])
     if (codeDataMode === 'generate') {
       invalidateCsv()
     } else if (uploadedRawFile && value.length > 0) {
@@ -1389,6 +1414,9 @@ export default function App() {
             onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
             onColumnsChange={handleCodeColumnsChange}
+            fieldPieces={uploadedRows[0] ?? []}
+            fieldMerges={codeFieldMerges}
+            onFieldMergesChange={handleUploadFieldMergesChange}
             onGenerate={handleGenerateCsv}
             preview={displayPreview}
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
