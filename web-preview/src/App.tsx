@@ -989,7 +989,7 @@ export default function App() {
         Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
       </p>
 
-      <Section title="Setări">
+      <Section title="Setări" collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-3">
           <button
             type="button"
