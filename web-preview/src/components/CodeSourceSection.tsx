@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
 type CodeDataMode = 'generate' | 'upload'
 
@@ -83,6 +84,70 @@ function CodeColumnEditor({
   )
 }
 
+// Lets the user fix an uploaded CSV whose delimiter was auto-detected wrongly:
+// the first row's parsed fields are shown as pieces with a clickable control in
+// each gap to merge two pieces back into a single field.
+function FieldBoundaryEditor({
+  pieces,
+  joiner,
+  mergedGaps,
+  onChange,
+}: {
+  pieces: string[]
+  joiner: string
+  mergedGaps: number[]
+  onChange: (gaps: number[]) => void
+}) {
+  if (pieces.length <= 1) return null
+
+  const gapSet = new Set(mergedGaps)
+  const fields = mergeFields(pieces, gapSet, joiner)
+
+  function toggleGap(i: number) {
+    const next = new Set(gapSet)
+    if (next.has(i)) next.delete(i)
+    else next.add(i)
+    onChange([...next].sort((a, b) => a - b))
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded border border-gray-200 p-3 dark:border-gray-700">
+      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Câmpuri pe rând</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        Apasă pe spațiul dintre două bucăți pentru a le uni într-un singur cod — util când un cod conține separatorul (ex. „1A 1").
+      </p>
+      <div className="flex flex-wrap items-center gap-1">
+        {pieces.map((piece, i) => (
+          <span key={i} className="flex items-center gap-1">
+            <span className="rounded bg-gray-100 px-2 py-1 font-mono text-sm text-gray-800 dark:bg-gray-800 dark:text-gray-200">
+              {piece}
+            </span>
+            {i < pieces.length - 1 && (
+              <button
+                type="button"
+                onClick={() => toggleGap(i)}
+                aria-pressed={gapSet.has(i)}
+                title={gapSet.has(i) ? 'Unite — apasă pentru a separa' : 'Separate — apasă pentru a uni'}
+                className={
+                  'rounded px-1.5 py-1 text-xs font-medium transition ' +
+                  (gapSet.has(i)
+                    ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                    : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600')
+                }
+              >
+                {gapSet.has(i) ? '∪' : '|'}
+              </button>
+            )}
+          </span>
+        ))}
+      </div>
+      <p className="text-xs text-gray-600 dark:text-gray-400">
+        Rezultă {fields.length} {fields.length === 1 ? 'câmp' : 'câmpuri'}: {fields.map((f) => `„${f}"`).join('   ')}
+      </p>
+    </div>
+  )
+}
+
 export function CodeSourceSection({
   dataMode,
   onDataModeChange,
@@ -96,6 +161,9 @@ export function CodeSourceSection({
   onSeparatorChange,
   columns,
   onColumnsChange,
+  fieldPieces,
+  fieldMerges,
+  onFieldMergesChange,
   onGenerate,
   preview,
   downloadUrl,
@@ -116,6 +184,11 @@ export function CodeSourceSection({
   onSeparatorChange: (value: string) => void
   columns: CodeColumnConfig[]
   onColumnsChange: (columns: CodeColumnConfig[]) => void
+  /** Raw parsed fields of the first uploaded row (for the merge editor). */
+  fieldPieces: string[]
+  /** Indices of gaps (between parsed fields) merged into one field. */
+  fieldMerges: number[]
+  onFieldMergesChange: (gaps: number[]) => void
   onGenerate: () => void
   preview: string
   downloadUrl: string | null
@@ -125,16 +198,24 @@ export function CodeSourceSection({
   stale?: boolean
 }) {
   const generating = progress !== null
+  // Which code (column) is shown in the editor. The columns render as tabs
+  // rather than a stack, so only the active one is expanded at a time.
+  const [activeColumn, setActiveColumn] = useState(0)
+  const active = Math.min(activeColumn, columns.length - 1)
+
   function updateColumn(index: number, next: CodeColumnConfig) {
     onColumnsChange(columns.map((col, i) => (i === index ? next : col)))
   }
 
   function removeColumn(index: number) {
     onColumnsChange(columns.filter((_, i) => i !== index))
+    // Keep the active tab valid: shift left when removing at/before it.
+    setActiveColumn((prev) => (index <= prev ? Math.max(0, prev - 1) : prev))
   }
 
   function addColumn() {
     onColumnsChange([...columns, defaultCodeColumn()])
+    setActiveColumn(columns.length)
   }
 
   const previewRowCount = dataMode === 'upload' ? uploadRowCount : rowCount
@@ -185,6 +266,12 @@ export function CodeSourceSection({
               </div>
             </details>
           )}
+          <FieldBoundaryEditor
+            pieces={fieldPieces}
+            joiner={separator || ' '}
+            mergedGaps={fieldMerges}
+            onChange={onFieldMergesChange}
+          />
         </>
       ) : (
         <>
@@ -204,26 +291,39 @@ export function CodeSourceSection({
             />
           </div>
 
-          <div className="flex flex-col gap-3">
-            {columns.map((column, index) => (
-              <CodeColumnEditor
+          <div className="flex flex-wrap gap-2 border-t border-gray-200 pt-4 mt-2 dark:border-gray-700">
+            {columns.map((_, index) => (
+              <button
                 key={index}
-                index={index}
-                column={column}
-                onChange={(next) => updateColumn(index, next)}
-                onRemove={() => removeColumn(index)}
-                canRemove={columns.length > 1}
-              />
+                type="button"
+                onClick={() => setActiveColumn(index)}
+                className={`rounded-full px-3 py-1 text-sm font-medium ${
+                  active === index
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                }`}
+              >
+                Cod {index + 1}
+              </button>
             ))}
+            <button
+              type="button"
+              onClick={addColumn}
+              className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-sm font-medium text-gray-600 hover:border-gray-400 hover:text-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:text-gray-100"
+            >
+              + Adaugă cod
+            </button>
           </div>
 
-          <button
-            type="button"
-            onClick={addColumn}
-            className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-          >
-            Adaugă cod pe rând
-          </button>
+          {columns[active] && (
+            <CodeColumnEditor
+              index={active}
+              column={columns[active]}
+              onChange={(next) => updateColumn(active, next)}
+              onRemove={() => removeColumn(active)}
+              canRemove={columns.length > 1}
+            />
+          )}
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Adaugă încă un cod pe fiecare rând. Un rând poate conține mai multe coduri (separate prin separatorul de mai
             sus) — folosește această opțiune când un card trebuie să afișeze mai multe coduri.
@@ -235,7 +335,7 @@ export function CodeSourceSection({
             </p>
           )}
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 my-3">
             <button
               type="button"
               onClick={onGenerate}

@@ -35,6 +35,49 @@ export function defaultCodeColumn(): CodeColumnConfig {
   }
 }
 
+// Regroup separator-split pieces into fields. `mergedGaps` holds the indices of
+// gaps (gap i sits between piece i and i+1) that are merged; merged pieces are
+// re-joined with `joiner` so a field keeps its original text (e.g. "1A 1").
+//
+// Each resulting field is normalised so the preview and the generator measure the
+// SAME text. The card preview renders text in SVG (it collapses runs of real
+// spaces to one and never gives a tab a glyph), while the generator sums every
+// character's glyph advance — counting, say, a tab as a .notdef glyph with its own
+// width. A separator with no rendered width must therefore not survive in a joined
+// field: we drop control/zero-width whitespace (tab, newline, …) entirely, keep
+// real spaces (a space has a width) collapsing runs to one, and strip edge
+// whitespace plus an edge visible `joiner` (a leading/trailing delimiter in the
+// source yields an empty edge piece, re-inserting the delimiter at the edge). An
+// empty `mergedGaps` still normalises but otherwise returns the pieces.
+export function mergeFields(pieces: string[], mergedGaps: ReadonlySet<number>, joiner: string): string[] {
+  if (pieces.length === 0) return []
+  const fields: string[] = [pieces[0]]
+  for (let i = 1; i < pieces.length; i++) {
+    if (mergedGaps.has(i - 1)) fields[fields.length - 1] += joiner + pieces[i]
+    else fields.push(pieces[i])
+  }
+  return fields.map((f) =>
+    trimFieldEdges(
+      f
+        .replace(/[\t\n\r\f\v]+/g, '') // zero-width separators (tab, …) — must not appear
+        .replace(/ {2,}/g, ' '), // collapse real-space runs (matches the SVG preview)
+      joiner,
+    ),
+  )
+}
+
+// Strip leading/trailing whitespace and, for a non-whitespace `joiner`, any
+// stray edge separators left by merging an empty edge piece.
+function trimFieldEdges(field: string, joiner: string): string {
+  let s = field.trim()
+  if (joiner.length > 0 && joiner.trim().length > 0) {
+    while (s.startsWith(joiner)) s = s.slice(joiner.length)
+    while (s.endsWith(joiner)) s = s.slice(0, s.length - joiner.length)
+    s = s.trim()
+  }
+  return s
+}
+
 const CHARSETS: Record<CodeCharset, string> = {
   numeric: '0123456789',
   alpha: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',

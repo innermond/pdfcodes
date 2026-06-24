@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
+import { ColorSampleContext } from '../lib/colorSample'
 
 export function NumberField({
   label,
@@ -93,23 +94,33 @@ export function RadioGroupField<T extends string>({
   return (
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
       <legend className="font-medium">{label}</legend>
-      {options.map((opt) => (
-        <label
-          key={opt.value}
-          className="-mx-2 flex cursor-pointer items-start gap-2 rounded px-2 py-1 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
-        >
-          <input
-            type="radio"
-            checked={value === opt.value}
-            onChange={() => onChange(opt.value)}
-            className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
-          />
-          <span>
-            <span className="font-medium">{opt.label}</span>
-            {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
-          </span>
-        </label>
-      ))}
+      <div className="flex flex-wrap gap-2">
+        {options.map((opt) => {
+          const isSelected = value === opt.value
+          return (
+            <label
+              key={opt.value}
+              className={
+                'flex w-fit cursor-pointer items-start gap-2 rounded px-2 py-1 transition ' +
+                (isSelected
+                  ? 'text-gray-900 dark:text-gray-100'
+                  : 'opacity-60 hover:opacity-100 hover:bg-gray-100 dark:hover:bg-gray-800')
+              }
+            >
+              <input
+                type="radio"
+                checked={isSelected}
+                onChange={() => onChange(opt.value)}
+                className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+              />
+              <span>
+                <span className={isSelected ? 'font-semibold' : 'font-normal'}>{opt.label}</span>
+                {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
+              </span>
+            </label>
+          )
+        })}
+      </div>
     </fieldset>
   )
 }
@@ -151,6 +162,9 @@ const CMYK_CHANNELS: { key: keyof Cmyk; label: string }[] = [
 ]
 
 const DEFAULT_CMYK = '0:0:0:1' // black
+// A `null` value has no ink and renders as the white card; show the picker
+// seeded with this so its swatch/square/inputs reflect that white.
+const NULL_CMYK = '0:0:0:0' // white
 
 // The picker's color square: hue across X, saturation top->bottom, painted
 // through the print CMYK->RGB conversion (via `squareColor`) so it shows only
@@ -198,14 +212,22 @@ export function ColorField({
   onChange,
   allowNone = false,
   noneLabel = 'fără fundal',
+  hideWhenNull = false,
 }: {
   label: string
   value: string | null
   onChange: (value: string | null) => void
   allowNone?: boolean
   noneLabel?: string
+  // By default a `null` value still shows the picker, seeded with white (its
+  // rendered color). Set this to collapse the picker entirely while `null`
+  // instead — e.g. when `null` means a deliberate "none" toggled via `allowNone`.
+  hideWhenNull?: boolean
 }) {
-  const cmyk = parseCmyk(value ?? DEFAULT_CMYK)
+  // `null` renders as white, so seed the picker (swatch, square, inputs) with
+  // white when there's no explicit color.
+  const effectiveColor = value ?? NULL_CMYK
+  const cmyk = parseCmyk(effectiveColor)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -259,7 +281,19 @@ export function ColorField({
     pickFromSquare(e)
   }
 
-  const marker = value !== null ? cmykToSquarePos(value) : null
+  // Show the picker whenever there's a color, and also for `null` unless the
+  // caller opted into hiding it (e.g. a deliberate "none").
+  const showPicker = value !== null || !hideWhenNull
+  const marker = cmykToSquarePos(effectiveColor)
+  // Eyedropper: sample a color straight from the live preview (works in every
+  // browser — no EyeDropper API needed). Offered only while a preview exists,
+  // which is exactly when the context provides a sampler.
+  const requestColorSample = useContext(ColorSampleContext)
+  async function pickFromPreview() {
+    if (!requestColorSample) return
+    const sampled = await requestColorSample()
+    if (sampled !== null) onChange(sampled)
+  }
 
   return (
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -277,7 +311,7 @@ export function ColorField({
           </label>
         )}
       </div>
-      {value !== null && (
+      {showPicker && (
         <div className="flex items-center gap-3">
           <div ref={containerRef} className="relative shrink-0">
             <button
@@ -285,7 +319,7 @@ export function ColorField({
               aria-label="Alege culoarea"
               onClick={() => setOpen((v) => !v)}
               className="h-10 w-10 rounded border border-gray-300 dark:border-gray-600"
-              style={{ backgroundColor: colorToCss(value) }}
+              style={{ backgroundColor: colorToCss(effectiveColor) }}
             />
             {open && (
               <div className="absolute z-10 mt-1 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
@@ -314,6 +348,20 @@ export function ColorField({
                   />
                   <span className="w-8 text-right text-gray-500 dark:text-gray-400">{Math.round(cmyk.k * 100)}%</span>
                 </label>
+                {requestColorSample && (
+                  <button
+                    type="button"
+                    onClick={pickFromPreview}
+                    aria-label="Alege o culoare din previzualizare"
+                    title="Alege o culoare din previzualizare"
+                    className="flex items-center justify-center gap-1.5 rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
+                      <path d="M15 11.25l1.5 1.5.75-.75V8.758l2.276-.61a3 3 0 10-3.675-3.675l-.61 2.277H12l-.75.75 1.5 1.5M15 11.25l-8.47 8.47c-.34.34-.8.53-1.28.53s-.94.19-1.28.53l-.97.97-.75-.75.97-.97c.34-.34.53-.8.53-1.28s.19-.94.53-1.28L12.75 9M15 11.25L12.75 9" />
+                    </svg>
+                    Pipetă
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -364,11 +412,57 @@ export function FileField({
   )
 }
 
-export function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export function Section({
+  title,
+  children,
+  collapsible,
+  defaultCollapsed,
+}: {
+  title: string
+  children: React.ReactNode
+  collapsible?: boolean
+  defaultCollapsed?: boolean
+}) {
+  const [open, setOpen] = useState(!defaultCollapsed)
+
+  if (!collapsible) {
+    return (
+      <fieldset className="flex flex-col gap-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+        <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</legend>
+        {children}
+      </fieldset>
+    )
+  }
+
   return (
-    <fieldset className="flex flex-col gap-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
-      <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</legend>
-      {children}
+    <fieldset
+      className={
+        'flex flex-col gap-3 ' +
+        (open ? 'rounded-lg border border-gray-200 p-4 dark:border-gray-700' : 'border-0 p-0')
+      }
+    >
+      <legend className={open ? 'px-1' : 'p-0'}>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="inline-flex items-center gap-1 text-sm font-semibold text-gray-900 hover:text-gray-700 dark:text-gray-100 dark:hover:text-gray-300"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={'h-4 w-4 transition-transform ' + (open ? 'rotate-180' : '')}
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+          {title}
+        </button>
+      </legend>
+      {open && children}
     </fieldset>
   )
 }

@@ -42,7 +42,12 @@ export function CardCanvas({
     <svg
       ref={svgRef}
       viewBox={`0 0 ${cardWidthPt} ${cardHeightPt}`}
-      className="w-full rounded border border-gray-200 bg-white dark:border-gray-700"
+      // `isolate` (isolation: isolate) makes the SVG an isolated group so the
+      // words' `mix-blend-mode` (text, background rect, contour) composites
+      // against the card's own content — the background image below them —
+      // instead of leaking out to blend with the white page, where multiply/
+      // darken/etc. would be invisible. Matches how the PDF blends on the card.
+      className="isolate w-full rounded border border-gray-200 bg-white dark:border-gray-700"
       style={{ aspectRatio: `${cardWidthPt} / ${cardHeightPt}` }}
     >
       {backgroundImageUrl && (

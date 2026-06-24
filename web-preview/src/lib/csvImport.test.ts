@@ -65,6 +65,12 @@ describe('parseUploadedCsv', () => {
     expect(r.warnings).toEqual([])
   })
 
+  it('does not warn for a single-column file (no delimiter needed)', async () => {
+    const r = await parse('AB1\nAB2\nAB3')
+    expect(r.rows).toEqual([['AB1'], ['AB2'], ['AB3']])
+    expect(r.warnings).toEqual([])
+  })
+
   it('warns when rows have inconsistent column counts', async () => {
     const r = await parse('a,b,c\nd,e')
     expect(r.warnings.some((w) => w.includes('coloane'))).toBe(true)
