@@ -75,9 +75,9 @@ const UPLOAD_SEPARATOR = '\u001F'
 
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
-  { id: 'date', label: 'Sursa de date' },
-  { id: 'aspect', label: 'Aspect & Cuvinte' },
-  { id: 'generare', label: 'Generare' },
+  { id: 'date', label: 'Date' },
+  { id: 'aspect', label: 'Coduri' },
+  { id: 'generare', label: 'PDF' },
 ] as const
 
 // Pages per generation batch. Each batch is built as its own PDF and freed
@@ -123,9 +123,9 @@ type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'bev
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Cerc' },
   { value: 'ellipse', label: 'Elipsă' },
-  { value: 'rectangle', label: 'Rectangle' },
-  { value: 'rounded-rectangle', label: 'Rectangle cu colțuri rotunjite' },
-  { value: 'beveled-rectangle', label: 'Rectangle cu colțuri teșite' },
+  { value: 'rectangle', label: 'Dreptunghi' },
+  { value: 'rounded-rectangle', label: 'Dreptunghi cu colțuri rotunjite' },
+  { value: 'beveled-rectangle', label: 'Dreptunghi cu colțuri teșite' },
   { value: 'heart', label: 'Inimă' },
 ]
 
@@ -1226,7 +1226,7 @@ export default function App() {
             {fontsNotice && <p className="text-sm text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
 
-          <Section title="Cuvinte">
+          <Section title="Coduri">
             <div className="flex flex-wrap gap-2">
               {words.map((word, index) => (
                 <button
