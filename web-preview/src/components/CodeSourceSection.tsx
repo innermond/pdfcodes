@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, randomCodeSpace, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
 type CodeDataMode = 'generate' | 'upload'
 
@@ -26,16 +26,26 @@ function CodeColumnEditor({
   onChange,
   onRemove,
   canRemove,
+  rowCount,
 }: {
   index: number
   column: CodeColumnConfig
   onChange: (next: CodeColumnConfig) => void
   onRemove: () => void
   canRemove: boolean
+  /** Number of rows requested — used to flag when random codes can't be unique. */
+  rowCount: number
 }) {
   function set<K extends keyof CodeColumnConfig>(key: K, value: CodeColumnConfig[K]) {
     onChange({ ...column, [key]: value })
   }
+
+  // For random codes, warn when the requested rows exceed the combination space
+  // (duplicates unavoidable) or merely approach it (duplicates very likely, by
+  // the birthday paradox). Range codes always increment, so they never collide.
+  const codeSpace = column.mode === 'random' ? randomCodeSpace(column.charset, column.length) : Infinity
+  const exceedsSpace = rowCount > codeSpace
+  const nearsSpace = !exceedsSpace && rowCount > codeSpace / 2
 
   return (
     <fieldset className="flex flex-col gap-3 rounded border border-gray-200 p-3 dark:border-gray-700">
@@ -78,6 +88,21 @@ function CodeColumnEditor({
         column.padLength > 0 && column.padLength <= column.length && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
           Completarea nu apare când lățimea totală ({column.padLength}) ≤ lungimea codului ({column.length}). Mărește lățimea totală pentru a vedea caracterele de completare.
+        </p>
+      )}
+      {exceedsSpace && (
+        <p className="text-xs text-red-600 dark:text-red-400">
+          Numărul de rânduri ({rowCount.toLocaleString('ro-RO')}) depășește combinațiile posibile pentru acest cod
+          ({codeSpace.toLocaleString('ro-RO')} = {CHARSET_OPTIONS.find((c) => c.value === column.charset)?.label.toLowerCase()},
+          lungime {column.length}). Codurile aleatoare nu pot fi unice — vor exista duplicate. Mărește lungimea codului,
+          schimbă tipul de caractere sau folosește un interval numeric.
+        </p>
+      )}
+      {nearsSpace && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Numărul de rânduri ({rowCount.toLocaleString('ro-RO')}) este apropiat de combinațiile posibile
+          ({codeSpace.toLocaleString('ro-RO')}). Codurile aleatoare nu garantează unicitatea — la acest volum vor apărea
+          probabil duplicate. Mărește lungimea codului pentru mai multe combinații.
         </p>
       )}
     </fieldset>
@@ -292,20 +317,31 @@ export function CodeSourceSection({
           </div>
 
           <div className="flex flex-wrap gap-2 border-t border-gray-200 pt-4 mt-2 dark:border-gray-700">
-            {columns.map((_, index) => (
-              <button
-                key={index}
-                type="button"
-                onClick={() => setActiveColumn(index)}
-                className={`rounded-full px-3 py-1 text-sm font-medium ${
-                  active === index
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
-                }`}
-              >
-                Cod {index + 1}
-              </button>
-            ))}
+            {columns.map((column, index) => {
+              // Flag a tab whose random code can't yield enough unique values for
+              // the requested rows (the editor shows the full explanation).
+              const exceeds = column.mode === 'random' && rowCount > randomCodeSpace(column.charset, column.length)
+              return (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => setActiveColumn(index)}
+                  title={exceeds ? 'Prea puține combinații pentru numărul de rânduri — vor exista duplicate.' : undefined}
+                  className={`rounded-full px-3 py-1 text-sm font-medium ${
+                    active === index
+                      ? exceeds
+                        ? 'bg-red-600 text-white'
+                        : 'bg-blue-600 text-white'
+                      : exceeds
+                        ? 'bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-900/60'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+                  }`}
+                >
+                  {exceeds && <span aria-hidden className="mr-1">⚠</span>}
+                  Cod {index + 1}
+                </button>
+              )
+            })}
             <button
               type="button"
               onClick={addColumn}
@@ -322,6 +358,7 @@ export function CodeSourceSection({
               onChange={(next) => updateColumn(active, next)}
               onRemove={() => removeColumn(active)}
               canRemove={columns.length > 1}
+              rowCount={rowCount}
             />
           )}
           <p className="text-sm text-gray-500 dark:text-gray-400">

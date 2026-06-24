@@ -84,6 +84,15 @@ const CHARSETS: Record<CodeCharset, string> = {
   alphanumeric: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
 }
 
+// Number of distinct codes a random column can produce: charset size ^ length.
+// Padding and prefix/postfix are applied uniformly to every code, so they don't
+// add distinct values and don't affect this count. Returns 1 for a non-positive
+// length (an empty code has a single possible value, "").
+export function randomCodeSpace(charset: CodeCharset, length: number): number {
+  if (length <= 0) return 1
+  return Math.pow(CHARSETS[charset].length, Math.floor(length))
+}
+
 function randomCode(charset: CodeCharset, length: number): string {
   const chars = CHARSETS[charset]
   let result = ''
