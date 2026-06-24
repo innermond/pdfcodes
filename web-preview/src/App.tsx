@@ -128,6 +128,22 @@ const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'heart', label: 'Inimă' },
 ]
 
+// Tight bounding box (in card-mm coords, measured from the card's bottom-left)
+// of a preset contour shape, mirroring how `build_shape_pdf` in
+// src/generate/shapes.rs draws each shape inside the card inset by `insetMm`.
+// A circle uses `min(w, h)` and stays centered (so it doesn't grow along the
+// longer axis); every other shape fills the inset box. Used to re-position codes
+// relative to the cut shape when the card is resized.
+function contourBoxMm(shape: ShapeKind, cardWMm: number, cardHMm: number, insetMm: number) {
+  const iw = cardWMm - 2 * insetMm
+  const ih = cardHMm - 2 * insetMm
+  if (shape === 'circle') {
+    const d = Math.min(iw, ih)
+    return { x: (cardWMm - d) / 2, y: (cardHMm - d) / 2, w: d, h: d }
+  }
+  return { x: insetMm, y: insetMm, w: iw, h: ih }
+}
+
 // Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
 // usual rounded corner), "in" curves them toward the interior (scalloped).
 type CornerOrientation = 'out' | 'in'
@@ -720,36 +736,52 @@ export default function App() {
     }
   }
 
-  // Keep each word's fractional position within the card constant when the card
-  // dimensions change: a word's stored position is scaled by the new/old size
-  // ratio, so a code placed at (x, y) over the old width/height lands at the
-  // same fraction of the new width/height. Horizontal auto-centering
-  // (`xMm === null`) and snapped vertical alignment (`valign !== 'custom'`) are
-  // left to the align/valign machinery, which already tracks the card size — so
-  // a word that was dead-centre stays dead-centre across a resize. The first
-  // valid size only establishes the baseline (no scaling on initial placement).
+  // Keep each word's fractional position within the contour box constant when the
+  // card dimensions change: a word's stored position is remapped to the same
+  // fraction of the reference box's new size. For a preset shape the reference is
+  // the contour's tight bbox (the card inset on all sides), so a code placed
+  // inside the cut shape keeps its spot inside the shape; otherwise the reference
+  // is the full card. Horizontal auto-centering (`xMm === null`) and snapped
+  // vertical alignment (`valign !== 'custom'`) are left to the align/valign
+  // machinery, which already tracks the card size — so a word that was dead-centre
+  // stays dead-centre across a resize. The first valid size only establishes the
+  // baseline (no scaling on initial placement).
   const prevCardDimsRef = useRef<{ w: number; h: number } | null>(null)
   useEffect(() => {
     const w = effectiveCardWidthMm
     const h = effectiveCardHeightMm
     const prev = prevCardDimsRef.current
     if (prev && prev.w > 0 && prev.h > 0 && w > 0 && h > 0 && (prev.w !== w || prev.h !== h)) {
-      const sx = w / prev.w
-      const sy = h / prev.h
-      setWords((words) => {
-        let changed = false
-        const next = words.map((word) => {
-          const xMm = word.xMm !== null && sx !== 1 ? word.xMm * sx : word.xMm
-          const yMm = word.valign === 'custom' && sy !== 1 ? word.yMm * sy : word.yMm
-          if (xMm === word.xMm && yMm === word.yMm) return word
-          changed = true
-          return { ...word, xMm, yMm }
+      // Reference box: the contour's tight bbox for a preset shape, or the full
+      // card otherwise. Remapping uses the box's origin AND size so a code keeps
+      // its fraction within the shape — including a circle, whose box is capped to
+      // `min(w, h)` and re-centred (so it doesn't grow along the longer axis).
+      const useContour = contourSource === 'shape'
+      const oldBox = useContour
+        ? contourBoxMm(shapeKind, prev.w, prev.h, shapeInsetMm)
+        : { x: 0, y: 0, w: prev.w, h: prev.h }
+      const newBox = useContour
+        ? contourBoxMm(shapeKind, w, h, shapeInsetMm)
+        : { x: 0, y: 0, w, h }
+      // Skip a degenerate box (e.g. inset ≥ half a side) to avoid divide-by-zero.
+      if (oldBox.w > 0 && oldBox.h > 0 && newBox.w > 0 && newBox.h > 0) {
+        const sx = newBox.w / oldBox.w
+        const sy = newBox.h / oldBox.h
+        setWords((words) => {
+          let changed = false
+          const next = words.map((word) => {
+            const xMm = word.xMm !== null ? newBox.x + (word.xMm - oldBox.x) * sx : word.xMm
+            const yMm = word.valign === 'custom' ? newBox.y + (word.yMm - oldBox.y) * sy : word.yMm
+            if (xMm === word.xMm && yMm === word.yMm) return word
+            changed = true
+            return { ...word, xMm, yMm }
+          })
+          return changed ? next : words
         })
-        return changed ? next : words
-      })
+      }
     }
     prevCardDimsRef.current = w > 0 && h > 0 ? { w, h } : null
-  }, [effectiveCardWidthMm, effectiveCardHeightMm])
+  }, [effectiveCardWidthMm, effectiveCardHeightMm, contourSource, shapeKind, shapeInsetMm])
 
   // Generate a preset-shape contour PDF whenever the shape source is active
   // and the shape/inset/corner-radius/card size changes, feeding it through
@@ -1421,12 +1453,6 @@ export default function App() {
                 { value: 'contour', label: 'Contur', description: 'Generează PDF-ul cu linii de tăiere folosind fundalul de contur.' },
                 { value: 'both', label: 'Print + Contur', description: 'Generează ambele PDF-uri.' },
               ]}
-            />
-
-            <FileField
-              label="Fișier CSV cu date (necesar pentru generare)"
-              accept=".csv,text/csv"
-              onChange={(files) => setCsvDataFile(files?.[0] ?? null)}
             />
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
