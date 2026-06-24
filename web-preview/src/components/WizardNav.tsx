@@ -30,7 +30,7 @@ export function WizardNav({
               onClick={() => enabled && onSelect(step.id)}
               disabled={!enabled}
               title={!enabled ? lockedHint : undefined}
-              className={`flex items-center gap-2 rounded-full px-3 py-1 text-sm font-medium ${
+              className={`flex items-center gap-2 rounded-full px-3 py-1 text-md font-medium ${
                 active
                   ? 'bg-blue-600 text-white'
                   : enabled

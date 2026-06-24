@@ -94,23 +94,33 @@ export function RadioGroupField<T extends string>({
   return (
     <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
       <legend className="font-medium">{label}</legend>
-      {options.map((opt) => (
-        <label
-          key={opt.value}
-          className="-mx-2 flex cursor-pointer items-start gap-2 rounded px-2 py-1 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
-        >
-          <input
-            type="radio"
-            checked={value === opt.value}
-            onChange={() => onChange(opt.value)}
-            className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
-          />
-          <span>
-            <span className="font-medium">{opt.label}</span>
-            {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
-          </span>
-        </label>
-      ))}
+      <div className="flex flex-wrap gap-2">
+        {options.map((opt) => {
+          const isSelected = value === opt.value
+          return (
+            <label
+              key={opt.value}
+              className={
+                'flex w-fit cursor-pointer items-start gap-2 rounded px-2 py-1 transition ' +
+                (isSelected
+                  ? 'text-gray-900 dark:text-gray-100'
+                  : 'opacity-60 hover:opacity-100 hover:bg-gray-100 dark:hover:bg-gray-800')
+              }
+            >
+              <input
+                type="radio"
+                checked={isSelected}
+                onChange={() => onChange(opt.value)}
+                className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+              />
+              <span>
+                <span className={isSelected ? 'font-semibold' : 'font-normal'}>{opt.label}</span>
+                {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
+              </span>
+            </label>
+          )
+        })}
+      </div>
     </fieldset>
   )
 }

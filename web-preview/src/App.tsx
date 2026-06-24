@@ -1072,15 +1072,17 @@ export default function App() {
               </>
             )}
 
-            <RadioGroupField<ContourSource>
-              label="Sursă fundal contur"
-              value={contourSource}
-              onChange={handleContourSourceChange}
-              options={[
-                { value: 'upload', label: 'Încarcă PDF' },
-                { value: 'shape', label: 'Formă presetată' },
-              ]}
-            />
+            <div className="mt-4">
+              <RadioGroupField<ContourSource>
+                label="Sursă fundal contur"
+                value={contourSource}
+                onChange={handleContourSourceChange}
+                options={[
+                  { value: 'upload', label: 'Încarcă PDF' },
+                  { value: 'shape', label: 'Formă presetată' },
+                ]}
+              />
+            </div>
 
             {contourSource === 'upload' ? (
               <FileField
