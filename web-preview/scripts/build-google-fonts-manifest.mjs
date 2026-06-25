@@ -57,7 +57,11 @@ async function main() {
     while (queue.length) {
       const fam = queue.pop()
       try {
-        const detail = await fetchJson(`${API}/${fam.id}?subsets=latin`)
+        // Request latin AND latin-ext: gwfh returns a different gstatic .ttf
+        // URL per subset, and the latin-only file is stripped of the Romanian
+        // precomposed letters (ă/ș/ț). Fetching latin-ext keeps those glyphs so
+        // the picker's fonts render diacritics, matching a full-family download.
+        const detail = await fetchJson(`${API}/${fam.id}?subsets=latin,latin-ext`)
         const variants = {}
         for (const [slot, candidates] of Object.entries(WANTED)) {
           const url = pickVariant(detail.variants, candidates)
