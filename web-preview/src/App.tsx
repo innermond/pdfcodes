@@ -985,6 +985,11 @@ export default function App() {
       const mode: 'print' | 'contour' | 'both' =
         needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
 
+      // Effective row count of the data source feeding the job: the uploaded
+      // CSV's rows in upload mode, the generated row count otherwise. Drives the
+      // progress total and the ZIP-size estimate that gates OPFS streaming.
+      const effectiveRowCount = codeDataMode === 'upload' ? uploadedCsvRowCount : codeRowCount
+
       const handle = generateBatched(
         {
           mode,
@@ -994,7 +999,7 @@ export default function App() {
           printOptions,
           contourOptions,
           pagesPerBatch: PAGES_PER_BATCH,
-          totalRows: codeRowCount > 0 ? codeRowCount : null,
+          totalRows: effectiveRowCount > 0 ? effectiveRowCount : null,
           csv: csvDataFile,
         },
         setGenProgress,
@@ -1640,7 +1645,12 @@ export default function App() {
                   blob={printArtifact.blob}
                   name={printArtifact.name}
                   isZip={printArtifact.isZip}
-                  note={printArtifact.isZip ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri (previzualizarea arată primul PDF).' : undefined}
+                  note={
+                    printArtifact.isZip
+                      ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri (previzualizarea arată primul PDF).' +
+                        (printArtifact.sink === 'opfs' ? ' Arhivă mare — scrisă pe disc pentru a economisi memoria.' : '')
+                      : undefined
+                  }
                 />
               )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}

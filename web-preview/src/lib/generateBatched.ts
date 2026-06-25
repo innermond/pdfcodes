@@ -12,6 +12,8 @@ export interface PrintArtifact {
   blob: Blob
   isZip: boolean
   name: string
+  /** Where a ZIP was assembled: in memory, or streamed to an OPFS temp file. */
+  sink?: 'memory' | 'opfs'
 }
 
 export interface BatchResult {
