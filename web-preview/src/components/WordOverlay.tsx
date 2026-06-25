@@ -109,28 +109,29 @@ export function WordOverlay({
   useEffect(() => {
     if (!selected) return
     function handleKey(e: KeyboardEvent) {
-      let xMm = startXMm
-      let yMm = startYMm
+      // Nudge only the axis pressed, so the other axis keeps its alignment: a
+      // horizontal nudge must not freeze the vertical snap, and a vertical nudge
+      // must not turn a left/center/right word into a custom X position.
+      const next: Partial<WordStyle> = {}
       switch (e.key) {
         case 'ArrowLeft':
-          xMm -= stepXMm
+          next.xMm = startXMm - stepXMm
           break
         case 'ArrowRight':
-          xMm += stepXMm
+          next.xMm = startXMm + stepXMm
           break
         case 'ArrowUp':
-          yMm += stepYMm
+          next.yMm = startYMm + stepYMm
+          next.valign = 'custom'
           break
         case 'ArrowDown':
-          yMm -= stepYMm
+          next.yMm = startYMm - stepYMm
+          next.valign = 'custom'
           break
         default:
           return
       }
       e.preventDefault()
-      const next: Partial<WordStyle> = { xMm, yMm }
-      // A vertical nudge overrides any snapped vertical alignment.
-      if (yMm !== startYMm) next.valign = 'custom'
       onChange(next)
     }
     window.addEventListener('keydown', handleKey)
@@ -218,12 +219,18 @@ export function WordOverlay({
           dxUser = 0
         }
       }
-      const next: Partial<WordStyle> = {
-        xMm: startXMm + dxUser / MM,
-        yMm: startYMm - dyUser / MM,
+      // Only write the axis that actually moved, so a single-axis drag leaves
+      // the other axis's alignment intact: a purely horizontal drag keeps the
+      // vertical snap (valign), and a purely vertical drag keeps a
+      // left/center/right word from freezing into a custom X position.
+      const next: Partial<WordStyle> = {}
+      if (dxUser !== 0) next.xMm = startXMm + dxUser / MM
+      if (dyUser !== 0) {
+        next.yMm = startYMm - dyUser / MM
+        // Moving the word vertically overrides any snapped vertical alignment.
+        next.valign = 'custom'
       }
-      // Moving the word vertically overrides any snapped vertical alignment.
-      if (dyUser !== 0) next.valign = 'custom'
+      if (next.xMm === undefined && next.yMm === undefined) return
       onChange(next)
     }
 
