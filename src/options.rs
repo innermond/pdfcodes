@@ -111,6 +111,15 @@ pub struct Options {
     // entry for every word). Empty defaults to no extra tracking (0.0) for
     // every word.
     pub text_char_spacing_pt: Vec<f32>,
+    // 1-based page to use from the uploaded background PDF (for multi-page
+    // uploads). Defaults to 1. `contour_page_number` selects the page from the
+    // separately-loaded contour PDF used by the `--combineb` overlay.
+    pub background_page_number: u32,
+    pub contour_page_number: u32,
+    // "Non-decupare" (no-cut) mode: skip imposition entirely. Each card (or the
+    // contour outline) is emitted on its own page sized to the card, with no
+    // registration circles. See `CardLayout::compute`.
+    pub no_cut: bool,
 }
 
 impl Options {
@@ -159,6 +168,9 @@ impl Default for Options {
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
             text_char_spacing_pt: Vec::new(),
+            background_page_number: 1,
+            contour_page_number: 1,
+            no_cut: false,
         }
     }
 }

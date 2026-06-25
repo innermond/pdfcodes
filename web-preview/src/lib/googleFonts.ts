@@ -12,6 +12,9 @@ export const GOOGLE_FONT_STYLES: { value: GoogleFontStyle; label: string }[] = [
 interface FamilyEntry {
   category: string
   variants: Partial<Record<GoogleFontStyle, string>>
+  // Present and true when the family's embedded static .ttf includes Google's
+  // `latin-ext` subset (covers Romanian ș ț ă). Omitted when unsupported.
+  latinExt?: boolean
 }
 
 type Manifest = Record<string, FamilyEntry>
@@ -43,6 +46,15 @@ export async function stylesForFamily(family: string): Promise<GoogleFontStyle[]
   const entry = manifest[family]
   if (!entry) return []
   return GOOGLE_FONT_STYLES.map((s) => s.value).filter((style) => entry.variants[style])
+}
+
+// Whether `family`'s embedded font covers the Latin-Extended subset, which
+// holds the Romanian diacritics (ș ț ă). Unknown families (e.g. before the
+// manifest is regenerated with the flag) report false. The picker uses this to
+// warn that Romanian text may render with missing glyphs.
+export async function familySupportsLatinExt(family: string): Promise<boolean> {
+  const manifest = await loadManifest()
+  return manifest[family]?.latinExt === true
 }
 
 // Fixed sample shown for each font in the picker preview.

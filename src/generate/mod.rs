@@ -65,6 +65,7 @@ struct CuttingMetrics {
 fn count_csv_records(csv_data: &str) -> usize {
     csv::ReaderBuilder::new()
         .has_headers(false)
+        .flexible(true)
         .from_reader(csv_data.as_bytes())
         .records()
         .count()
@@ -112,9 +113,16 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // Load background PDF
     let mut doc = Document::load_mem(background_bytes)?;
 
-    // Get background page
+    // Get background page. `get_pages()` is keyed by 1-based page number, so a
+    // multi-page upload can pick which page becomes the card; fall back to the
+    // first page if the requested number is out of range.
     let pages = doc.get_pages();
-    let (_, bg_page_id) = pages.iter().next().ok_or("No pages in background PDF")?;
+    let bg_page_id = pages
+        .get(&opts.background_page_number)
+        .copied()
+        .or_else(|| pages.values().next().copied())
+        .ok_or("No pages in background PDF")?;
+    let bg_page_id = &bg_page_id;
     let bg_page_obj = doc.get_object(*bg_page_id)?;
     let bg_page_dict = bg_page_obj.as_dict()?;
     let media_box_obj = bg_page_dict.get(b"MediaBox")?;
@@ -258,7 +266,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // as the print grid, so print/contour alignment can be checked visually.
     let overlay = if opts.combine {
         let contour_bytes = contour_background_bytes.ok_or("--combineb requires a contour background PDF")?;
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout)?)
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number)?)
     } else {
         None
     };
@@ -360,6 +368,61 @@ mod tests {
 
     static BACKGROUND_PDF: &[u8] = include_bytes!("../../15x15.pdf");
 
+    // Build a minimal multi-page PDF where each page has the given MediaBox size
+    // (in points) and an empty content stream. Used to verify page selection.
+    fn multi_page_pdf(sizes: &[(f32, f32)]) -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let mut kids = Vec::new();
+        for &(w, h) in sizes {
+            let content_id = doc.add_object(Stream::new(Dictionary::new(), Content { operations: vec![] }.encode().unwrap()));
+            let mut page_dict = Dictionary::new();
+            page_dict.set("Type", Object::Name(b"Page".to_vec()));
+            page_dict.set("Parent", Object::Reference(pages_id));
+            page_dict.set("Contents", Object::Reference(content_id));
+            page_dict.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(w), Object::Real(h)]));
+            kids.push(Object::Reference(doc.add_object(Object::Dictionary(page_dict))));
+        }
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Count", Object::Integer(sizes.len() as i64));
+        pages_dict.set("Kids", Object::Array(kids));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+        let mut catalog_dict = Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog_dict));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn generate_print_pdf_uses_selected_background_page() {
+        // A small page 1 fits many cards per host sheet; a large page 2 fits
+        // fewer. Selecting page 2 must change the layout, proving the page
+        // number reaches the generator rather than always using page 1.
+        let bg = multi_page_pdf(&[(72.0, 72.0), (288.0, 360.0)]);
+
+        let page1 = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_page_number: 1, ..Options::default() })
+            .expect("page 1 generation should succeed");
+        let page2 = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_page_number: 2, ..Options::default() })
+            .expect("page 2 generation should succeed");
+
+        assert!(page1.cards_per_page > page2.cards_per_page, "larger page 2 should fit fewer cards");
+    }
+
+    #[test]
+    fn generate_print_pdf_falls_back_to_first_page_when_out_of_range() {
+        let bg = multi_page_pdf(&[(72.0, 72.0), (288.0, 360.0)]);
+        let out_of_range = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_page_number: 99, ..Options::default() })
+            .expect("out-of-range page should fall back to page 1");
+        let first = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_page_number: 1, ..Options::default() })
+            .expect("page 1 generation should succeed");
+        assert_eq!(out_of_range.cards_per_page, first.cards_per_page);
+    }
+
     #[test]
     fn generate_contour_pdf() {
         let opts = Options { contour: true, ..Options::default() };
@@ -376,6 +439,18 @@ mod tests {
 
         assert!(out.pdf.starts_with(b"%PDF"));
         assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn generate_print_pdf_accepts_ragged_rows() {
+        // Rows with different field counts (one merged into a single field, the
+        // next holding two) must not be rejected: the CSV reader is flexible and
+        // each row is laid out on its own. Regression for the "found record with
+        // 2 fields, but the previous record has 1 fields" generation error.
+        let opts = Options::default();
+        let out = generate_pdf(Some("1A 1\n2B\n3C 3\n"), BACKGROUND_PDF, None, &opts)
+            .expect("ragged rows should generate without a CSV-length error");
+        assert!(out.pdf.starts_with(b"%PDF"));
     }
 
     #[test]
@@ -655,6 +730,29 @@ mod tests {
             }
         }
         panic!("no card form XObject found");
+    }
+
+    #[test]
+    fn diacritics_are_written_as_font_glyph_ids() {
+        // Render a word with Romanian diacritics and confirm the content stream
+        // writes 2-byte glyph IDs (Identity-H), not raw UTF-8 bytes — the latter
+        // is what made diacritics garble under the old simple WinAnsi font.
+        let opts = Options { font_sizes: vec![9.0], text_y_mm: vec![10.0], ..Options::default() };
+        let out = generate_pdf(Some("mușchi\n"), BACKGROUND_PDF, None, &opts).expect("generation should succeed");
+
+        let ops = first_card_operations(&out.pdf);
+        let tj = ops.iter().find(|op| op.operator == "Tj").expect("a Tj text op");
+        let Object::String(bytes, _) = &tj.operands[0] else { panic!("Tj operand should be a string") };
+
+        let face = ttf_parser::Face::parse(MONTSERRAT_BOLD_TTF, 0).unwrap();
+        let mut expected = Vec::new();
+        for ch in "mușchi".chars() {
+            let gid = face.glyph_index(ch).expect("Montserrat covers this char").0;
+            assert_ne!(gid, 0, "{ch} must be a real glyph");
+            expected.push((gid >> 8) as u8);
+            expected.push((gid & 0xff) as u8);
+        }
+        assert_eq!(bytes, &expected, "text must be encoded as big-endian glyph ids");
     }
 
     #[test]

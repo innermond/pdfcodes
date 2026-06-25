@@ -64,7 +64,15 @@ async function main() {
           if (url) variants[slot] = url
         }
         if (variants.regular) {
-          manifest[fam.family] = { category: fam.category, variants }
+          const entry = { category: fam.category, variants }
+          // Record Latin-Extended support so the picker can warn when a font
+          // can't render Romanian diacritics (ș ț ă, in the latin-ext subset).
+          // `detail.subsets` lists every supported subset regardless of the
+          // `?subsets=latin` request. Stored only when true to keep the JSON lean.
+          if (Array.isArray(detail.subsets) && detail.subsets.includes('latin-ext')) {
+            entry.latinExt = true
+          }
+          manifest[fam.family] = entry
         }
       } catch (err) {
         console.warn(`skip ${fam.family}: ${err.message}`)

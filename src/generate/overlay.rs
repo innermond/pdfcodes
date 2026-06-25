@@ -13,10 +13,18 @@ pub(crate) fn build_overlay(
     contour_background_bytes: &[u8],
     catalog_id: ObjectId,
     layout: &CardLayout,
+    page_number: u32,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let contour_doc = Document::load_mem(contour_background_bytes)?;
     let contour_pages = contour_doc.get_pages();
-    let (_, contour_page_id) = contour_pages.iter().next().ok_or("No pages in contour background PDF")?;
+    // `get_pages()` is keyed by 1-based page number; pick the requested page
+    // (for multi-page contour uploads), falling back to the first.
+    let contour_page_id = contour_pages
+        .get(&page_number)
+        .copied()
+        .or_else(|| contour_pages.values().next().copied())
+        .ok_or("No pages in contour background PDF")?;
+    let contour_page_id = &contour_page_id;
     let contour_page_obj = contour_doc.get_object(*contour_page_id)?;
     let contour_page_dict = contour_page_obj.as_dict()?;
     let contour_media_box = contour_page_dict.get(b"MediaBox")?.as_array()?.clone();

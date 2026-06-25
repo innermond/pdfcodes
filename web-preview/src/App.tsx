@@ -73,6 +73,14 @@ const SEPARATOR_DEFAULT = ','
 // detected delimiter is still what the user sees; this is plumbing only.
 const UPLOAD_SEPARATOR = '\u001F'
 
+// Heuristic for "the user picked the same file in two pickers": the browser
+// gives a distinct File object per <input>, but the same on-disk file has the
+// same name, size and last-modified time. Used to default the contour to a
+// different page when it reuses the background PDF.
+function isSameFile(a: File, b: File): boolean {
+  return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified
+}
+
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
   { id: 'contur', label: 'Contur' },
@@ -226,7 +234,14 @@ export default function App() {
   // NaN = no override; pre-filled with the detected MediaBox on file load.
   const [bgTargetWidthMm, setBgTargetWidthMm] = useState<number>(NaN)
   const [bgTargetHeightMm, setBgTargetHeightMm] = useState<number>(NaN)
+  // Multi-page PDF page selection (1-based). The page count drives whether the
+  // page stepper is shown; the page number is sent to the generator so the print
+  // output uses the same page as the preview.
+  const [backgroundPageNumber, setBackgroundPageNumber] = useState(1)
+  const [backgroundPageCount, setBackgroundPageCount] = useState(1)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
+  const [contourPageNumber, setContourPageNumber] = useState(1)
+  const [contourPageCount, setContourPageCount] = useState(1)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
   const [printArtifact, setPrintArtifact] = useState<PrintArtifact | null>(null)
@@ -255,6 +270,17 @@ export default function App() {
   // like "1A 1" mis-split into ["1A","1"] becomes a single field again).
   const [uploadedRows, setUploadedRows] = useState<string[][]>([])
   const [codeFieldMerges, setCodeFieldMerges] = useState<number[]>([])
+  // When true, each uploaded row is treated as one code: every field on the row
+  // is re-joined into a single value. This handles label CSVs (e.g. "Rasol cu
+  // mușchi") that the delimiter auto-detect over-split on spaces, which would
+  // otherwise yield rows with more words than the configured styles. Auto-enabled
+  // when a freshly parsed file has rows with differing field counts (ragged).
+  const [codeSingleField, setCodeSingleField] = useState(false)
+  // The widest merged row in the uploaded file (sentinel-joined), used to size
+  // the per-word styles. Sizing from the *widest* row — not just the first —
+  // ensures every row fits the configured word count, so the generator (which
+  // checks each row against the style count) never rejects a longer row.
+  const [uploadedMaxRow, setUploadedMaxRow] = useState('')
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
   const [codeCsvStale, setCodeCsvStale] = useState(false)
@@ -279,6 +305,15 @@ export default function App() {
   // `UPLOAD_SEPARATOR`, so that's what they must be split by downstream.
   const effectiveSeparator = codeDataMode === 'upload' ? UPLOAD_SEPARATOR : codeSeparator
 
+  // The raw uploaded row with the most fields (== the most separation chars).
+  // The "Câmpuri pe rând" editor shows this row so every mergeable gap is
+  // available — a shorter first row would hide gaps that exist only in longer
+  // rows, which is why merges defined on the first row didn't cover every row.
+  const widestUploadedRow = useMemo(
+    () => uploadedRows.reduce<string[]>((max, r) => (r.length > max.length ? r : max), uploadedRows[0] ?? []),
+    [uploadedRows],
+  )
+
   // Active preview shown in the data-source step: the uploaded file's rows
   // when in upload mode, the generated preview otherwise. In upload mode the
   // rows are joined with `UPLOAD_SEPARATOR` (so the card sample splits into the
@@ -293,14 +328,29 @@ export default function App() {
   const sampleTextDisplay =
     codeDataMode === 'upload' ? sampleText.split(UPLOAD_SEPARATOR).join(codeSeparator || ' ') : sampleText
 
-  // While editing the data source, mirror the first record into the card
-  // preview so separator/column tweaks are reflected live on the card.
+  // Mirror a representative CSV row into the card preview and per-word styles.
+  // In upload mode this is the *widest* row in the whole file (not the first
+  // preview row), applied on both the data step and the styling step so the
+  // styles cover every row's field count — otherwise a later, longer row would
+  // have more words than configured and the generator rejects it ("has N
+  // word(s), but only M ... configured"). In generate mode it tracks the first
+  // generated row while editing the data source.
   useEffect(() => {
-    if (step !== 'date') return
-    const firstRow = activePreview.split('\n')[0] ?? ''
-    handleSampleTextChange(firstRow)
+    if (codeDataMode === 'upload') {
+      // Use the widest uploaded row (most separators, counted exactly as the
+      // generator splits — every UPLOAD_SEPARATOR, empty fields included) as the
+      // example. This drives both the data step's live preview and the styling
+      // step (aspect), so the per-word styles configured there cover the file's
+      // worst-case row and the generator never sees a row with extra words.
+      if (step !== 'date' && step !== 'aspect') return
+      const fields = uploadedMaxRow === '' ? [] : uploadedMaxRow.split(UPLOAD_SEPARATOR)
+      handleSampleTextChange(uploadedMaxRow, effectiveSeparator, fields)
+    } else {
+      if (step !== 'date') return
+      handleSampleTextChange(activePreview.split('\n')[0] ?? '')
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, activePreview, effectiveSeparator])
+  }, [step, activePreview, effectiveSeparator, codeDataMode, uploadedMaxRow])
 
   // On the "Aspect & Cuvinte" step, default the selection to the first word so
   // its editing controls are shown right away. Also recovers from a stale
@@ -391,6 +441,8 @@ export default function App() {
     setUploadedRawFile(null)
     setUploadedRows([])
     setCodeFieldMerges([])
+    setCodeSingleField(false)
+    setUploadedMaxRow('')
   }
 
   // Build the normalised downstream CSV File (and its preview/download URL) from
@@ -403,10 +455,18 @@ export default function App() {
   // it's only swapped for a readable one at display time (`displayPreview`).
   // `gaps` merges adjacent parsed fields back into one (when detection over-split
   // a value that contained the delimiter), re-joined with `joiner` (the delimiter).
-  function applyUploadedCsvRows(rows: string[][], gaps: number[], joiner: string) {
+  // When `singleField` is set, every field on a row is re-joined into one value
+  // (each row becomes a single code), which `gaps` can't guarantee on ragged rows.
+  function applyUploadedCsvRows(rows: string[][], gaps: number[], joiner: string, singleField: boolean) {
     setUploadedRows(rows)
     const gapSet = new Set(gaps)
-    const merged = rows.map((r) => mergeFields(r, gapSet, joiner))
+    const merged = singleField
+      ? rows.map((r) => [r.join(joiner)])
+      : rows.map((r) => mergeFields(r, gapSet, joiner))
+    // Track the row with the most fields — equivalently, the most separation
+    // chars (fields = separators + 1) — so the per-word styles cover every row.
+    const widest = merged.reduce<string[]>((max, r) => (r.length > max.length ? r : max), merged[0] ?? [])
+    setUploadedMaxRow(widest.join(UPLOAD_SEPARATOR))
     const file = new File([serializeRows(merged, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
     setCsvDataFile(file)
     setUploadedCsvPreview(serializeRows(merged.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
@@ -418,7 +478,13 @@ export default function App() {
   // Re-apply merges to the already-parsed rows when the user toggles a field gap.
   function handleUploadFieldMergesChange(gaps: number[]) {
     setCodeFieldMerges(gaps)
-    applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ')
+    applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ', codeSingleField)
+  }
+
+  // Toggle "each row is a single code" and re-build the downstream CSV.
+  function handleSingleFieldChange(value: boolean) {
+    setCodeSingleField(value)
+    applyUploadedCsvRows(uploadedRows, codeFieldMerges, codeSeparator || ' ', value)
   }
 
   // Read a file (the original upload, or a re-parse with a corrected delimiter)
@@ -446,16 +512,28 @@ export default function App() {
     // A fresh parse changes the field layout, so drop any previous merges.
     setCodeFieldMerges([])
     setUploadedRawFile(file)
+    // Ragged rows (varying field counts) on an auto-detected delimiter mean the
+    // split likely fell inside labels (e.g. spaces in "Rasol cu mușchi"). Default
+    // to treating each row as one code. A manual override (forcedDelimiter) is an
+    // explicit "split like this", so it's respected as-is.
+    const ragged = forcedDelimiter === undefined && parsed.rows.some((r) => r.length !== parsed.columnCount)
+    setCodeSingleField(ragged)
     const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
-    if (parsed.columnCount <= 1) {
+    if (ragged) {
+      setUploadedCsvInfo(`Fiecare rând este tratat ca un singur cod · ${rowsLabel}`)
+    } else if (parsed.columnCount <= 1) {
       // A single code per row needs no separator, so don't mention one.
       setUploadedCsvInfo(`Un singur cod pe rând · ${rowsLabel}`)
     } else {
       const prefix = forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'
       setUploadedCsvInfo(`${prefix}: ${describeDelimiter(parsed.delimiter)} · ${rowsLabel} · ${parsed.columnCount} coloane`)
     }
-    setUploadedCsvWarnings(parsed.warnings)
-    applyUploadedCsvRows(parsed.rows, [], parsed.delimiter || ' ')
+    // The ragged-columns warning is moot once each row is collapsed to one code,
+    // and its "check the separator" advice would now mislead — drop just that one.
+    setUploadedCsvWarnings(
+      ragged ? parsed.warnings.filter((w) => !w.includes('număr diferit de coloane')) : parsed.warnings,
+    )
+    applyUploadedCsvRows(parsed.rows, [], parsed.delimiter || ' ', ragged)
   }
 
   async function handleCsvUpload(file: File | null) {
@@ -615,14 +693,22 @@ export default function App() {
         // the effect, so the bundled file is only used for the upload source.
         if (bgFile && loadedBackgroundSource === 'upload') {
           setBackgroundFile(bgFile)
+          setBackgroundPageNumber(1)
           renderPdfBackground(bgFile)
-            .then(setBackground)
+            .then((bg) => {
+              setBackground(bg)
+              setBackgroundPageCount(bg.pageCount)
+            })
             .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
         }
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
           setContourBackgroundFile(contourFile)
+          setContourPageNumber(1)
           renderPdfBackground(contourFile)
-            .then(setContourBackground)
+            .then((bg) => {
+              setContourBackground(bg)
+              setContourPageCount(bg.pageCount)
+            })
             .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
         }
         const loadedDataMode: CodeDataMode = preset.codeDataMode === 'upload' ? 'upload' : 'generate'
@@ -671,16 +757,36 @@ export default function App() {
     setBackgroundFile(file)
     setBgTargetWidthMm(NaN)
     setBgTargetHeightMm(NaN)
+    setBackgroundPageNumber(1)
+    setBackgroundPageCount(1)
     if (!file) return
     renderPdfBackground(file)
       .then(async (bg) => {
         setBackground(bg)
+        setBackgroundPageCount(bg.pageCount)
         setBgTargetWidthMm(bg.widthPt / MM)
         setBgTargetHeightMm(bg.heightPt / MM)
         await ensureDefaultFont()
         const maxWidthPt = bg.widthPt * 0.9
         const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
         handleSampleTextChange(word)
+      })
+      .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Re-render the background preview from a different page of the uploaded PDF.
+  // The new page may have a different MediaBox, so dimensions are re-detected
+  // (same as a fresh upload). The page number is also forwarded to the generator.
+  function handleBackgroundPageChange(pageNumber: number) {
+    if (!backgroundFile) return
+    const page = Math.min(Math.max(1, Math.round(pageNumber)), backgroundPageCount)
+    setBackgroundPageNumber(page)
+    setBackgroundError(null)
+    renderPdfBackground(backgroundFile, page)
+      .then((bg) => {
+        setBackground(bg)
+        setBgTargetWidthMm(bg.widthPt / MM)
+        setBgTargetHeightMm(bg.heightPt / MM)
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -696,6 +802,8 @@ export default function App() {
       setBackgroundFile(null)
       setBgTargetWidthMm(NaN)
       setBgTargetHeightMm(NaN)
+      setBackgroundPageNumber(1)
+      setBackgroundPageCount(1)
     }
   }
 
@@ -758,8 +866,32 @@ export default function App() {
     setContourBackground(null)
     setContourBackgroundError(null)
     setContourBackgroundFile(file)
+    setContourPageNumber(1)
+    setContourPageCount(1)
     if (!file) return
+    // When the contour reuses the same PDF as the background (Step 1), default
+    // to page 2 if it exists: a single multi-page PDF usually carries the print
+    // design on page 1 and the cut outline on the next page.
+    const sameAsBackground = backgroundFile != null && isSameFile(file, backgroundFile)
     renderPdfBackground(file)
+      .then((bg) => {
+        setContourPageCount(bg.pageCount)
+        if (sameAsBackground && bg.pageCount >= 2) {
+          setContourPageNumber(2)
+          return renderPdfBackground(file, 2).then(setContourBackground)
+        }
+        setContourBackground(bg)
+      })
+      .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Re-render the contour preview from a different page of the uploaded PDF.
+  function handleContourPageChange(pageNumber: number) {
+    if (!contourBackgroundFile) return
+    const page = Math.min(Math.max(1, Math.round(pageNumber)), contourPageCount)
+    setContourPageNumber(page)
+    setContourBackgroundError(null)
+    renderPdfBackground(contourBackgroundFile, page)
       .then(setContourBackground)
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -771,6 +903,8 @@ export default function App() {
       setContourBackground(null)
       setContourBackgroundFile(null)
       setContourBackgroundError(null)
+      setContourPageNumber(1)
+      setContourPageCount(1)
     }
   }
 
@@ -843,6 +977,8 @@ export default function App() {
       .then((bg) => {
         if (!cancelled && bg) {
           setContourBackground(bg)
+          setContourPageNumber(1)
+          setContourPageCount(1)
           setShapeError(null)
         }
       })
@@ -888,9 +1024,12 @@ export default function App() {
   // sentinel for uploaded rows mirrored from the file); the manually editable
   // sample field passes the friendly `codeSeparator` so the user can type and
   // see ordinary separators.
-  function handleSampleTextChange(value: string, separator: string = effectiveSeparator) {
+  // `presplit` overrides the separator split with an exact field list — used for
+  // uploaded rows so the word count matches the generator's separator-based
+  // count (which keeps empty fields) instead of `splitWords` (which drops them).
+  function handleSampleTextChange(value: string, separator: string = effectiveSeparator, presplit?: string[]) {
     setSampleText(value)
-    const texts = splitWords(value, separator)
+    const texts = presplit ?? splitWords(value, separator)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
     setFontSources((prev) => resizeFontSources(prev, texts.length))
@@ -969,18 +1108,26 @@ export default function App() {
     try {
       const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
       const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
+      // Page picks from multi-page uploads. The print background uses
+      // `backgroundPageNumber`; for the combine overlay the contour PDF's page is
+      // also sent on the print options. The contour job loads the contour PDF as
+      // its background, so its page is passed there as `backgroundPageNumber`.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, pageOptions.combine === true ? contourPageNumber : undefined)
         : null
+      // "cu contur": in no-cut mode, bundle the contour into the print archive.
+      // This needs the contour options/bytes even when the mode is print-only,
+      // so widen the conditions that build them below.
+      const bundleContour = pageOptions.noCut && pageOptions.cuContur && needsPrintInput && contourBackgroundFile != null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
-      const contourOptions = needsContourInput
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+      const contourOptions = needsContourInput || bundleContour
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, null, null, contourPageNumber), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
       const combine = pageOptions.combine === true
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
       const contour =
-        (needsContourInput || combine) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
+        (needsContourInput || combine || bundleContour) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
       const fontBufs = await Promise.all(fontResult.files.map((f) => f.arrayBuffer()))
       const mode: 'print' | 'contour' | 'both' =
         needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
@@ -1001,6 +1148,7 @@ export default function App() {
           pagesPerBatch: PAGES_PER_BATCH,
           totalRows: effectiveRowCount > 0 ? effectiveRowCount : null,
           csv: csvDataFile,
+          bundleContour,
         },
         setGenProgress,
       )
@@ -1139,11 +1287,20 @@ export default function App() {
               ]}
             />
             {backgroundSource === 'upload' ? (
-              <FileField
-                label="PDF de fundal (un card)"
-                accept="application/pdf"
-                onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
-              />
+              <>
+                <FileField
+                  label="PDF de fundal (un card)"
+                  accept="application/pdf"
+                  onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
+                />
+                {backgroundPageCount > 1 && (
+                  <NumberField
+                    label={`Pagina (1–${backgroundPageCount})`}
+                    value={backgroundPageNumber}
+                    onChange={handleBackgroundPageChange}
+                  />
+                )}
+              </>
             ) : (
               <>
                 <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
@@ -1193,11 +1350,20 @@ export default function App() {
             />
 
             {contourSource === 'upload' ? (
-              <FileField
-                label="PDF de fundal contur (opțional)"
-                accept="application/pdf"
-                onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
-              />
+              <>
+                <FileField
+                  label="PDF de fundal contur (opțional)"
+                  accept="application/pdf"
+                  onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
+                />
+                {contourPageCount > 1 && (
+                  <NumberField
+                    label={`Pagina contur (1–${contourPageCount})`}
+                    value={contourPageNumber}
+                    onChange={handleContourPageChange}
+                  />
+                )}
+              </>
             ) : (
               <>
                 <SelectField
@@ -1449,9 +1615,11 @@ export default function App() {
             onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
             onColumnsChange={handleCodeColumnsChange}
-            fieldPieces={uploadedRows[0] ?? []}
+            fieldPieces={widestUploadedRow}
             fieldMerges={codeFieldMerges}
             onFieldMergesChange={handleUploadFieldMergesChange}
+            singleFieldPerRow={codeSingleField}
+            onSingleFieldPerRowChange={handleSingleFieldChange}
             onGenerate={handleGenerateCsv}
             preview={displayPreview}
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
@@ -1520,23 +1688,43 @@ export default function App() {
               ]}
             />
 
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
-            <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-              <NumberField label="Lățime pagină (mm)" value={pageOptions.hostWidthMm} onChange={(v) => setPageOption('hostWidthMm', v)} />
-              <NumberField label="Înălțime pagină (mm)" value={pageOptions.hostHeightMm} onChange={(v) => setPageOption('hostHeightMm', v)} />
-              <NumberField label="Decalaj X (mm)" value={pageOptions.offsetXMm} onChange={(v) => setPageOption('offsetXMm', v)} />
-              <NumberField label="Decalaj Y (mm)" value={pageOptions.offsetYMm} onChange={(v) => setPageOption('offsetYMm', v)} />
-              <NumberField label="Diametru cerc (mm)" value={pageOptions.circleDiameterMm} onChange={(v) => setPageOption('circleDiameterMm', v)} />
-            </div>
+            {/* No-cut mode skips imposition, so the host-sheet/circle fields are ignored. */}
+            {!pageOptions.noCut && (
+              <>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label="Lățime pagină (mm)" value={pageOptions.hostWidthMm} onChange={(v) => setPageOption('hostWidthMm', v)} />
+                  <NumberField label="Înălțime pagină (mm)" value={pageOptions.hostHeightMm} onChange={(v) => setPageOption('hostHeightMm', v)} />
+                  <NumberField label="Decalaj X (mm)" value={pageOptions.offsetXMm} onChange={(v) => setPageOption('offsetXMm', v)} />
+                  <NumberField label="Decalaj Y (mm)" value={pageOptions.offsetYMm} onChange={(v) => setPageOption('offsetYMm', v)} />
+                  <NumberField label="Diametru cerc (mm)" value={pageOptions.circleDiameterMm} onChange={(v) => setPageOption('circleDiameterMm', v)} />
+                </div>
+              </>
+            )}
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Opțiuni</p>
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-              <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
+              <CheckboxField label="Non-decupare" checked={pageOptions.noCut} onChange={(v) => setPageOption('noCut', v)} />
+              {pageOptions.noCut ? (
+                needsPrintInput && contourBackgroundFile != null && (
+                  <CheckboxField label="cu contur" checked={pageOptions.cuContur} onChange={(v) => setPageOption('cuContur', v)} />
+                )
+              ) : (
+                <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
+              )}
               <CheckboxField label="Contururi de depanare" checked={pageOptions.debug} onChange={(v) => setPageOption('debug', v)} />
               {needsContourInput && (
                 <CheckboxField label="Măsoară traseele de tăiere" checked={pageOptions.measurePaths} onChange={(v) => setPageOption('measurePaths', v)} />
               )}
             </div>
+            {pageOptions.noCut && (
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
+                {needsPrintInput && contourBackgroundFile != null
+                  ? ' „cu contur” adaugă PDF-ul de contur ca fișier separat în arhivă.'
+                  : ''}
+              </p>
+            )}
 
             {needsContourInput && pageOptions.measurePaths && (
               <>

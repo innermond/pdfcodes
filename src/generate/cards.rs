@@ -5,7 +5,7 @@ use ttf_parser::GlyphId;
 use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::TextColor;
-use crate::fonts::EmbeddedFont;
+use crate::fonts::{EmbeddedFont, encode_text_gids};
 use crate::geometry::{CardLayout, MM};
 use crate::options::Options;
 
@@ -30,8 +30,13 @@ pub(crate) fn build_card_xobjects(
     // Rows are \n-separated; fields within a row are separated by split_chars
     // (any character, not necessarily the CSV standard comma).
     let sep = opts.split_chars.as_bytes().first().copied().unwrap_or(b' ');
+    // Rows may legitimately hold different numbers of words/codes (e.g. an
+    // uploaded CSV with ragged rows, or one row merged into a single field while
+    // another wasn't). Each row is laid out independently below, so accept
+    // varying field counts instead of erroring on the first mismatch.
     let mut rdr = ReaderBuilder::new()
         .has_headers(false)
+        .flexible(true)
         .delimiter(sep)
         .from_reader(csv_data.as_bytes());
 
@@ -332,12 +337,15 @@ pub(crate) fn build_card_xobjects(
                     operations.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
                 }
             }
+            // The Type0 font uses Identity-H, so text is written as 2-byte glyph
+            // IDs (not UTF-8 bytes) — this is what makes diacritics render right.
+            let gid_text = encode_text_gids(&ef.face, &text);
             operations.push(Operation::new("BT", vec![]));
             operations.push(Operation::new("Tf", vec![Object::Name(ef.resource_name.clone()), Object::Real(font_size)]));
             operations.push(Operation::new("Tc", vec![Object::Real(char_spacing)])); // character spacing
             operations.push(Operation::new("Tr", vec![Object::Integer(0)])); // fill only
             operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
-            operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
+            operations.push(Operation::new("Tj", vec![Object::String(gid_text.clone(), lopdf::StringFormat::Hexadecimal)]));
             operations.push(Operation::new("ET", vec![]));
             operations.push(Operation::new("Q", vec![])); // restore
 
@@ -365,7 +373,7 @@ pub(crate) fn build_card_xobjects(
                 operations.push(Operation::new("Tc", vec![Object::Real(char_spacing)]));
                 operations.push(Operation::new("Tr", vec![Object::Integer(1)])); // stroke only
                 operations.push(Operation::new("Td", vec![Object::Real(x), Object::Real(y)]));
-                operations.push(Operation::new("Tj", vec![Object::String(text.as_bytes().to_vec(), lopdf::StringFormat::Literal)]));
+                operations.push(Operation::new("Tj", vec![Object::String(gid_text.clone(), lopdf::StringFormat::Hexadecimal)]));
                 operations.push(Operation::new("ET", vec![]));
                 operations.push(Operation::new("Q", vec![])); // restore
             }

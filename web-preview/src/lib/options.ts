@@ -191,6 +191,12 @@ export interface PageOptions {
   cornerPenaltyS: number
   preparationTimeS: number
   travelSpeedMmS: number
+  // "Non-decupare" (no-cut): one card per page, page sized to the card, no
+  // imposition grid and no registration circles.
+  noCut: boolean
+  // When `noCut` is set, also bundle the contour PDF as a separate file in the
+  // (always-ZIP) print archive. Handled by the generation worker, not Rust.
+  cuContur: boolean
 }
 
 // Defaults mirror `Options::default()` in src/options.rs.
@@ -207,6 +213,8 @@ export const defaultPageOptions: PageOptions = {
   cornerPenaltyS: 0.2,
   preparationTimeS: 60,
   travelSpeedMmS: 16,
+  noCut: false,
+  cuContur: false,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s
@@ -222,6 +230,12 @@ export function buildJsOptions(
   contour: boolean,
   cardWidthMm?: number | null,
   cardHeightMm?: number | null,
+  // 1-based page to use from the uploaded background PDF. For the contour-only
+  // job the contour PDF is passed as the background, so its page number is sent
+  // here too. `contourPageNumber` is only needed for `--combineb`, where the
+  // print job's overlay reads a page from the separately-loaded contour PDF.
+  backgroundPageNumber?: number | null,
+  contourPageNumber?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -246,6 +260,7 @@ export function buildJsOptions(
     align: words.map((w) => w.align),
     combine: page.combine,
     debug: page.debug,
+    noCut: page.noCut,
     safeMarginMm,
     textColors: words.map((w) => w.color),
     textBlendModes: words.map((w) => w.blendMode),
@@ -270,5 +285,7 @@ export function buildJsOptions(
     splitChars: separator,
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
+    ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
+    ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
   }
 }

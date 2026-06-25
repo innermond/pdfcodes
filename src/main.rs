@@ -165,6 +165,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         text_char_spacing_pt: get_float_list_flag(&args, "text-char-spacings")
             .or_else(|| config.text_char_spacings.clone())
             .unwrap_or_default(),
+        background_page_number: get_flag(&args, "background-page", 1.0).max(1.0) as u32,
+        contour_page_number: get_flag(&args, "contour-page", 1.0).max(1.0) as u32,
+        no_cut: args.iter().any(|a| a == "--no-cut"),
     };
 
     run(csv_path.as_deref(), &background_path, &output_path, &opts, &contour_background_path)?;

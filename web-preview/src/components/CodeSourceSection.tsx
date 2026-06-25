@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
+import { CheckboxField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, randomCodeSpace, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
 
 type CodeDataMode = 'generate' | 'upload'
@@ -189,6 +189,8 @@ export function CodeSourceSection({
   fieldPieces,
   fieldMerges,
   onFieldMergesChange,
+  singleFieldPerRow,
+  onSingleFieldPerRowChange,
   onGenerate,
   preview,
   downloadUrl,
@@ -216,6 +218,9 @@ export function CodeSourceSection({
   /** Indices of gaps (between parsed fields) merged into one field. */
   fieldMerges: number[]
   onFieldMergesChange: (gaps: number[]) => void
+  /** When true, every field on a row is joined into a single code. */
+  singleFieldPerRow: boolean
+  onSingleFieldPerRowChange: (value: boolean) => void
   onGenerate: () => void
   preview: string
   downloadUrl: string | null
@@ -258,8 +263,8 @@ export function CodeSourceSection({
         value={dataMode}
         onChange={onDataModeChange}
         options={[
-          { value: 'generate', label: 'Generează coduri' },
           { value: 'upload', label: 'Încarcă CSV' },
+          { value: 'generate', label: 'Generează coduri' },
         ]}
       />
 
@@ -274,6 +279,13 @@ export function CodeSourceSection({
             accept=".csv,text/csv,text/plain"
             onChange={(files) => onCsvUpload(files?.[0] ?? null)}
           />
+          {uploadRowCount > 0 && (
+            <CheckboxField
+              label="Fiecare rând este un singur cod"
+              checked={singleFieldPerRow}
+              onChange={onSingleFieldPerRowChange}
+            />
+          )}
           {uploadInfo && (
             <p className="text-sm font-medium text-green-700 dark:text-green-400">{uploadInfo}</p>
           )}
@@ -297,12 +309,14 @@ export function CodeSourceSection({
               </div>
             </details>
           )}
-          <FieldBoundaryEditor
-            pieces={fieldPieces}
-            joiner={separator || ' '}
-            mergedGaps={fieldMerges}
-            onChange={onFieldMergesChange}
-          />
+          {!singleFieldPerRow && (
+            <FieldBoundaryEditor
+              pieces={fieldPieces}
+              joiner={separator || ' '}
+              mergedGaps={fieldMerges}
+              onChange={onFieldMergesChange}
+            />
+          )}
         </>
       ) : (
         <>

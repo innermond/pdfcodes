@@ -18,6 +18,10 @@ interface StartData {
   pagesPerBatch: number
   totalRows: number | null
   csv: Blob | null
+  // "cu contur": bundle the contour PDF as a separate entry in the print
+  // archive (which is then always a ZIP). Only set when there is a print job
+  // and a contour input; the standalone contour output is suppressed instead.
+  bundleContour: boolean
 }
 
 interface ContourResult {
@@ -95,6 +99,9 @@ async function generatePrint(
   bg: Uint8Array,
   contourBg: Uint8Array | null,
   fonts: Uint8Array[],
+  // When set ("cu contur"), this single contour PDF is added as the first entry
+  // of the print archive, which is then always emitted as a ZIP.
+  bundledContourPdf: Uint8Array | null,
 ): Promise<{ blob: Blob; isZip: boolean; name: string; sink?: SinkKind } | null> {
   const perPage = Math.max(1, cards_per_page(bg, d.printOptions))
   const batchRows = Math.max(1, d.pagesPerBatch * perPage)
@@ -123,7 +130,11 @@ async function generatePrint(
   let batch: string[] = []
 
   const addEntry = (pdf: Uint8Array, index: number) => {
-    const entry = new ZipPassThrough(`cards-${String(index).padStart(4, '0')}.pdf`)
+    addNamedEntry(pdf, `cards-${String(index).padStart(4, '0')}.pdf`)
+  }
+
+  const addNamedEntry = (pdf: Uint8Array, name: string) => {
+    const entry = new ZipPassThrough(name)
     z.zip!.add(entry)
     entry.push(pdf, true)
   }
@@ -133,7 +144,7 @@ async function generatePrint(
   // the sink fills during push/end.
   const ensureZip = async () => {
     if (z.zip) return
-    const estimate = (first.pdf?.length ?? 0) * (batchCount ?? 1)
+    const estimate = (first.pdf?.length ?? 0) * (batchCount ?? 1) + (bundledContourPdf?.length ?? 0)
     const picked = await createZipSink(estimate) // may throw ZipTooLargeError
     z.sink = picked.sink
     sinkKind = picked.kind
@@ -141,6 +152,8 @@ async function generatePrint(
       if (err) zipErr = err
       if (chunk) z.sink!.write(chunk)
     })
+    // The contour goes in first so it leads the archive.
+    if (bundledContourPdf) addNamedEntry(bundledContourPdf, 'contur.pdf')
     addEntry(first.pdf!, 1)
   }
 
@@ -174,10 +187,14 @@ async function generatePrint(
     if (zipErr) throw zipErr instanceof Error ? zipErr : new Error(String(zipErr))
     if (batchIndex === 0) return null
 
-    // One batch → hand back a single PDF (today's UX) rather than a 1-entry ZIP.
-    if (batchIndex === 1 && first.pdf) {
+    // One batch → hand back a single PDF (today's UX) rather than a 1-entry ZIP,
+    // unless a contour is bundled in, which forces an archive.
+    if (batchIndex === 1 && first.pdf && !bundledContourPdf) {
       return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf' }
     }
+    // `ensureZip` may not have run yet (e.g. a single batch with a bundled
+    // contour); create the archive now and emit the held first batch.
+    await ensureZip()
     z.zip!.end()
     const blob = await z.sink!.finish()
     return { blob, isZip: true, name: 'cards.zip', sink: sinkKind }
@@ -193,20 +210,34 @@ async function run(d: StartData) {
   const contourBg = d.contour ? new Uint8Array(d.contour) : null
   const fonts = d.fonts.map((f) => new Uint8Array(f))
 
+  const hasPrintJob = (d.mode === 'print' || d.mode === 'both') && d.printOptions !== null && d.csv !== null
+  const bundleContour = d.bundleContour && hasPrintJob && contourBg !== null && d.contourOptions !== null
+
+  // "cu contur": build the single contour page once, up front, so it can lead
+  // the print archive. No CSV/fonts needed — it's just the outline.
+  let bundledContourPdf: Uint8Array | null = null
+  if (bundleContour) {
+    const out = generate_with_options(undefined, contourBg!, undefined, [], d.contourOptions!)
+    bundledContourPdf = out.pdf.slice()
+    out.free()
+  }
+
   let print: { blob: Blob; isZip: boolean; name: string; sink?: SinkKind } | null = null
-  if ((d.mode === 'print' || d.mode === 'both') && d.printOptions && d.csv) {
+  if (hasPrintJob) {
     // Clear any leftover OPFS temp ZIPs from previous runs before this one starts
     // (a finished archive's file must outlive its own run, so it can't self-clean).
     await sweepStaleZips()
-    print = await generatePrint(d, bg, contourBg, fonts)
+    print = await generatePrint(d, bg, contourBg, fonts, bundledContourPdf)
     if (cancelled) {
       post({ type: 'cancelled' })
       return
     }
   }
 
+  // The standalone contour output is suppressed when it's bundled into the
+  // print archive, so the contour isn't produced twice.
   let contour: ContourResult | null = null
-  if ((d.mode === 'contour' || d.mode === 'both') && d.contourOptions && contourBg) {
+  if ((d.mode === 'contour' || d.mode === 'both') && d.contourOptions && contourBg && !bundleContour) {
     post({ type: 'progress', phase: 'contour', rowsDone: 0, totalRows: d.totalRows, batchesDone: 0, wasmBytes: wasmBytes() })
     // The contour sheet only needs the CSV to scale cutting-time metrics, and
     // only when path measurement is enabled — otherwise skip loading it.

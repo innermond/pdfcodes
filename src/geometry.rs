@@ -70,6 +70,29 @@ impl CardLayout {
     // grid is laid out within the area remaining after insetting every edge
     // by one circle diameter.
     pub fn compute(card_w: f32, card_h: f32, opts: &Options) -> Self {
+        // "Non-decupare" (no-cut): one card per page, the page sized exactly to
+        // the card, no gutters and no registration circles. This bypasses the
+        // grid math below so the print/contour paths emit a single card per page.
+        if opts.no_cut {
+            let card_box = vec![Object::Real(0.0), Object::Real(0.0), Object::Real(card_w), Object::Real(card_h)];
+            return CardLayout {
+                card_w,
+                card_h,
+                card_box: card_box.clone(),
+                host_w: card_w,
+                host_h: card_h,
+                host_box: card_box,
+                gutter_x: 0.0,
+                gutter_y: 0.0,
+                circle_r: 0.0,
+                cols: 1,
+                rows: 1,
+                cards_per_page: 1,
+                start_x: 0.0,
+                start_y: 0.0,
+            };
+        }
+
         let host_w = opts.host_width_mm * MM;
         let host_h = opts.host_height_mm * MM;
         let gutter_x = opts.offset_x_mm * MM;
@@ -137,7 +160,11 @@ impl CardLayout {
     }
 
     // Registration circles: top-left, bottom-right, bottom-left, inset by radius.
+    // No-cut layouts (and any zero-diameter request) draw none.
     pub fn registration_circles(&self) -> Vec<Operation> {
+        if self.circle_r <= 0.0 {
+            return Vec::new();
+        }
         let mut ops = Vec::new();
         ops.extend(circle_ops(self.circle_r, self.host_h - self.circle_r, self.circle_r));
         ops.extend(circle_ops(self.host_w - self.circle_r, self.circle_r, self.circle_r));
@@ -165,5 +192,23 @@ mod tests {
         let layout = CardLayout::compute(86.0 * MM, 54.0 * MM, &opts);
         assert_eq!(layout.cols, 2);
         assert_eq!(layout.cards_per_page, 12);
+    }
+
+    #[test]
+    fn no_cut_layout_is_single_card_page_without_circles() {
+        let opts = Options { no_cut: true, circle_diameter_mm: 10.0, ..Options::default() };
+        let card_w = 86.0 * MM;
+        let card_h = 54.0 * MM;
+        let layout = CardLayout::compute(card_w, card_h, &opts);
+
+        assert_eq!(layout.cards_per_page, 1);
+        assert_eq!(layout.cols, 1);
+        assert_eq!(layout.rows, 1);
+        // The page equals the card, positioned at the origin.
+        assert_eq!(layout.host_w, card_w);
+        assert_eq!(layout.host_h, card_h);
+        assert_eq!(layout.position(0), (0.0, 0.0));
+        // No registration circles are drawn.
+        assert!(layout.registration_circles().is_empty());
     }
 }

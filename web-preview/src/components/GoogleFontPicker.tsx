@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { SelectField, TextField } from './fields'
 import {
   fetchGoogleFont,
+  familySupportsLatinExt,
   googleFontsCss2Url,
   PREVIEW_SAMPLE,
   searchGoogleFonts,
@@ -33,6 +34,9 @@ export function GoogleFontPicker({
   const [styles, setStyles] = useState<GoogleFontStyle[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // False when the selected family can't render Romanian diacritics (no
+  // latin-ext subset). Defaults true so unknown fonts don't warn.
+  const [latinExtOk, setLatinExtOk] = useState(true)
   const latestQuery = useRef(query)
   const previewLinkRef = useRef<HTMLLinkElement | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
@@ -97,6 +101,20 @@ export function GoogleFontPicker({
     let cancelled = false
     stylesForFamily(value.family).then((s) => {
       if (!cancelled) setStyles(s)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [value?.family])
+
+  // Check whether the selected family covers Romanian diacritics (latin-ext).
+  // No reset when the family is empty: the warning JSX is gated on
+  // `value?.family`, so a stale value can't surface without a selection.
+  useEffect(() => {
+    if (!value?.family) return
+    let cancelled = false
+    familySupportsLatinExt(value.family).then((ok) => {
+      if (!cancelled) setLatinExtOk(ok)
     })
     return () => {
       cancelled = true
@@ -181,6 +199,12 @@ export function GoogleFontPicker({
         <span className="text-2xl leading-tight text-gray-900 dark:text-gray-100" style={{ fontFamily: `"${value.family}", sans-serif` }}>
           {PREVIEW_SAMPLE}
         </span>
+      )}
+
+      {value?.family && !latinExtOk && (
+        <p className="text-sm text-amber-600 dark:text-amber-400">
+          ⚠ Acest font nu acoperă diacriticele românești (ș, ț, ă, â, î).
+        </p>
       )}
 
       {value?.family && styles.length > 0 && (
