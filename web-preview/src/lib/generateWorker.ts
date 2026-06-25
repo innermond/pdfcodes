@@ -6,6 +6,7 @@
 // single PDF. Progress (incl. live wasm memory) and cancellation are messaged.
 import init, { cards_per_page, generate_with_options, type WasmGenerateOutput } from '../wasm/pdfcodes'
 import { Zip, ZipPassThrough } from 'fflate'
+import { createZipSink, sweepStaleZips, type SinkKind, type ZipSink } from './zipSink'
 
 interface StartData {
   mode: 'print' | 'contour' | 'both'
@@ -94,59 +95,96 @@ async function generatePrint(
   bg: Uint8Array,
   contourBg: Uint8Array | null,
   fonts: Uint8Array[],
-): Promise<{ blob: Blob; isZip: boolean; name: string } | null> {
+): Promise<{ blob: Blob; isZip: boolean; name: string; sink?: SinkKind } | null> {
   const perPage = Math.max(1, cards_per_page(bg, d.printOptions))
   const batchRows = Math.max(1, d.pagesPerBatch * perPage)
   const combine = d.printOptions!.combine === true
   const contourArg = combine ? contourBg ?? undefined : undefined
+  // Expected batch count (known up front), used to estimate the final ZIP size
+  // from the measured first batch. Null when the row total is unknown.
+  const batchCount = d.totalRows != null ? Math.max(1, Math.ceil(d.totalRows / batchRows)) : null
 
-  // ArrayBuffer-backed copies so they're valid BlobParts (not SharedArrayBuffer).
-  const zipChunks: Uint8Array<ArrayBuffer>[] = []
+  // The ZIP output (≈ Σ batch-PDFs, store-only) is the app's real memory ceiling.
+  // Rather than buffer it all in RAM, we defer choosing where it goes until the
+  // first batch is produced: `createZipSink` measures `firstPdf.length * batchCount`
+  // and returns an in-memory sink when it fits a RAM budget, or a streamed OPFS
+  // temp-file sink when it doesn't (throwing ZipTooLargeError when neither can).
+  // The zip writer is therefore created lazily, only once a 2nd batch proves a
+  // ZIP is needed (a single batch is returned as a lone PDF, as before).
+  // Object holders so the sink/zip survive TS control-flow narrowing (they're
+  // assigned inside the `ensureZip`/`flush` closures), mirroring `first` below.
+  const z: { sink: ZipSink | null; zip: Zip | null } = { sink: null, zip: null }
+  let sinkKind: SinkKind = 'memory'
   let zipErr: unknown = null
-  // ZipPassThrough is synchronous (no deflate), so the sink fills during push/end.
-  // Copy each emitted chunk immediately so fflate can't reuse the buffer later.
-  const zip = new Zip((err, chunk) => {
-    if (err) zipErr = err
-    if (chunk) zipChunks.push(new Uint8Array(chunk))
-  })
 
   let rowsDone = 0
   let batchIndex = 0
-  // Object holder so the first-batch PDF survives TS control-flow narrowing
-  // (it's assigned inside the `flush` closure).
   const first: { pdf: Uint8Array<ArrayBuffer> | null } = { pdf: null }
   let batch: string[] = []
 
-  const flush = () => {
+  const addEntry = (pdf: Uint8Array, index: number) => {
+    const entry = new ZipPassThrough(`cards-${String(index).padStart(4, '0')}.pdf`)
+    z.zip!.add(entry)
+    entry.push(pdf, true)
+  }
+
+  // Create the sink + zip writer on the first batch that proves a ZIP is needed,
+  // then (re)emit the held first-batch entry. ZipPassThrough is synchronous, so
+  // the sink fills during push/end.
+  const ensureZip = async () => {
+    if (z.zip) return
+    const estimate = (first.pdf?.length ?? 0) * (batchCount ?? 1)
+    const picked = await createZipSink(estimate) // may throw ZipTooLargeError
+    z.sink = picked.sink
+    sinkKind = picked.kind
+    z.zip = new Zip((err, chunk) => {
+      if (err) zipErr = err
+      if (chunk) z.sink!.write(chunk)
+    })
+    addEntry(first.pdf!, 1)
+  }
+
+  const flush = async () => {
     const out = generate_with_options(batch.join('\n'), bg, contourArg, fonts, d.printOptions)
     const pdf = new Uint8Array(out.pdf)
     out.free()
     batch = []
     batchIndex++
-    if (batchIndex === 1) first.pdf = pdf
-    const entry = new ZipPassThrough(`cards-${String(batchIndex).padStart(4, '0')}.pdf`)
-    zip.add(entry)
-    entry.push(pdf, true)
+    if (batchIndex === 1) {
+      first.pdf = pdf // hold; its zip entry is deferred until a 2nd batch appears
+    } else {
+      await ensureZip()
+      addEntry(pdf, batchIndex)
+    }
     post({ type: 'progress', phase: 'print', rowsDone, totalRows: d.totalRows, batchesDone: batchIndex, wasmBytes: wasmBytes() })
   }
 
-  for await (const line of readLines(d.csv!)) {
-    if (cancelled) break
-    batch.push(line)
-    rowsDone++
-    if (batch.length >= batchRows) flush()
-  }
-  if (cancelled) return null
-  if (batch.length > 0) flush()
-  if (zipErr) throw zipErr instanceof Error ? zipErr : new Error(String(zipErr))
-  if (batchIndex === 0) return null
+  try {
+    for await (const line of readLines(d.csv!)) {
+      if (cancelled) break
+      batch.push(line)
+      rowsDone++
+      if (batch.length >= batchRows) await flush()
+    }
+    if (cancelled) {
+      await z.sink?.dispose()
+      return null
+    }
+    if (batch.length > 0) await flush()
+    if (zipErr) throw zipErr instanceof Error ? zipErr : new Error(String(zipErr))
+    if (batchIndex === 0) return null
 
-  // One batch → hand back a single PDF (today's UX) rather than a 1-entry ZIP.
-  if (batchIndex === 1 && first.pdf) {
-    return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf' }
+    // One batch → hand back a single PDF (today's UX) rather than a 1-entry ZIP.
+    if (batchIndex === 1 && first.pdf) {
+      return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf' }
+    }
+    z.zip!.end()
+    const blob = await z.sink!.finish()
+    return { blob, isZip: true, name: 'cards.zip', sink: sinkKind }
+  } catch (e) {
+    await z.sink?.dispose()
+    throw e
   }
-  zip.end()
-  return { blob: new Blob(zipChunks, { type: 'application/zip' }), isZip: true, name: 'cards.zip' }
 }
 
 async function run(d: StartData) {
@@ -155,8 +193,11 @@ async function run(d: StartData) {
   const contourBg = d.contour ? new Uint8Array(d.contour) : null
   const fonts = d.fonts.map((f) => new Uint8Array(f))
 
-  let print: { blob: Blob; isZip: boolean; name: string } | null = null
+  let print: { blob: Blob; isZip: boolean; name: string; sink?: SinkKind } | null = null
   if ((d.mode === 'print' || d.mode === 'both') && d.printOptions && d.csv) {
+    // Clear any leftover OPFS temp ZIPs from previous runs before this one starts
+    // (a finished archive's file must outlive its own run, so it can't self-clean).
+    await sweepStaleZips()
     print = await generatePrint(d, bg, contourBg, fonts)
     if (cancelled) {
       post({ type: 'cancelled' })

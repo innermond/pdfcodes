@@ -194,6 +194,8 @@ export function CodeSourceSection({
   downloadUrl,
   progress,
   stale,
+  blocked,
+  duplicates,
 }: {
   dataMode: CodeDataMode
   onDataModeChange: (mode: CodeDataMode) => void
@@ -221,6 +223,10 @@ export function CodeSourceSection({
   progress: number | null
   /** True when settings changed after the last CSV generation. */
   stale?: boolean
+  /** True when a random column can't yield enough unique codes — generation is disabled. */
+  blocked?: boolean
+  /** Forced-duplicate count from the last generation, or null before generating. */
+  duplicates?: number | null
 }) {
   const generating = progress !== null
   // Which code (column) is shown in the editor. The columns render as tabs
@@ -372,11 +378,18 @@ export function CodeSourceSection({
             </p>
           )}
 
+          {blocked && (
+            <p className="text-sm text-red-600 dark:text-red-400">
+              Generarea este dezactivată: numărul de rânduri depășește combinațiile posibile pentru cel puțin un cod, deci
+              codurile nu pot fi unice. Mărește lungimea codului, schimbă tipul de caractere sau folosește un interval numeric.
+            </p>
+          )}
+
           <div className="flex items-center gap-4 my-3">
             <button
               type="button"
               onClick={onGenerate}
-              disabled={generating}
+              disabled={generating || blocked}
               className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
             >
               {generating ? `Se generează… ${progress.toLocaleString('ro-RO')} / ${rowCount.toLocaleString('ro-RO')}` : 'Generează CSV'}
@@ -387,6 +400,19 @@ export function CodeSourceSection({
               </a>
             )}
           </div>
+
+          {!generating && duplicates != null && (
+            duplicates === 0 ? (
+              <p className="text-sm font-medium text-green-700 dark:text-green-400">
+                ✓ Toate codurile generate sunt unice.
+              </p>
+            ) : (
+              <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
+                ⚠ {duplicates.toLocaleString('ro-RO')} {duplicates === 1 ? 'cod duplicat' : 'coduri duplicate'} — nu s-au putut
+                genera suficiente coduri unice. Mărește lungimea codului sau schimbă tipul de caractere.
+              </p>
+            )
+          )}
         </>
       )}
 
