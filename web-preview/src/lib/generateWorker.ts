@@ -101,6 +101,19 @@ async function generatePrint(
   const contourArg = combine ? contourBg ?? undefined : undefined
 
   // ArrayBuffer-backed copies so they're valid BlobParts (not SharedArrayBuffer).
+  //
+  // MEMORY: unlike the CSV input (streamed line-by-line in `readLines`, only one
+  // batch ever copied into wasm), the ZIP *output* is fully buffered here —
+  // `zipChunks` holds every emitted chunk until `new Blob(zipChunks)` below, and
+  // ZipPassThrough is store-only, so the archive ≈ the sum of all batch PDFs.
+  // For "lots" of pages this is the app's real memory ceiling (hundreds of MB in
+  // the worker heap, ~2× transiently while the Blob is built). If that becomes a
+  // problem, stream chunks straight to disk instead of accumulating: write each
+  // chunk to a unique OPFS temp file via a worker FileSystemSyncAccessHandle
+  // (sync, fits this callback), then getFile() it for download — needs stale-file
+  // cleanup at next run + QuotaExceededError handling. (File System Access'
+  // showSaveFilePicker→createWritable would stream to the final download with no
+  // temp file, but is Chromium-only and must prompt before generating.)
   const zipChunks: Uint8Array<ArrayBuffer>[] = []
   let zipErr: unknown = null
   // ZipPassThrough is synchronous (no deflate), so the sink fills during push/end.

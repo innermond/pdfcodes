@@ -12,7 +12,7 @@ import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } f
 import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
 import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
@@ -258,11 +258,21 @@ export default function App() {
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
   const [codeCsvStale, setCodeCsvStale] = useState(false)
+  // Forced-duplicate count from the last generation (null until generated): the
+  // post-generation uniqueness check shown next to the download link.
+  const [codeCsvDuplicates, setCodeCsvDuplicates] = useState<number | null>(null)
 
   const codeCsvPreview = useMemo(
     () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
     [codeRowCount, codeColumns, codeSeparator],
   )
+
+  // True when at least one random column is asked for more rows than its code
+  // space can yield — unique codes are impossible, so generation is blocked
+  // until the user fixes the config (longer code, different charset, range).
+  const codeUniquenessImpossible =
+    codeDataMode === 'generate' &&
+    codeColumns.some((c) => c.mode === 'random' && codeRowCount > randomCodeSpace(c.charset, c.length))
 
   // The separator the renderer actually splits rows by. Generated CSVs use the
   // user's chosen separator; uploaded CSVs are re-joined with the collision-safe
@@ -338,12 +348,14 @@ export default function App() {
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
+    let duplicates = 0
     const encoder = new TextEncoder()
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
-        for await (const { text, rowsDone } of streamCodesCsv(codeRowCount, codeColumns, codeSeparator)) {
-          controller.enqueue(encoder.encode(text))
-          setCodeCsvProgress(rowsDone)
+        for await (const chunk of streamCodesCsv(codeRowCount, codeColumns, codeSeparator)) {
+          controller.enqueue(encoder.encode(chunk.text))
+          setCodeCsvProgress(chunk.rowsDone)
+          duplicates = chunk.duplicates
         }
         controller.close()
       },
@@ -356,6 +368,7 @@ export default function App() {
     })
     setCodeCsvProgress(null)
     setCodeCsvStale(false)
+    setCodeCsvDuplicates(duplicates)
   }
 
   function invalidateCsv() {
@@ -365,6 +378,7 @@ export default function App() {
     setCsvDataFile(null)
     setCodeCsvProgress(null)
     setCodeCsvStale(true)
+    setCodeCsvDuplicates(null)
   }
 
   function clearUploadedCsv() {
@@ -1438,6 +1452,8 @@ export default function App() {
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
             progress={codeCsvProgress}
             stale={codeCsvStale}
+            blocked={codeUniquenessImpossible}
+            duplicates={codeDataMode === 'generate' ? codeCsvDuplicates : null}
           />
           )}
 

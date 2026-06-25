@@ -102,6 +102,32 @@ function randomCode(charset: CodeCharset, length: number): string {
   return result
 }
 
+// How many times we resample a colliding random code before giving up and
+// accepting a duplicate. Generous enough that the only realistic way to hit it
+// is a code space so nearly full that uniqueness is effectively impossible —
+// the UI blocks the truly-impossible case (rows > space) up front.
+const MAX_UNIQUE_ATTEMPTS = 1000
+
+// Produces the next random value for a column, kept distinct from `seen` when
+// the code space still has room. `duplicate` is true only when a unique value
+// could not be found — the space is exhausted (`seen.size >= space`) or the
+// resample cap was hit on a near-full space. Mutates `seen` with the value.
+function nextRandomCode(column: CodeColumnConfig, seen: Set<string>): { value: string; duplicate: boolean } {
+  const space = randomCodeSpace(column.charset, column.length)
+  if (seen.size >= space) {
+    // No unused codes remain; a duplicate is unavoidable.
+    return { value: randomCode(column.charset, column.length), duplicate: true }
+  }
+  for (let i = 0; i < MAX_UNIQUE_ATTEMPTS; i++) {
+    const c = randomCode(column.charset, column.length)
+    if (!seen.has(c)) {
+      seen.add(c)
+      return { value: c, duplicate: false }
+    }
+  }
+  return { value: randomCode(column.charset, column.length), duplicate: true }
+}
+
 function padCode(column: CodeColumnConfig, raw: string): string {
   if (column.padChar.length === 0) return raw
   // 'fixed' prepends the pad string verbatim; 'width' left-pads up to the
@@ -110,23 +136,35 @@ function padCode(column: CodeColumnConfig, raw: string): string {
   return column.padLength > 0 ? raw.padStart(column.padLength, column.padChar) : raw
 }
 
-function codeForRow(column: CodeColumnConfig, rowIndex: number): string {
-  const raw =
-    column.mode === 'range'
-      ? String(column.rangeStart + rowIndex * column.rangeStep)
-      : randomCode(column.charset, column.length)
+// Builds one field for the given row/column. Random codes are deduplicated
+// against `seen` (one Set per column) so a column yields distinct values; range
+// codes increment and are unique by construction. `duplicate` flags a random
+// code that could not be made unique (code space exhausted).
+function codeForRow(column: CodeColumnConfig, rowIndex: number, seen: Set<string>): { code: string; duplicate: boolean } {
+  let raw: string
+  let duplicate = false
+  if (column.mode === 'range') {
+    raw = String(column.rangeStart + rowIndex * column.rangeStep)
+  } else {
+    const next = nextRandomCode(column, seen)
+    raw = next.value
+    duplicate = next.duplicate
+  }
   const code = padCode(column, raw)
 
   // Prefix/postfix attach directly to the code with no separator; a space (or
   // any spacer) must be included by the user in the prefix/postfix itself.
-  return column.prefix + code + column.postfix
+  return { code: column.prefix + code + column.postfix, duplicate }
 }
 
 export function generateCodesCsv(rowCount: number, columns: CodeColumnConfig[], separator: string): string {
   const sep = separator || ' '
+  // One Set of already-used random values per column, so codes stay distinct
+  // within a column across all rows.
+  const seen = columns.map(() => new Set<string>())
   const lines: string[] = []
   for (let row = 0; row < rowCount; row++) {
-    lines.push(columns.map((column) => codeForRow(column, row)).join(sep))
+    lines.push(columns.map((column, c) => codeForRow(column, row, seen[c]).code).join(sep))
   }
   return lines.join('\n')
 }
@@ -143,6 +181,8 @@ export function generateCsvPreview(rowCount: number, columns: CodeColumnConfig[]
 export interface CsvChunk {
   text: string
   rowsDone: number
+  /** Cumulative count of codes that could not be made unique (should be 0). */
+  duplicates: number
 }
 
 // Generates the full CSV in batches, yielding control back to the event loop
@@ -154,16 +194,28 @@ export async function* streamCodesCsv(
   rowsPerChunk = 2000,
 ): AsyncGenerator<CsvChunk> {
   const sep = separator || ' '
+  // Per-column used-value Sets persist across every yield (generator local
+  // state), so uniqueness holds over the whole CSV, not just within a chunk.
+  const seen = columns.map(() => new Set<string>())
+  let duplicates = 0
   let lines: string[] = []
   for (let row = 0; row < rowCount; row++) {
-    lines.push(columns.map((column) => codeForRow(column, row)).join(sep))
+    lines.push(
+      columns
+        .map((column, c) => {
+          const { code, duplicate } = codeForRow(column, row, seen[c])
+          if (duplicate) duplicates++
+          return code
+        })
+        .join(sep),
+    )
     if (lines.length >= rowsPerChunk) {
-      yield { text: lines.join('\n') + '\n', rowsDone: row + 1 }
+      yield { text: lines.join('\n') + '\n', rowsDone: row + 1, duplicates }
       lines = []
       await new Promise((resolve) => setTimeout(resolve, 0))
     }
   }
   if (lines.length > 0) {
-    yield { text: lines.join('\n') + '\n', rowsDone: rowCount }
+    yield { text: lines.join('\n') + '\n', rowsDone: rowCount, duplicates }
   }
 }
