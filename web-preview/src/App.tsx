@@ -1108,12 +1108,17 @@ export default function App() {
     try {
       const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
       const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
+      // "Combină paginile" (combine) overlays the contour onto the imposition
+      // grid and only applies in decupare (grid) mode. In no-cut mode it's inert
+      // — guard it here so a value left over from grid mode doesn't keep merging
+      // the contour (the no-cut equivalent is "cu contur"/`bundleContour` below).
+      const combine = !pageOptions.noCut && pageOptions.combine === true
       // Page picks from multi-page uploads. The print background uses
       // `backgroundPageNumber`; for the combine overlay the contour PDF's page is
       // also sent on the print options. The contour job loads the contour PDF as
       // its background, so its page is passed there as `backgroundPageNumber`.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, pageOptions.combine === true ? contourPageNumber : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined)
         : null
       // "cu contur": in no-cut mode, bundle the contour into the print archive.
       // This needs the contour options/bytes even when the mode is print-only,
@@ -1123,7 +1128,6 @@ export default function App() {
       const contourOptions = needsContourInput || bundleContour
         ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, null, null, contourPageNumber), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
-      const combine = pageOptions.combine === true
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
       const contour =
@@ -1704,7 +1708,16 @@ export default function App() {
 
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Opțiuni</p>
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-              <CheckboxField label="Non-decupare" checked={pageOptions.noCut} onChange={(v) => setPageOption('noCut', v)} />
+              <CheckboxField
+                label="Non-decupare"
+                checked={pageOptions.noCut}
+                onChange={(v) =>
+                  // "Combină paginile" and "cu contur" are mutually exclusive
+                  // (grid vs no-cut); switching modes hides one checkbox, so clear
+                  // the now-hidden flag instead of leaving a stale value behind.
+                  setPageOptions((prev) => ({ ...prev, noCut: v, combine: v ? false : prev.combine, cuContur: v ? prev.cuContur : false }))
+                }
+              />
               {pageOptions.noCut ? (
                 needsPrintInput && contourBackgroundFile != null && (
                   <CheckboxField label="cu contur" checked={pageOptions.cuContur} onChange={(v) => setPageOption('cuContur', v)} />
@@ -1840,6 +1853,14 @@ export default function App() {
                       : undefined
                   }
                 />
+              )}
+              {printArtifact && printArtifact.overflowCount > 0 && (
+                <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">
+                  ⚠ {printArtifact.overflowCount}{' '}
+                  {printArtifact.overflowCount === 1 ? 'text depășește' : 'texte depășesc'} lățimea cardului sau spațiul sigur
+                  {printArtifact.overflowSamples.length > 0 && ` (ex: ${printArtifact.overflowSamples.join(', ')})`}.
+                  {' '}Micșorați fontul, scurtați codul sau măriți cardul.
+                </p>
               )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
             </Section>

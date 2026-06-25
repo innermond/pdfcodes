@@ -102,7 +102,7 @@ async function generatePrint(
   // When set ("cu contur"), this single contour PDF is added as the first entry
   // of the print archive, which is then always emitted as a ZIP.
   bundledContourPdf: Uint8Array | null,
-): Promise<{ blob: Blob; isZip: boolean; name: string; sink?: SinkKind } | null> {
+): Promise<{ blob: Blob; isZip: boolean; name: string; sink?: SinkKind; overflowCount: number; overflowSamples: string[] } | null> {
   const perPage = Math.max(1, cards_per_page(bg, d.printOptions))
   const batchRows = Math.max(1, d.pagesPerBatch * perPage)
   const combine = d.printOptions!.combine === true
@@ -128,6 +128,12 @@ async function generatePrint(
   let batchIndex = 0
   const first: { pdf: Uint8Array<ArrayBuffer> | null } = { pdf: null }
   let batch: string[] = []
+
+  // Text-overflow tally accumulated across batches (each batch reports its own
+  // count + a few sample codes); samples are deduped and capped for the UI.
+  let overflowCount = 0
+  const overflowSamples: string[] = []
+  const MAX_OVERFLOW_SAMPLES = 5
 
   const addEntry = (pdf: Uint8Array, index: number) => {
     addNamedEntry(pdf, `cards-${String(index).padStart(4, '0')}.pdf`)
@@ -160,6 +166,15 @@ async function generatePrint(
   const flush = async () => {
     const out = generate_with_options(batch.join('\n'), bg, contourArg, fonts, d.printOptions)
     const pdf = new Uint8Array(out.pdf)
+    // Read overflow before freeing: count is cumulative, samples deduped/capped.
+    overflowCount += out.text_overflow_count
+    if (overflowSamples.length < MAX_OVERFLOW_SAMPLES && out.text_overflow_samples) {
+      for (const s of out.text_overflow_samples.split('\n')) {
+        if (s && overflowSamples.length < MAX_OVERFLOW_SAMPLES && !overflowSamples.includes(s)) {
+          overflowSamples.push(s)
+        }
+      }
+    }
     out.free()
     batch = []
     batchIndex++
@@ -190,14 +205,14 @@ async function generatePrint(
     // One batch → hand back a single PDF (today's UX) rather than a 1-entry ZIP,
     // unless a contour is bundled in, which forces an archive.
     if (batchIndex === 1 && first.pdf && !bundledContourPdf) {
-      return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf' }
+      return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf', overflowCount, overflowSamples }
     }
     // `ensureZip` may not have run yet (e.g. a single batch with a bundled
     // contour); create the archive now and emit the held first batch.
     await ensureZip()
     z.zip!.end()
     const blob = await z.sink!.finish()
-    return { blob, isZip: true, name: 'cards.zip', sink: sinkKind }
+    return { blob, isZip: true, name: 'cards.zip', sink: sinkKind, overflowCount, overflowSamples }
   } catch (e) {
     await z.sink?.dispose()
     throw e
@@ -222,7 +237,7 @@ async function run(d: StartData) {
     out.free()
   }
 
-  let print: { blob: Blob; isZip: boolean; name: string; sink?: SinkKind } | null = null
+  let print: { blob: Blob; isZip: boolean; name: string; sink?: SinkKind; overflowCount: number; overflowSamples: string[] } | null = null
   if (hasPrintJob) {
     // Clear any leftover OPFS temp ZIPs from previous runs before this one starts
     // (a finished archive's file must outlive its own run, so it can't self-clean).

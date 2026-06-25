@@ -14,6 +14,22 @@ use crate::options::Options;
 // advances with no extra tracking.
 const DEFAULT_CHAR_SPACING_PT: f32 = 0.0;
 
+// Tolerance (in PDF points, ~0.035 mm) for the text-overflow check, so float
+// rounding doesn't flag text that exactly fills the available width.
+const OVERFLOW_EPS_PT: f32 = 0.1;
+// Cap on how many distinct offending codes we collect as examples for the UI.
+const MAX_OVERFLOW_SAMPLES: usize = 5;
+
+// How often, and by how much, generated text exceeds the card width or the
+// configured "safe" area — surfaced to the caller so the web app can warn that
+// some codes won't fit. `count` is the number of overflowing words across all
+// rows; `samples` holds up to `MAX_OVERFLOW_SAMPLES` distinct offending codes.
+#[derive(Default)]
+pub(crate) struct OverflowReport {
+    pub count: usize,
+    pub samples: Vec<String>,
+}
+
 // Build a Form XObject (background + label text) for each CSV row, returning
 // the object IDs of the generated cards.
 pub(crate) fn build_card_xobjects(
@@ -23,9 +39,10 @@ pub(crate) fn build_card_xobjects(
     embedded_fonts: &[EmbeddedFont],
     layout: &CardLayout,
     bg_form_id: ObjectId,
-) -> Result<Vec<ObjectId>, Box<dyn std::error::Error>> {
+) -> Result<(Vec<ObjectId>, OverflowReport), Box<dyn std::error::Error>> {
     let card_w = layout.card_w;
     let card_box = layout.card_box.clone();
+    let mut overflow = OverflowReport::default();
 
     // Rows are \n-separated; fields within a row are separated by split_chars
     // (any character, not necessarily the CSV standard comma).
@@ -194,8 +211,20 @@ pub(crate) fn build_card_xobjects(
             };
             let y = y_positions[idx];
 
-            if x < safe_margin {
-                eprintln!("code: {:?}", &text);
+            // Flag text that won't fit: either wider than the safe area, or
+            // positioned so it spills past a safe edge. Counted per word and a
+            // few distinct offenders kept as examples, so the web app can warn
+            // (rotation is ignored here — checked against the horizontal extent).
+            let available_w = card_w - 2.0 * safe_margin;
+            let overflows = text_width > available_w + OVERFLOW_EPS_PT
+                || x < safe_margin - OVERFLOW_EPS_PT
+                || x + text_width > card_w - safe_margin + OVERFLOW_EPS_PT;
+            if overflows {
+                overflow.count += 1;
+                let code = text.to_string();
+                if overflow.samples.len() < MAX_OVERFLOW_SAMPLES && !overflow.samples.contains(&code) {
+                    overflow.samples.push(code);
+                }
             }
 
             let color = if opts.text_colors.is_empty() {
@@ -440,7 +469,7 @@ pub(crate) fn build_card_xobjects(
         card_ids.push(card_id);
     }
 
-    Ok(card_ids)
+    Ok((card_ids, overflow))
 }
 
 // Find or create an ExtGState resource with the given alpha/blend mode

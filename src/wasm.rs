@@ -23,6 +23,8 @@ pub struct WasmGenerateOutput {
     sharp_turn_count_total: Option<usize>,
     time_cutting_per_card_s: Option<f32>,
     time_cutting_total_s: Option<f32>,
+    text_overflow_count: usize,
+    text_overflow_samples: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -75,6 +77,18 @@ impl WasmGenerateOutput {
     #[wasm_bindgen(getter)]
     pub fn time_cutting_total_s(&self) -> Option<f32> {
         self.time_cutting_total_s
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn text_overflow_count(&self) -> usize {
+        self.text_overflow_count
+    }
+
+    // The offending codes, joined by '\n' (wasm-bindgen getters can't return
+    // Vec<String>); the worker splits them back into a list for the UI.
+    #[wasm_bindgen(getter)]
+    pub fn text_overflow_samples(&self) -> String {
+        self.text_overflow_samples.join("\n")
     }
 }
 
@@ -214,6 +228,8 @@ pub fn generate(
         sharp_turn_count_total: out.sharp_turn_count_total,
         time_cutting_per_card_s: out.time_cutting_per_card_s,
         time_cutting_total_s: out.time_cutting_total_s,
+        text_overflow_count: out.text_overflow_count,
+        text_overflow_samples: out.text_overflow_samples,
     })
 }
 
@@ -463,6 +479,8 @@ pub fn generate_with_options(
         sharp_turn_count_total: out.sharp_turn_count_total,
         time_cutting_per_card_s: out.time_cutting_per_card_s,
         time_cutting_total_s: out.time_cutting_total_s,
+        text_overflow_count: out.text_overflow_count,
+        text_overflow_samples: out.text_overflow_samples,
     })
 }
 

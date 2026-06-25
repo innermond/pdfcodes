@@ -44,6 +44,10 @@ pub struct GenerateOutput {
     pub sharp_turn_count_total: Option<usize>,
     pub time_cutting_per_card_s: Option<f32>,
     pub time_cutting_total_s: Option<f32>,
+    // Number of text labels that exceeded the card width / safe area, and up to
+    // a few distinct offending codes — for warning that some codes won't fit.
+    pub text_overflow_count: usize,
+    pub text_overflow_samples: Vec<String>,
 }
 
 // Path-length/node/sharp-turn/cutting-time measurements derived from a
@@ -244,6 +248,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             sharp_turn_count_total: cutting_metrics.as_ref().map(|m| m.sharp_turn_count_total),
             time_cutting_per_card_s: cutting_metrics.as_ref().map(|m| m.time_cutting_per_card_s),
             time_cutting_total_s: cutting_metrics.as_ref().map(|m| m.time_cutting_total_s),
+            // Contour PDFs contain no text, so nothing can overflow.
+            text_overflow_count: 0,
+            text_overflow_samples: Vec::new(),
         });
     }
 
@@ -259,7 +266,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
 
     // Load CSV
     let csv_data = csv_data.ok_or("csv data is required unless contour is set")?;
-    let card_ids = cards::build_card_xobjects(&mut doc, csv_data, opts, &embedded_fonts, &layout, bg_form_id)?;
+    let (card_ids, text_overflow) = cards::build_card_xobjects(&mut doc, csv_data, opts, &embedded_fonts, &layout, bg_form_id)?;
 
     // If requested, build a non-printable overlay layer showing the contour
     // grid (background tiles + registration circles) at the same positions
@@ -356,6 +363,8 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         sharp_turn_count_total: None,
         time_cutting_per_card_s: None,
         time_cutting_total_s: None,
+        text_overflow_count: text_overflow.count,
+        text_overflow_samples: text_overflow.samples,
     })
 }
 

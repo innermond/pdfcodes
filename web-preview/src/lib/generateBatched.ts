@@ -14,6 +14,10 @@ export interface PrintArtifact {
   name: string
   /** Where a ZIP was assembled: in memory, or streamed to an OPFS temp file. */
   sink?: 'memory' | 'opfs'
+  /** How many text labels overflowed the card width / safe area, across all rows. */
+  overflowCount: number
+  /** Up to a few distinct offending codes, for the overflow warning. */
+  overflowSamples: string[]
 }
 
 export interface BatchResult {
