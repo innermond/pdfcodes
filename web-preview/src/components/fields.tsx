@@ -27,6 +27,89 @@ export function NumberField({
   )
 }
 
+// Two numeric dimension inputs (width/height) with a lock toggle between them.
+// When locked and `aspect` (original width/height ratio) is known, editing one
+// input derives the other so the pair keeps that ratio; unlocked lets them move
+// freely. Toggling the lock on doesn't retroactively snap existing values.
+export function LinkedDimensions({
+  widthLabel,
+  heightLabel,
+  width,
+  height,
+  onWidth,
+  onHeight,
+  aspect,
+  locked,
+  onToggleLock,
+  onSwap,
+}: {
+  widthLabel: string
+  heightLabel: string
+  width: number
+  height: number
+  onWidth: (value: number) => void
+  onHeight: (value: number) => void
+  /** Original width/height ratio; NaN/0 when unknown (linking is then inert). */
+  aspect: number
+  locked: boolean
+  onToggleLock: () => void
+  /** When provided, shows a ⇄ button that swaps width and height (portrait ⇄ landscape). */
+  onSwap?: () => void
+}) {
+  const round2 = (x: number) => Math.round(x * 100) / 100
+  const canLink = Number.isFinite(aspect) && aspect > 0
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <div className="min-w-40 flex-1">
+        <NumberField
+          label={widthLabel}
+          value={width}
+          onChange={(w) => {
+            onWidth(w)
+            if (locked && canLink && Number.isFinite(w) && w > 0) onHeight(round2(w / aspect))
+          }}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={onToggleLock}
+        aria-pressed={locked}
+        title={locked ? 'Proporții păstrate — apasă pentru dimensiuni libere' : 'Dimensiuni libere — apasă pentru a păstra proporțiile'}
+        aria-label={locked ? 'Păstrează proporțiile' : 'Dimensiuni libere'}
+        className={
+          'mb-1 rounded px-2 py-1 text-base transition ' +
+          (locked
+            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+            : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600')
+        }
+      >
+        {locked ? '🔒' : '🔓'}
+      </button>
+      {onSwap && (
+        <button
+          type="button"
+          onClick={onSwap}
+          title="Schimbă lățimea cu înălțimea (portret ⇄ peisaj)"
+          aria-label="Schimbă orientarea"
+          className="mb-1 rounded bg-gray-200 px-2 py-1 text-base text-gray-600 transition hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+        >
+          ⇄
+        </button>
+      )}
+      <div className="min-w-40 flex-1">
+        <NumberField
+          label={heightLabel}
+          value={height}
+          onChange={(h) => {
+            onHeight(h)
+            if (locked && canLink && Number.isFinite(h) && h > 0) onWidth(round2(h * aspect))
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
 export function TextField({
   label,
   value,

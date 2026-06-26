@@ -119,6 +119,9 @@ pub struct Options {
     // separately-loaded contour PDF used by the `--combineb` overlay.
     pub background_page_number: u32,
     pub contour_page_number: u32,
+    // Extra clockwise rotation (degrees, multiple of 90) the user applied to the
+    // print background, added to the page's own /Rotate before baking. Default 0.
+    pub background_rotation: i64,
     // "Non-decupare" (no-cut) mode: skip imposition entirely. Each card (or the
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
@@ -185,6 +188,7 @@ impl Default for Options {
             text_char_spacing_pt: Vec::new(),
             background_page_number: 1,
             contour_page_number: 1,
+            background_rotation: 0,
             no_cut: false,
             contour_offset_x_mm: 0.0,
             contour_offset_y_mm: 0.0,

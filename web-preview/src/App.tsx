@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
-import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
+import { CheckboxField, ColorField, FileField, LinkedDimensions, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
 import { DownloadBothButton, FileDownload, ResultPanel } from './components/ResultPanel'
 import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
@@ -267,6 +267,9 @@ export default function App() {
   // When locked, the target width/height inputs keep the uploaded PDF's original
   // aspect ratio; editing one derives the other. Unlocked lets them move freely.
   const [lockAspect, setLockAspect] = useState(true)
+  // User-applied rotation of the uploaded background (0/90/180/270, clockwise),
+  // baked into both the preview and the generated output.
+  const [bgRotation, setBgRotation] = useState(0)
   // Multi-page PDF page selection (1-based). The page count drives whether the
   // page stepper is shown; the page number is sent to the generator so the print
   // output uses the same page as the preview.
@@ -403,11 +406,16 @@ export default function App() {
   // otherwise fall back to what the PDF or simple-background source reports.
   // Declared here (above the effects that depend on it) so a change to the
   // target size re-snaps and re-scales word positions just like a new PDF would.
-  const effectiveCardWidthMm = backgroundSource === 'upload' && background && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0
-    ? bgTargetWidthMm
+  // Both "upload" and "create" build a background PDF that's scaled to a target
+  // card size: upload's target is `bgTarget*`, create's is `genBg*`. The simple
+  // source has no separate target — its card is the rendered background itself.
+  const cardTargetWidthMm = backgroundSource === 'upload' ? bgTargetWidthMm : backgroundSource === 'generate' ? genBgWidthMm : NaN
+  const cardTargetHeightMm = backgroundSource === 'upload' ? bgTargetHeightMm : backgroundSource === 'generate' ? genBgHeightMm : NaN
+  const effectiveCardWidthMm = background && isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0
+    ? cardTargetWidthMm
     : (background ? background.widthPt / MM : 0)
-  const effectiveCardHeightMm = backgroundSource === 'upload' && background && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0
-    ? bgTargetHeightMm
+  const effectiveCardHeightMm = background && isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0
+    ? cardTargetHeightMm
     : (background ? background.heightPt / MM : 0)
 
   // Contour offset bounds: the contour box must stay fully inside the
@@ -845,6 +853,7 @@ export default function App() {
     setBackgroundFile(file)
     setBgTargetWidthMm(NaN)
     setBgTargetHeightMm(NaN)
+    setBgRotation(0)
     setBackgroundPageNumber(1)
     setBackgroundPageCount(1)
     if (!file) return
@@ -870,12 +879,36 @@ export default function App() {
     const page = Math.min(Math.max(1, Math.round(pageNumber)), backgroundPageCount)
     setBackgroundPageNumber(page)
     setBackgroundError(null)
-    renderPdfBackground(backgroundFile, page)
+    renderPdfBackground(backgroundFile, page, bgRotation)
       .then((bg) => {
         setBackground(bg)
         setBgTargetWidthMm(bg.widthPt / MM)
         setBgTargetHeightMm(bg.heightPt / MM)
       })
+      .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Rotate the background (uploaded PDF or generated-from-image) by another 90°
+  // clockwise (cycling 0→90→180→270). The rotation is applied non-destructively
+  // (preview viewport + the `backgroundRotation` generation option); here we
+  // re-render the preview and transpose the active source's target dimensions so
+  // the card follows the new orientation.
+  function rotateBackground() {
+    if (!backgroundFile) return
+    const next = (bgRotation + 90) % 360
+    setBgRotation(next)
+    if (backgroundSource === 'generate') {
+      const w = genBgWidthMm
+      setGenBgWidthMm(genBgHeightMm)
+      setGenBgHeightMm(w)
+    } else {
+      const w = bgTargetWidthMm
+      setBgTargetWidthMm(bgTargetHeightMm)
+      setBgTargetHeightMm(w)
+    }
+    setBackgroundError(null)
+    renderPdfBackground(backgroundFile, backgroundPageNumber, next)
+      .then(setBackground)
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
@@ -891,6 +924,7 @@ export default function App() {
       setBackgroundFile(null)
       setBgTargetWidthMm(NaN)
       setBgTargetHeightMm(NaN)
+      setBgRotation(0)
       setBackgroundPageNumber(1)
       setBackgroundPageCount(1)
     }
@@ -943,6 +977,22 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
 
+  // Loading a source image resets the shared rotation and gives the target inputs
+  // the image's proportions so the card matches it on load (the width is kept and
+  // the height derived from the natural aspect).
+  function handleGenBgImageChange(file: File | null) {
+    setGenBgImageFile(file)
+    setBgRotation(0)
+    if (!file) return
+    createImageBitmap(file)
+      .then((bmp) => {
+        const a = bmp.width / bmp.height
+        if (typeof bmp.close === 'function') bmp.close()
+        if (a > 0) setGenBgHeightMm(Math.round((genBgWidthMm / a) * 100) / 100)
+      })
+      .catch(() => {})
+  }
+
   // Build a print background PDF from a raster image (PNG/JPEG) whenever the
   // "create background" source is active and the image / dimensions change,
   // feeding it through the same `backgroundFile`/`background` pipeline as an
@@ -950,24 +1000,28 @@ export default function App() {
   // produced PDF is rasterised via `renderPdfBackground` for the preview.
   useEffect(() => {
     if (backgroundSource !== 'generate' || !genBgImageFile) return
-    if (!(genBgWidthMm > 0) || !(genBgHeightMm > 0)) {
-      setBackground(null)
-      setBackgroundFile(null)
-      setBackgroundError('Lățimea și înălțimea fundalului trebuie să fie numere pozitive.')
-      return
-    }
     let cancelled = false
     setGenBgLoading(true)
     setBackgroundError(null)
     ensureWasmInit()
       .then(async () => {
+        // Build the image PDF once at the image's own aspect (normalized width);
+        // `genBgWidthMm/HeightMm` is the *target* card size (applied as a scale at
+        // generation) and `bgRotation` the rotation — exactly like an uploaded PDF,
+        // so both sources share the same rotate/scale/override machinery and the
+        // build no longer rebuilds on dimension/rotation changes.
+        const bmp = await createImageBitmap(genBgImageFile)
+        const aspect = bmp.width / bmp.height
+        if (typeof bmp.close === 'function') bmp.close()
+        const refW = 100
+        const refH = aspect > 0 ? 100 / aspect : 100
         const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
-        const bytes = generate_image_background_pdf(imageBytes, genBgWidthMm, genBgHeightMm)
+        const bytes = generate_image_background_pdf(imageBytes, refW, refH)
         if (cancelled) return null
         const file = new File([bytes.buffer as ArrayBuffer], 'fundal-imagine.pdf', { type: 'application/pdf' })
         setBackgroundFile(file)
         await ensureDefaultFont()
-        return renderPdfBackground(file)
+        return renderPdfBackground(file, 1, bgRotation)
       })
       .then((bg) => {
         if (cancelled || !bg) return
@@ -993,7 +1047,7 @@ export default function App() {
       cancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backgroundSource, genBgImageFile, genBgWidthMm, genBgHeightMm])
+  }, [backgroundSource, genBgImageFile])
 
   // Default the code/text color to one that contrasts the simple background so
   // codes are visible. Stays in effect (also recoloring newly added words) only
@@ -1107,9 +1161,9 @@ export default function App() {
     let cancelled = false
     const cardWidthMm = effectiveCardWidthMm
     const cardHeightMm = effectiveCardHeightMm
-    // Stroke the contour in a color that contrasts the background so it stays
-    // visible; for an uploaded background (unknown color) default to black.
-    const strokeColor = backgroundSource === 'simple' ? contrastColor(simpleBgColor) : '0:0:0:1'
+    // Stroke the preset-shape contour in magenta (CMYK 0:1:0:0) — the
+    // conventional cut-line colour, and visible over most backgrounds.
+    const strokeColor = '0:1:0:0'
     ensureWasmInit()
       .then(() => {
         const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
@@ -1252,8 +1306,8 @@ export default function App() {
     // Drop any one-card proof so the full run's results don't sit next to a stale one.
     setSampleArtifact(null)
     try {
-      const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
-      const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
+      const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
+      const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
       // "Combină paginile" (combine) overlays the contour onto the print pages as
       // a view-only (non-printing) layer. It works in both decupare (grid) and
       // no-cut mode. Require a loaded contour: the overlay needs the contour bytes
@@ -1273,7 +1327,7 @@ export default function App() {
       const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation)
         : null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
       const contourOptions = needsContourInput
@@ -1359,8 +1413,8 @@ export default function App() {
         row = generateCsvPreview(1, codeColumns, codeSeparator).split('\n')[0] ?? ''
       }
 
-      const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
-      const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
+      const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
+      const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
       const sampleCombine = contourBackgroundFile != null
       // Force a single isolated card (no-cut) with the contour overlaid.
       const samplePageOptions = { ...pageOptions, noCut: true, combine: sampleCombine }
@@ -1370,6 +1424,7 @@ export default function App() {
         sampleCombine ? contourPageNumber : undefined,
         sampleCombine ? clampedContourOffsetXMm : undefined,
         sampleCombine ? clampedContourOffsetYMm : undefined,
+        undefined, undefined, bgRotation,
       )
 
       await ensureWasmInit()
@@ -1522,10 +1577,18 @@ export default function App() {
               </>
             ) : backgroundSource === 'simple' ? (
               <>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime (mm)" value={simpleBgWidthMm} onChange={setSimpleBgWidthMm} />
-                  <NumberField label="Înălțime (mm)" value={simpleBgHeightMm} onChange={setSimpleBgHeightMm} />
-                </div>
+                <LinkedDimensions
+                  widthLabel="Lățime (mm)"
+                  heightLabel="Înălțime (mm)"
+                  width={simpleBgWidthMm}
+                  height={simpleBgHeightMm}
+                  onWidth={setSimpleBgWidthMm}
+                  onHeight={setSimpleBgHeightMm}
+                  // No source artwork — lock keeps the ratio currently set.
+                  aspect={simpleBgWidthMm / simpleBgHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                />
                 <ColorField
                   label="Culoare fundal (opțional)"
                   value={simpleBgColor}
@@ -1536,14 +1599,41 @@ export default function App() {
               </>
             ) : (
               <>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime (mm)" value={genBgWidthMm} onChange={setGenBgWidthMm} />
-                  <NumberField label="Înălțime (mm)" value={genBgHeightMm} onChange={setGenBgHeightMm} />
-                </div>
+                <LinkedDimensions
+                  widthLabel="Lățime (mm)"
+                  heightLabel="Înălțime (mm)"
+                  width={genBgWidthMm}
+                  height={genBgHeightMm}
+                  onWidth={setGenBgWidthMm}
+                  onHeight={setGenBgHeightMm}
+                  // Live ratio (starts at the image's aspect) so the lock follows
+                  // the orientation after a swap or rotation.
+                  aspect={genBgWidthMm / genBgHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                  onSwap={() => {
+                    const w = genBgWidthMm
+                    setGenBgWidthMm(genBgHeightMm)
+                    setGenBgHeightMm(w)
+                  }}
+                />
+                {genBgImageFile && background && (
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={rotateBackground}
+                      title="Rotește imaginea cu 90° (portret ⇄ peisaj)"
+                      className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      ↻ Rotește 90°
+                    </button>
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                  </div>
+                )}
                 <FileField
                   label="Imagine fundal (PNG sau JPEG)"
                   accept="image/png,image/jpeg"
-                  onChange={(files) => setGenBgImageFile(files?.[0] ?? null)}
+                  onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Imaginea este întinsă pentru a umple cardul la dimensiunile de mai sus.
@@ -1565,48 +1655,34 @@ export default function App() {
                     ({background.widthPt.toFixed(0)} × {background.heightPt.toFixed(0)} pt)
                   </span>
                 </div>
-                <div className="flex flex-wrap items-end gap-3">
-                  <div className="min-w-40 flex-1">
-                    <NumberField
-                      label="Lățime țintă (mm)"
-                      value={bgTargetWidthMm}
-                      onChange={(w) => {
-                        setBgTargetWidthMm(w)
-                        const aspect = background.widthPt / background.heightPt
-                        if (lockAspect && isFinite(aspect) && aspect > 0 && isFinite(w) && w > 0) {
-                          setBgTargetHeightMm(Math.round((w / aspect) * 100) / 100)
-                        }
-                      }}
-                    />
-                  </div>
+                <LinkedDimensions
+                  widthLabel="Lățime țintă (mm)"
+                  heightLabel="Înălțime țintă (mm)"
+                  width={bgTargetWidthMm}
+                  height={bgTargetHeightMm}
+                  onWidth={setBgTargetWidthMm}
+                  onHeight={setBgTargetHeightMm}
+                  // Live target ratio (starts at the PDF's detected ratio) so the
+                  // lock follows the orientation after a swap or rotation.
+                  aspect={bgTargetWidthMm / bgTargetHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                  onSwap={() => {
+                    const w = bgTargetWidthMm
+                    setBgTargetWidthMm(bgTargetHeightMm)
+                    setBgTargetHeightMm(w)
+                  }}
+                />
+                <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => setLockAspect((v) => !v)}
-                    aria-pressed={lockAspect}
-                    title={lockAspect ? 'Proporții păstrate — apasă pentru dimensiuni libere' : 'Dimensiuni libere — apasă pentru a păstra proporțiile'}
-                    aria-label={lockAspect ? 'Păstrează proporțiile' : 'Dimensiuni libere'}
-                    className={
-                      'mb-1 rounded px-2 py-1 text-base transition ' +
-                      (lockAspect
-                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
-                        : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600')
-                    }
+                    onClick={rotateBackground}
+                    title="Rotește fundalul cu 90° (portret ⇄ peisaj)"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
-                    {lockAspect ? '🔒' : '🔓'}
+                    ↻ Rotește 90°
                   </button>
-                  <div className="min-w-40 flex-1">
-                    <NumberField
-                      label="Înălțime țintă (mm)"
-                      value={bgTargetHeightMm}
-                      onChange={(h) => {
-                        setBgTargetHeightMm(h)
-                        const aspect = background.widthPt / background.heightPt
-                        if (lockAspect && isFinite(aspect) && aspect > 0 && isFinite(h) && h > 0) {
-                          setBgTargetWidthMm(Math.round((h * aspect) * 100) / 100)
-                        }
-                      }}
-                    />
-                  </div>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
                 </div>
               </>
             )}

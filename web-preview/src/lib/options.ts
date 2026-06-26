@@ -242,6 +242,8 @@ export function buildJsOptions(
   contourOffsetYMm?: number | null,
   contourCanvasWidthMm?: number | null,
   contourCanvasHeightMm?: number | null,
+  // Extra clockwise rotation (deg, multiple of 90) applied to the print background.
+  backgroundRotation?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -296,6 +298,7 @@ export function buildJsOptions(
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
+    ...(backgroundRotation != null && backgroundRotation !== 0 ? { backgroundRotation } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
     ...(contourOffsetXMm != null && contourOffsetXMm !== 0 ? { contourOffsetXMm } : {}),
     ...(contourOffsetYMm != null && contourOffsetYMm !== 0 ? { contourOffsetYMm } : {}),
