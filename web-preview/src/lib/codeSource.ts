@@ -2,7 +2,10 @@
 // each record holds one or more codes ("words"), joined by `separator` so the
 // row lines up with the word positions configured in "Cuvinte".
 export type CodeCharset = 'numeric' | 'alpha' | 'alphanumeric'
-export type CodeMode = 'random' | 'range'
+// 'random' draws codes from a charset, 'range' increments a number, and 'text'
+// emits the same user-supplied text on every row (a fixed watermark-style label).
+// 'text' is exempt from uniqueness — every row repeats it by design.
+export type CodeMode = 'random' | 'range' | 'text'
 // How a code is padded: 'width' left-pads with `padChar` up to `padLength`
 // characters; 'fixed' simply prepends `padChar` to every code.
 export type CodePadMode = 'width' | 'fixed'
@@ -18,6 +21,8 @@ export interface CodeColumnConfig {
   padMode: CodePadMode
   padChar: string
   padLength: number
+  // The literal text emitted on every row when `mode === 'text'`.
+  text: string
 }
 
 export function defaultCodeColumn(): CodeColumnConfig {
@@ -32,6 +37,7 @@ export function defaultCodeColumn(): CodeColumnConfig {
     padMode: 'width',
     padChar: '0',
     padLength: 0,
+    text: '',
   }
 }
 
@@ -141,6 +147,13 @@ function padCode(column: CodeColumnConfig, raw: string): string {
 // codes increment and are unique by construction. `duplicate` flags a random
 // code that could not be made unique (code space exhausted).
 function codeForRow(column: CodeColumnConfig, rowIndex: number, seen: Set<string>): { code: string; duplicate: boolean } {
+  // A fixed watermark-style label: the same text on every row, exempt from
+  // uniqueness (it's meant to repeat) and from padding (it's emitted verbatim,
+  // with only the prefix/postfix attached).
+  if (column.mode === 'text') {
+    return { code: column.prefix + (column.text ?? '') + column.postfix, duplicate: false }
+  }
+
   let raw: string
   let duplicate = false
   if (column.mode === 'range') {

@@ -78,6 +78,9 @@ pub struct Options {
     // rectangle, one per word position (or a single entry for every word).
     // Empty means fully opaque.
     pub text_background_alphas: Vec<f32>,
+    // Opacity (0.0 transparent - 1.0 opaque) of the text fill itself, one per
+    // word position (or a single entry for every word). Empty means fully opaque.
+    pub text_alphas: Vec<f32>,
     // Blend mode for the `text_backgrounds` rectangle, one per word position
     // (or a single entry for every word). Empty means `Normal` for every
     // word.
@@ -170,6 +173,7 @@ impl Default for Options {
             text_background_padding_mm: 0.0,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            text_alphas: Vec::new(),
             text_background_blend_modes: Vec::new(),
             split_chars: " ".to_string(),
             card_width_mm: None,

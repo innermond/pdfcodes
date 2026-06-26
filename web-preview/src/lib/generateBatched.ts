@@ -35,8 +35,6 @@ export interface BatchInput {
   pagesPerBatch: number
   totalRows: number | null
   csv: Blob | null
-  // "cu contur": bundle the contour PDF into the (always-ZIP) print archive.
-  bundleContour: boolean
 }
 
 export interface BatchHandle {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { unzipSync } from 'fflate'
+import { unzipSync, zipSync, type Zippable } from 'fflate'
 import type { GenerateResult } from '../lib/generate'
 
 function formatMetric(value: number | undefined, unit: string, digits = 2): string {
@@ -115,6 +115,62 @@ export function FileDownload({
         </a>
       )}
     </div>
+  )
+}
+
+// Strip the extension off a file name (`cards.zip` → `cards`).
+function baseName(name: string): string {
+  return name.replace(/\.[^.]+$/, '')
+}
+
+// "Print + Contur" only: download a single ZIP holding the print PDF(s) plus the
+// contour PDF. Operates on the already-generated artifacts — the print `blob`
+// (a single PDF or a batched ZIP) and the contour PDF bytes — so no regeneration
+// is needed. Building re-reads the print blob into memory and re-zips it
+// store-only (≈2× the archive in RAM, briefly), but only on an explicit click.
+export function DownloadBothButton({
+  print,
+  contourPdf,
+}: {
+  print: { blob: Blob; name: string; isZip: boolean }
+  contourPdf: Uint8Array
+}) {
+  const [busy, setBusy] = useState(false)
+
+  async function handleClick() {
+    setBusy(true)
+    try {
+      const files: Zippable = {}
+      const buf = new Uint8Array(await print.blob.arrayBuffer())
+      if (print.isZip) {
+        // Carry over every print PDF already in the batched archive.
+        Object.assign(files, unzipSync(buf))
+      } else {
+        files[print.name] = buf // single `cards.pdf`
+      }
+      files['contur.pdf'] = contourPdf.slice()
+      // Store-only (no compression): PDFs barely compress, matching the worker.
+      const zipped = zipSync(files, { level: 0 })
+      const url = URL.createObjectURL(new Blob([zipped.buffer], { type: 'application/zip' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${baseName(print.name)}-contur.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={busy}
+      className="self-start text-sm font-medium text-blue-600 hover:underline disabled:opacity-60 dark:text-blue-400"
+    >
+      {busy ? 'Se pregătește…' : 'Descarcă ambele (print + contur, .zip)'}
+    </button>
   )
 }
 

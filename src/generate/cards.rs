@@ -273,6 +273,12 @@ pub(crate) fn build_card_xobjects(
                 let alpha_idx = if opts.text_background_alphas.len() == 1 { 0 } else { idx };
                 opts.text_background_alphas[alpha_idx]
             };
+            let text_alpha = if opts.text_alphas.is_empty() {
+                1.0
+            } else {
+                let alpha_idx = if opts.text_alphas.len() == 1 { 0 } else { idx };
+                opts.text_alphas[alpha_idx]
+            };
             let contour_color = if opts.text_contour_colors.is_empty() {
                 None
             } else {
@@ -354,8 +360,9 @@ pub(crate) fn build_card_xobjects(
             }
 
             operations.push(Operation::new("q", vec![])); // save
+            let alpha = if text_alpha < 1.0 { Some(text_alpha) } else { None };
             let blend = if text_blend_mode != BlendMode::Normal { Some(text_blend_mode) } else { None };
-            if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, None, blend) {
+            if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, alpha, blend) {
                 operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
             }
             match color {

@@ -324,6 +324,7 @@ export function WordOverlay({
         fontFamily={fontFamily}
         letterSpacing={word.charSpacingPt}
         fill={colorToCss(word.color)}
+        fillOpacity={word.opacity ?? 1}
         style={{ mixBlendMode: word.blendMode }}
       >
         {word.text}

@@ -3,7 +3,7 @@ import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
 import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
-import { FileDownload, ResultPanel } from './components/ResultPanel'
+import { DownloadBothButton, FileDownload, ResultPanel } from './components/ResultPanel'
 import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
@@ -1266,12 +1266,8 @@ export default function App() {
       const printOptions = needsPrintInput
         ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined)
         : null
-      // "cu contur": in no-cut mode, bundle the contour into the print archive.
-      // This needs the contour options/bytes even when the mode is print-only,
-      // so widen the conditions that build them below.
-      const bundleContour = pageOptions.noCut && pageOptions.cuContur && needsPrintInput && contourBackgroundFile != null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
-      const contourOptions = needsContourInput || bundleContour
+      const contourOptions = needsContourInput
         // The contour job loads the contour PDF as its background, so its page is
         // the 9th arg (backgroundPageNumber); the 10th (contourPageNumber, only
         // for the combine overlay) is unused here — pass undefined so the offset
@@ -1281,7 +1277,7 @@ export default function App() {
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
       const contour =
-        (needsContourInput || combine || bundleContour) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
+        (needsContourInput || combine) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
       const fontBufs = await Promise.all(fontResult.files.map((f) => f.arrayBuffer()))
       const mode: 'print' | 'contour' | 'both' =
         needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
@@ -1302,7 +1298,6 @@ export default function App() {
           pagesPerBatch: PAGES_PER_BATCH,
           totalRows: effectiveRowCount > 0 ? effectiveRowCount : null,
           csv: csvDataFile,
-          bundleContour,
         },
         setGenProgress,
       )
@@ -1707,6 +1702,11 @@ export default function App() {
                     updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
                   }}
                 />
+                <NumberField
+                  label="Opacitate (0-1)"
+                  value={selected.opacity}
+                  onChange={(v) => updateWord(selectedIndex, { opacity: Math.min(Math.max(0, v), 1) })}
+                />
                 <SelectField
                   label="Mod îmbinare text"
                   value={selected.blendMode}
@@ -1900,19 +1900,14 @@ export default function App() {
               <CheckboxField
                 label="Non-decupare"
                 checked={pageOptions.noCut}
-                onChange={(v) =>
-                  // "Combină paginile" works in both modes, so it survives the
-                  // toggle. "cu contur" is no-cut-only; clear it when leaving
-                  // no-cut so a stale value isn't carried into grid mode.
-                  setPageOptions((prev) => ({ ...prev, noCut: v, cuContur: v ? prev.cuContur : false }))
-                }
+                onChange={(v) => setPageOption('noCut', v)}
               />
               {pageOptions.noCut ? (
-                needsPrintInput && contourBackgroundFile != null && (
-                  <>
-                    <CheckboxField label="cu contur" checked={pageOptions.cuContur} onChange={(v) => setPageOption('cuContur', v)} />
-                    <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
-                  </>
+                // "Combină paginile" needs a contour to overlay, so it only shows
+                // in no-cut mode once a contour PDF is loaded.
+                needsPrintInput &&
+                contourBackgroundFile != null && (
+                  <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
                 )
               ) : (
                 <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
@@ -1926,7 +1921,7 @@ export default function App() {
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
                 {needsPrintInput && contourBackgroundFile != null
-                  ? ' „cu contur” adaugă PDF-ul de contur ca fișier separat în arhivă, iar „Combină paginile” suprapune conturul peste fundal ca strat vizibil pe ecran (neimprimabil).'
+                  ? ' „Combină paginile” suprapune conturul peste fundal ca strat vizibil pe ecran (neimprimabil).'
                   : ''}
               </p>
             )}
@@ -2057,6 +2052,12 @@ export default function App() {
                 </p>
               )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
+              {mode === 'both' && printArtifact && contourResult && (
+                <DownloadBothButton
+                  print={{ blob: printArtifact.blob, name: printArtifact.name, isZip: printArtifact.isZip }}
+                  contourPdf={contourResult.pdf}
+                />
+              )}
             </Section>
           )}
         </div>

@@ -59,6 +59,8 @@ export interface WordStyle {
   xMm: number | null
   yMm: number
   color: string
+  // Opacity (0 transparent – 1 opaque) of the code's text fill.
+  opacity: number
   blendMode: BlendMode
   rotationDeg: number
   flipX: boolean
@@ -88,6 +90,7 @@ export function defaultWordStyle(index: number): WordStyle {
     xMm: null,
     yMm: index === 0 ? 10 : 3,
     color: '0:0:0:1', // CMYK black
+    opacity: 1,
     blendMode: 'normal',
     rotationDeg: 0,
     flipX: false,
@@ -194,9 +197,6 @@ export interface PageOptions {
   // "Non-decupare" (no-cut): one card per page, page sized to the card, no
   // imposition grid and no registration circles.
   noCut: boolean
-  // When `noCut` is set, also bundle the contour PDF as a separate file in the
-  // (always-ZIP) print archive. Handled by the generation worker, not Rust.
-  cuContur: boolean
 }
 
 // Defaults mirror `Options::default()` in src/options.rs.
@@ -214,7 +214,6 @@ export const defaultPageOptions: PageOptions = {
   preparationTimeS: 60,
   travelSpeedMmS: 16,
   noCut: false,
-  cuContur: false,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s
@@ -272,6 +271,8 @@ export function buildJsOptions(
     noCut: page.noCut,
     safeMarginMm,
     textColors: words.map((w) => w.color),
+    // Text fill opacity, one per word (always sent — text always renders).
+    textAlphas: new Float32Array(words.map((w) => w.opacity ?? 1)),
     textBlendModes: words.map((w) => w.blendMode),
     textRotations: new Float32Array(words.map((w) => w.rotationDeg)),
     textFlipX: words.map((w) => w.flipX),
