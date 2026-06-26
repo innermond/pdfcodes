@@ -84,6 +84,20 @@ function isSameFile(a: File, b: File): boolean {
   return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified
 }
 
+// Turn a file name into a safe download-name stem: drop the extension, replace
+// any run of characters that aren't letters/digits/`.`/`_`/`-` with a single
+// dash, trim stray separators, and cap the length. Returns '' when nothing
+// usable remains, so callers can fall back to a default name.
+function sanitizeFileStem(name: string): string {
+  return name
+    .replace(/\.[^./\\]+$/, '')
+    .normalize('NFKD')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+    .slice(0, 80)
+    .replace(/[-._]+$/g, '')
+}
+
 const WIZARD_STEPS = [
   { id: 'fundal', label: 'Fundal' },
   { id: 'contur', label: 'Contur' },
@@ -647,7 +661,12 @@ export default function App() {
 
   async function handleSavePreset() {
     const [preset, resources] = buildPresetBundleArgs()
-    await downloadPresetBundle('pdfcodes-preview-setari.zip', preset, resources)
+    // Name the archive after the user-provided background (e.g.
+    // "mircea-macelaru-setari.zip"); fall back to a generic name when the
+    // background is a generated simple one or absent.
+    const stem = backgroundSource === 'upload' && backgroundFile ? sanitizeFileStem(backgroundFile.name) : ''
+    const filename = stem ? `${stem}-setari.zip` : 'pdfcodes-preview-setari.zip'
+    await downloadPresetBundle(filename, preset, resources)
   }
 
   async function handleRequestQuote() {
