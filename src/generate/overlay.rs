@@ -14,6 +14,10 @@ pub(crate) fn build_overlay(
     catalog_id: ObjectId,
     layout: &CardLayout,
     page_number: u32,
+    // Translate the overlaid contour by (offset_x, offset_y) PDF points per card
+    // cell, matching the standalone contour so the combine preview/output align.
+    offset_x: f32,
+    offset_y: f32,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let contour_doc = Document::load_mem(contour_background_bytes)?;
     let contour_pages = contour_doc.get_pages();
@@ -65,7 +69,7 @@ pub(crate) fn build_overlay(
         operations.push(Operation::new("cm", vec![
             Object::Real(1.0), Object::Real(0.0),
             Object::Real(0.0), Object::Real(1.0),
-            Object::Real(x), Object::Real(y),
+            Object::Real(x + offset_x), Object::Real(y + offset_y),
         ]));
         operations.push(Operation::new("Do", vec![Object::Name(b"BGC".to_vec())]));
         operations.push(Operation::new("Q", vec![]));

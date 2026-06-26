@@ -1,5 +1,6 @@
 mod cards;
 mod contour;
+pub mod image_bg;
 mod overlay;
 pub mod shapes;
 
@@ -211,6 +212,19 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // dimensions, offsets and registration circles), with every cell showing
     // just the background and no label text.
     if opts.contour {
+        // For no-cut, optionally lay the cut page out at the print background's
+        // size (the "canvas") instead of the contour's own size, so a contour
+        // smaller than the background can be offset within it and still cut in
+        // the right place. The contour Form XObject (built above) keeps its
+        // native size; only the page/positions use the canvas dimensions.
+        let layout = match (opts.no_cut, opts.contour_canvas_width_mm, opts.contour_canvas_height_mm) {
+            (true, Some(cw), Some(ch)) if cw > 0.0 && ch > 0.0 => {
+                CardLayout::compute(cw * crate::geometry::MM, ch * crate::geometry::MM, opts)
+            }
+            _ => layout,
+        };
+        let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
+        let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
         let cutting_metrics = if opts.measure_paths && !opts.contour_as_grid {
             let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
             // The contour PDF is a single sheet, but the cutting machine
@@ -228,9 +242,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         let page_id = if opts.contour_as_grid {
             let stroke = extract_stroke_color(&bg_content_bytes)
                 .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
-            contour::build_grid_contour_page(&mut doc, pages_id, &layout, stroke)?
+            contour::build_grid_contour_page(&mut doc, pages_id, &layout, stroke, offset_x, offset_y)?
         } else {
-            contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout)?
+            contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout, offset_x, offset_y)?
         };
 
         let pages_obj = doc.get_object(pages_id)?;
@@ -280,7 +294,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // as the print grid, so print/contour alignment can be checked visually.
     let overlay = if opts.combine {
         let contour_bytes = contour_background_bytes.ok_or("--combineb requires a contour background PDF")?;
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number)?)
+        let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
+        let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number, offset_x, offset_y)?)
     } else {
         None
     };
@@ -464,6 +480,42 @@ mod tests {
 
         assert!(out.pdf.starts_with(b"%PDF"));
         assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn no_cut_contour_canvas_sizes_page_to_background() {
+        use crate::geometry::MM;
+        // A small (72pt = 1in square) contour. With a canvas + offset the no-cut
+        // cut page is sized to the canvas (so a smaller, offset contour cuts in
+        // the right place); without a canvas it keeps the contour's own size.
+        let contour = multi_page_pdf(&[(72.0, 72.0)]);
+        let page_media_box = |pdf: &[u8]| -> (f32, f32) {
+            let doc = Document::load_mem(pdf).unwrap();
+            let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+            let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap().clone();
+            let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => panic!() };
+            (n(&mb[2]), n(&mb[3]))
+        };
+
+        let opts = Options {
+            contour: true,
+            no_cut: true,
+            contour_canvas_width_mm: Some(60.0),
+            contour_canvas_height_mm: Some(40.0),
+            contour_offset_x_mm: 5.0,
+            contour_offset_y_mm: 3.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(None, &contour, None, &opts).expect("contour gen should succeed");
+        let (w, h) = page_media_box(&out.pdf);
+        assert!((w - 60.0 * MM).abs() < 0.5, "cut page width should equal the canvas");
+        assert!((h - 40.0 * MM).abs() < 0.5, "cut page height should equal the canvas");
+
+        // Legacy (no canvas) keeps the contour's own page size.
+        let legacy = Options { contour: true, no_cut: true, ..Options::default() };
+        let out2 = generate_pdf(None, &contour, None, &legacy).expect("contour gen should succeed");
+        let (w2, _) = page_media_box(&out2.pdf);
+        assert!((w2 - 72.0).abs() < 0.5, "without a canvas the page keeps the contour size");
     }
 
     #[test]

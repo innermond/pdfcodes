@@ -12,6 +12,10 @@ pub(crate) fn build_contour_page(
     pages_id: ObjectId,
     bg_form_id: ObjectId,
     layout: &CardLayout,
+    // Translate the contour outline by (offset_x, offset_y) PDF points relative
+    // to each card cell, so the cut can be nudged to align with the print.
+    offset_x: f32,
+    offset_y: f32,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut operations = Vec::new();
 
@@ -22,7 +26,7 @@ pub(crate) fn build_contour_page(
         operations.push(Operation::new("cm", vec![
             Object::Real(1.0), Object::Real(0.0),
             Object::Real(0.0), Object::Real(1.0),
-            Object::Real(x), Object::Real(y),
+            Object::Real(x + offset_x), Object::Real(y + offset_y),
         ]));
         operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
         operations.push(Operation::new("Q", vec![]));
@@ -61,13 +65,18 @@ pub(crate) fn build_grid_contour_page(
     pages_id: ObjectId,
     layout: &CardLayout,
     stroke: TextColor,
+    // Translate the whole grid by (offset_x, offset_y) PDF points. In practice
+    // grid contour only runs when the contour fills the card (zero clamp slack),
+    // so this is normally 0; kept for consistency with the tiled path.
+    offset_x: f32,
+    offset_y: f32,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let rows = layout.rows;
     let cols = layout.cols;
     let grid_w = cols as f32 * layout.card_w + (cols as f32 - 1.0) * layout.gutter_x;
     let grid_h = rows as f32 * layout.card_h + (rows as f32 - 1.0) * layout.gutter_y;
-    let x0 = layout.start_x;
-    let y0 = layout.start_y;
+    let x0 = layout.start_x + offset_x;
+    let y0 = layout.start_y + offset_y;
     let x1 = x0 + grid_w;
     let y1 = y0 + grid_h;
 

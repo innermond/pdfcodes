@@ -9,7 +9,7 @@ import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/g
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
-import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf } from './lib/wasm'
+import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
@@ -43,6 +43,8 @@ interface Preset {
   backgroundPaddingMm: number
   contourOpacity: number
   contourBlendMode: BlendMode
+  contourOffsetXMm: number
+  contourOffsetYMm: number
   mode: Mode
   pageOptions: PageOptions
   backgroundSource: BackgroundSource
@@ -142,7 +144,7 @@ function describeSeparator(sep: string): string {
 
 type FontSource = 'google' | 'custom'
 
-type BackgroundSource = 'upload' | 'simple'
+type BackgroundSource = 'upload' | 'simple' | 'generate'
 type ContourSource = 'upload' | 'shape'
 type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
 
@@ -217,6 +219,13 @@ export default function App() {
   const [simpleBgWidthMm, setSimpleBgWidthMm] = useState(86)
   const [simpleBgHeightMm, setSimpleBgHeightMm] = useState(54)
   const [simpleBgColor, setSimpleBgColor] = useState<string | null>(null)
+  // "Crează fundal": build the print background from a raster image (PNG/JPEG)
+  // at the chosen card size. `genBgImageFile` is the source-image boundary — any
+  // future image source (e.g. AI generation) just feeds a File in here.
+  const [genBgWidthMm, setGenBgWidthMm] = useState(86)
+  const [genBgHeightMm, setGenBgHeightMm] = useState(54)
+  const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
+  const [genBgLoading, setGenBgLoading] = useState(false)
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
@@ -228,6 +237,10 @@ export default function App() {
   const [shapeCornerRadiusMm, setShapeCornerRadiusMm] = useState(3)
   const [shapeCornerOrientation, setShapeCornerOrientation] = useState<CornerOrientation>('out')
   const [shapeError, setShapeError] = useState<string | null>(null)
+  // Nudge the contour within the background (right/up positive, mm). Clamped so
+  // the contour box stays fully inside the background — see contourOffsetMax*.
+  const [contourOffsetXMm, setContourOffsetXMm] = useState(0)
+  const [contourOffsetYMm, setContourOffsetYMm] = useState(0)
 
   const [sampleText, setSampleText] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
@@ -389,6 +402,16 @@ export default function App() {
   const effectiveCardHeightMm = backgroundSource === 'upload' && background && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0
     ? bgTargetHeightMm
     : (background ? background.heightPt / MM : 0)
+
+  // Contour offset bounds: the contour box must stay fully inside the
+  // background, so the slack on each axis is (card − contour) clamped at 0
+  // (no room when the contour is the same size as, or larger than, the card).
+  const contourOffsetMaxXMm = Math.max(0, effectiveCardWidthMm - (contourBackground?.widthPt ?? 0) / MM)
+  const contourOffsetMaxYMm = Math.max(0, effectiveCardHeightMm - (contourBackground?.heightPt ?? 0) / MM)
+  // Re-clamp at point-of-use so a later contour/size change can't leave a stale
+  // out-of-range value reaching the preview or the generator.
+  const clampedContourOffsetXMm = Math.min(Math.max(0, contourOffsetXMm), contourOffsetMaxXMm)
+  const clampedContourOffsetYMm = Math.min(Math.max(0, contourOffsetYMm), contourOffsetMaxYMm)
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -620,6 +643,8 @@ export default function App() {
       backgroundPaddingMm,
       contourOpacity,
       contourBlendMode,
+      contourOffsetXMm,
+      contourOffsetYMm,
       mode,
       pageOptions,
       backgroundSource,
@@ -717,6 +742,8 @@ export default function App() {
         if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
         if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
+        if (typeof preset.contourOffsetXMm === 'number') setContourOffsetXMm(preset.contourOffsetXMm)
+        if (typeof preset.contourOffsetYMm === 'number') setContourOffsetYMm(preset.contourOffsetYMm)
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
         const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
@@ -848,16 +875,20 @@ export default function App() {
   function handleBackgroundSourceChange(source: BackgroundSource) {
     setBackgroundSource(source)
     setBackgroundError(null)
-    // Switching to upload clears any generated background so the user starts
-    // from a fresh file picker; switching to simple lets the effect below
-    // generate the background from the entered dimensions/color.
-    if (source === 'upload') {
+    // Upload and generate both start from an empty background until the user
+    // provides input (a PDF / an image); simple instead regenerates from its
+    // dimensions+color via the effect below. (A kept `genBgImageFile` lets the
+    // generate effect re-render if the user returns to that source.)
+    if (source !== 'simple') {
       setBackground(null)
       setBackgroundFile(null)
       setBgTargetWidthMm(NaN)
       setBgTargetHeightMm(NaN)
       setBackgroundPageNumber(1)
       setBackgroundPageCount(1)
+    }
+    if (source !== 'generate') {
+      setGenBgImageFile(null)
     }
   }
 
@@ -904,6 +935,58 @@ export default function App() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
+
+  // Build a print background PDF from a raster image (PNG/JPEG) whenever the
+  // "create background" source is active and the image / dimensions change,
+  // feeding it through the same `backgroundFile`/`background` pipeline as an
+  // uploaded PDF. Unlike the simple source there's no shortcut swatch — the
+  // produced PDF is rasterised via `renderPdfBackground` for the preview.
+  useEffect(() => {
+    if (backgroundSource !== 'generate' || !genBgImageFile) return
+    if (!(genBgWidthMm > 0) || !(genBgHeightMm > 0)) {
+      setBackground(null)
+      setBackgroundFile(null)
+      setBackgroundError('Lățimea și înălțimea fundalului trebuie să fie numere pozitive.')
+      return
+    }
+    let cancelled = false
+    setGenBgLoading(true)
+    setBackgroundError(null)
+    ensureWasmInit()
+      .then(async () => {
+        const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
+        const bytes = generate_image_background_pdf(imageBytes, genBgWidthMm, genBgHeightMm)
+        if (cancelled) return null
+        const file = new File([bytes.buffer as ArrayBuffer], 'fundal-imagine.pdf', { type: 'application/pdf' })
+        setBackgroundFile(file)
+        await ensureDefaultFont()
+        return renderPdfBackground(file)
+      })
+      .then((bg) => {
+        if (cancelled || !bg) return
+        setBackground(bg)
+        setBackgroundPageCount(bg.pageCount)
+        if (!sampleText) {
+          const maxWidthPt = bg.widthPt * 0.9
+          const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+          handleSampleTextChange(word)
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setBackgroundError(err instanceof Error ? err.message : String(err))
+          setBackground(null)
+          setBackgroundFile(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setGenBgLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backgroundSource, genBgImageFile, genBgWidthMm, genBgHeightMm])
 
   // Default the code/text color to one that contrasts the simple background so
   // codes are visible. Stays in effect (also recoloring newly added words) only
@@ -1171,8 +1254,16 @@ export default function App() {
       // `backgroundPageNumber`; for the combine overlay the contour PDF's page is
       // also sent on the print options. The contour job loads the contour PDF as
       // its background, so its page is passed there as `backgroundPageNumber`.
+      // Contour offset (clamped to keep the contour inside the background). When
+      // a nonzero offset is set, send the background card size as the contour
+      // "canvas" so the no-cut cut page is sized to the background (a smaller,
+      // offset contour then cuts in the right place); otherwise leave it so the
+      // contour keeps its own page size (unchanged behaviour).
+      const contourOffsetActive = clampedContourOffsetXMm > 0 || clampedContourOffsetYMm > 0
+      const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
+      const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined)
         : null
       // "cu contur": in no-cut mode, bundle the contour into the print archive.
       // This needs the contour options/bytes even when the mode is print-only,
@@ -1180,7 +1271,11 @@ export default function App() {
       const bundleContour = pageOptions.noCut && pageOptions.cuContur && needsPrintInput && contourBackgroundFile != null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
       const contourOptions = needsContourInput || bundleContour
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, null, null, contourPageNumber), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        // The contour job loads the contour PDF as its background, so its page is
+        // the 9th arg (backgroundPageNumber); the 10th (contourPageNumber, only
+        // for the combine overlay) is unused here — pass undefined so the offset
+        // and canvas args land in their correct slots.
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, null, null, contourPageNumber, undefined, clampedContourOffsetXMm, clampedContourOffsetYMm, contourCanvasWMm, contourCanvasHMm), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
@@ -1342,6 +1437,7 @@ export default function App() {
               options={[
                 { value: 'upload', label: 'Încarcă PDF' },
                 { value: 'simple', label: 'Fundal simplu' },
+                { value: 'generate', label: 'Crează fundal' },
               ]}
             />
             {backgroundSource === 'upload' ? (
@@ -1359,7 +1455,7 @@ export default function App() {
                   />
                 )}
               </>
-            ) : (
+            ) : backgroundSource === 'simple' ? (
               <>
                 <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                   <NumberField label="Lățime (mm)" value={simpleBgWidthMm} onChange={setSimpleBgWidthMm} />
@@ -1372,6 +1468,24 @@ export default function App() {
                   allowNone
                   noneLabel="fără culoare"
                 />
+              </>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label="Lățime (mm)" value={genBgWidthMm} onChange={setGenBgWidthMm} />
+                  <NumberField label="Înălțime (mm)" value={genBgHeightMm} onChange={setGenBgHeightMm} />
+                </div>
+                <FileField
+                  label="Imagine fundal (PNG sau JPEG)"
+                  accept="image/png,image/jpeg"
+                  onChange={(files) => setGenBgImageFile(files?.[0] ?? null)}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Imaginea este întinsă pentru a umple cardul la dimensiunile de mai sus.
+                </p>
+                {genBgLoading && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
+                )}
               </>
             )}
             {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
@@ -1464,6 +1578,24 @@ export default function App() {
                   options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                   onChange={setContourBlendMode}
                 />
+                {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
+                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                    <NumberField
+                      label={`Decalaj X contur (0–${contourOffsetMaxXMm.toFixed(1)} mm)`}
+                      value={clampedContourOffsetXMm}
+                      onChange={(v) => setContourOffsetXMm(Math.min(Math.max(0, v), contourOffsetMaxXMm))}
+                    />
+                    <NumberField
+                      label={`Decalaj Y contur (0–${contourOffsetMaxYMm.toFixed(1)} mm)`}
+                      value={clampedContourOffsetYMm}
+                      onChange={(v) => setContourOffsetYMm(Math.min(Math.max(0, v), contourOffsetMaxYMm))}
+                    />
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Conturul ocupă tot fundalul — nu există spațiu pentru decalaj. Folosește un contur mai mic decât fundalul.
+                  </p>
+                )}
               </>
             )}
           </Section>
@@ -1873,6 +2005,8 @@ export default function App() {
                   contourImageUrl={contourBackground?.imageUrl ?? null}
                   contourWidthPt={contourBackground?.widthPt ?? 0}
                   contourHeightPt={contourBackground?.heightPt ?? 0}
+                  contourOffsetXPt={clampedContourOffsetXMm * MM}
+                  contourOffsetYPt={clampedContourOffsetYMm * MM}
                   contourOpacity={contourOpacity}
                   contourBlendMode={contourBlendMode}
                   words={words}

@@ -236,6 +236,13 @@ export function buildJsOptions(
   // print job's overlay reads a page from the separately-loaded contour PDF.
   backgroundPageNumber?: number | null,
   contourPageNumber?: number | null,
+  // Nudge the contour within the background (right/up positive, mm). For the
+  // no-cut standalone contour, `contourCanvas*Mm` sizes the cut page to the
+  // background so a smaller, offset contour cuts in the right place.
+  contourOffsetXMm?: number | null,
+  contourOffsetYMm?: number | null,
+  contourCanvasWidthMm?: number | null,
+  contourCanvasHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -289,5 +296,9 @@ export function buildJsOptions(
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
+    ...(contourOffsetXMm != null && contourOffsetXMm !== 0 ? { contourOffsetXMm } : {}),
+    ...(contourOffsetYMm != null && contourOffsetYMm !== 0 ? { contourOffsetYMm } : {}),
+    ...(contourCanvasWidthMm != null && contourCanvasWidthMm > 0 ? { contourCanvasWidthMm } : {}),
+    ...(contourCanvasHeightMm != null && contourCanvasHeightMm > 0 ? { contourCanvasHeightMm } : {}),
   }
 }
