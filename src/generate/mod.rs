@@ -185,20 +185,27 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let catalog = doc.get_object(catalog_id)?;
     let pages_id = catalog.as_dict()?.get(b"Pages").unwrap().as_reference()?;
 
-    // Remove the original background page from the page tree, since its
-    // content is now reused as the BG XObject on every generated card.
+    // Remove all of the source PDF's original pages from the page tree. The
+    // chosen page's content is now reused as the BG XObject on every generated
+    // card; the *other* pages of a multi-page background upload (e.g. a print
+    // PDF that carries its cut outline on a separate page) must not leak into
+    // the output as stray pages — so drop them all, not just the selected one.
+    let original_page_ids: std::collections::HashSet<lopdf::ObjectId> =
+        pages.values().copied().collect();
     {
         let pages_obj = doc.get_object(pages_id)?;
         let pages_dict_orig = pages_obj.as_dict()?;
         let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
-        kids.retain(|kid| kid.as_reference().map(|r| r != *bg_page_id).unwrap_or(true));
+        kids.retain(|kid| kid.as_reference().map(|r| !original_page_ids.contains(&r)).unwrap_or(true));
         let count = kids.len() as i64;
         let mut pages_dict = pages_dict_orig.clone();
         pages_dict.set("Kids", Object::Array(kids));
         pages_dict.set("Count", Object::Integer(count));
         doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
     }
-    doc.objects.remove(bg_page_id);
+    for id in &original_page_ids {
+        doc.objects.remove(id);
+    }
 
     // If requested, lay out a single host page using the grid (same
     // dimensions, offsets and registration circles), with every cell showing
@@ -430,6 +437,24 @@ mod tests {
         let first = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_page_number: 1, ..Options::default() })
             .expect("page 1 generation should succeed");
         assert_eq!(out_of_range.cards_per_page, first.cards_per_page);
+    }
+
+    #[test]
+    fn generate_no_cut_drops_unselected_background_pages() {
+        // A multi-page background upload (e.g. print on one page, cut outline on
+        // another). Selecting one page must not leave the others in the output:
+        // a single code in no-cut mode yields exactly one card page, never the
+        // stray source pages on top of it.
+        let bg = multi_page_pdf(&[(288.0, 360.0), (288.0, 360.0)]);
+        let out = generate_pdf(
+            Some("1A 1\n"),
+            &bg,
+            None,
+            &Options { background_page_number: 2, no_cut: true, ..Options::default() },
+        )
+        .expect("no-cut generation should succeed");
+        let doc = Document::load_mem(&out.pdf).expect("output should be a valid PDF");
+        assert_eq!(doc.get_pages().len(), 1, "only the generated card page should remain");
     }
 
     #[test]
