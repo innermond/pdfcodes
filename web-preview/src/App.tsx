@@ -37,6 +37,7 @@ interface Preset {
   codeRowCount: number
   codeColumns: CodeColumnConfig[]
   codeFieldMerges: number[]
+  codeSingleField: boolean
   words: WordStyle[]
   safeMarginMm: number
   backgroundPaddingMm: number
@@ -45,12 +46,14 @@ interface Preset {
   mode: Mode
   pageOptions: PageOptions
   backgroundSource: BackgroundSource
+  backgroundPageNumber: number
   simpleBgWidthMm: number
   simpleBgHeightMm: number
   simpleBgColor: string | null
   fontSources: FontSource[]
   googleFontSelections: (GoogleFontSelection | null)[]
   contourSource: ContourSource
+  contourPageNumber: number
   shapeKind: ShapeKind
   shapeInsetMm: number
   shapeCornerRadiusMm: number
@@ -489,7 +492,11 @@ export default function App() {
 
   // Read a file (the original upload, or a re-parse with a corrected delimiter)
   // and fold the result into state. `auto` distinguishes the message wording.
-  async function ingestCsvFile(file: File, forcedDelimiter?: string) {
+  async function ingestCsvFile(
+    file: File,
+    forcedDelimiter?: string,
+    restore?: { merges: number[]; singleField: boolean },
+  ) {
     let parsed
     try {
       parsed = await parseUploadedCsv(file, forcedDelimiter)
@@ -509,17 +516,21 @@ export default function App() {
     // split uses `UPLOAD_SEPARATOR`, so the user never has to know about CSV
     // separators at all.
     setCodeSeparator(parsed.delimiter)
-    // A fresh parse changes the field layout, so drop any previous merges.
-    setCodeFieldMerges([])
     setUploadedRawFile(file)
     // Ragged rows (varying field counts) on an auto-detected delimiter mean the
     // split likely fell inside labels (e.g. spaces in "Rasol cu mușchi"). Default
     // to treating each row as one code. A manual override (forcedDelimiter) is an
     // explicit "split like this", so it's respected as-is.
     const ragged = forcedDelimiter === undefined && parsed.rows.some((r) => r.length !== parsed.columnCount)
-    setCodeSingleField(ragged)
+    // Restoring a preset reloads the same file, so honour the saved field merges
+    // and single-code choice. A fresh parse instead drops any previous merges
+    // (the layout may have changed) and falls back to the ragged default.
+    const merges = restore ? restore.merges : []
+    const singleField = restore ? restore.singleField : ragged
+    setCodeFieldMerges(merges)
+    setCodeSingleField(singleField)
     const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
-    if (ragged) {
+    if (singleField) {
       setUploadedCsvInfo(`Fiecare rând este tratat ca un singur cod · ${rowsLabel}`)
     } else if (parsed.columnCount <= 1) {
       // A single code per row needs no separator, so don't mention one.
@@ -531,17 +542,20 @@ export default function App() {
     // The ragged-columns warning is moot once each row is collapsed to one code,
     // and its "check the separator" advice would now mislead — drop just that one.
     setUploadedCsvWarnings(
-      ragged ? parsed.warnings.filter((w) => !w.includes('număr diferit de coloane')) : parsed.warnings,
+      singleField ? parsed.warnings.filter((w) => !w.includes('număr diferit de coloane')) : parsed.warnings,
     )
-    applyUploadedCsvRows(parsed.rows, [], parsed.delimiter || ' ', ragged)
+    applyUploadedCsvRows(parsed.rows, merges, parsed.delimiter || ' ', singleField)
   }
 
-  async function handleCsvUpload(file: File | null) {
+  async function handleCsvUpload(
+    file: File | null,
+    restore?: { merges: number[]; singleField: boolean },
+  ) {
     if (!file) {
       clearUploadedCsv()
       return
     }
-    await ingestCsvFile(file)
+    await ingestCsvFile(file, undefined, restore)
   }
 
   function handleCodeDataModeChange(mode: CodeDataMode) {
@@ -586,6 +600,7 @@ export default function App() {
       codeRowCount,
       codeColumns,
       codeFieldMerges,
+      codeSingleField,
       words,
       safeMarginMm,
       backgroundPaddingMm,
@@ -594,12 +609,14 @@ export default function App() {
       mode,
       pageOptions,
       backgroundSource,
+      backgroundPageNumber,
       simpleBgWidthMm,
       simpleBgHeightMm,
       simpleBgColor,
       fontSources,
       googleFontSelections,
       contourSource,
+      contourPageNumber,
       shapeKind,
       shapeInsetMm,
       shapeCornerRadiusMm,
@@ -618,7 +635,11 @@ export default function App() {
       {
         background: backgroundFile ?? undefined,
         contour: contourSource === 'upload' ? (contourBackgroundFile ?? undefined) : undefined,
-        csv: csvDataFile ?? undefined,
+        // For an uploaded source bundle the *original* file (not the processed,
+        // UPLOAD_SEPARATOR-joined `csvDataFile`, which `parseUploadedCsv` can't
+        // round-trip): on load it's re-parsed and the saved merges/single-code
+        // choice are re-applied to reproduce the exact field layout.
+        csv: (codeDataMode === 'upload' ? uploadedRawFile : csvDataFile) ?? undefined,
         fonts: fontsToBundle,
       },
     ]
@@ -658,7 +679,10 @@ export default function App() {
         setCodeSeparator(preset.codeSeparator ?? '')
         if (typeof preset.codeRowCount === 'number') setCodeRowCount(preset.codeRowCount)
         if (Array.isArray(preset.codeColumns)) setCodeColumns(preset.codeColumns)
-        setCodeFieldMerges(Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : [])
+        const presetMerges = Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : []
+        const presetSingleField = preset.codeSingleField === true
+        setCodeFieldMerges(presetMerges)
+        setCodeSingleField(presetSingleField)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
@@ -691,30 +715,41 @@ export default function App() {
         // Restore the print/contour background PDFs bundled in the archive, if any.
         // A simple background is regenerated from its saved dimensions/color by
         // the effect, so the bundled file is only used for the upload source.
+        // Restore the saved page for each multi-page PDF: a single uploaded file
+        // often holds the print artwork on one page and the cut outline on another,
+        // so background/contour can point at different pages of the same document.
+        // `renderPdfBackground` clamps internally; re-clamp the stored page once the
+        // real page count is known so the preview and the generator agree.
+        const savedBgPage = typeof preset.backgroundPageNumber === 'number' ? preset.backgroundPageNumber : 1
+        const savedContourPage = typeof preset.contourPageNumber === 'number' ? preset.contourPageNumber : 1
         if (bgFile && loadedBackgroundSource === 'upload') {
           setBackgroundFile(bgFile)
-          setBackgroundPageNumber(1)
-          renderPdfBackground(bgFile)
+          setBackgroundPageNumber(savedBgPage)
+          renderPdfBackground(bgFile, savedBgPage)
             .then((bg) => {
               setBackground(bg)
               setBackgroundPageCount(bg.pageCount)
+              setBackgroundPageNumber(Math.min(Math.max(1, savedBgPage), bg.pageCount))
             })
             .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
         }
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
           setContourBackgroundFile(contourFile)
-          setContourPageNumber(1)
-          renderPdfBackground(contourFile)
+          setContourPageNumber(savedContourPage)
+          renderPdfBackground(contourFile, savedContourPage)
             .then((bg) => {
               setContourBackground(bg)
               setContourPageCount(bg.pageCount)
+              setContourPageNumber(Math.min(Math.max(1, savedContourPage), bg.pageCount))
             })
             .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
         }
         const loadedDataMode: CodeDataMode = preset.codeDataMode === 'upload' ? 'upload' : 'generate'
         setCodeDataMode(loadedDataMode)
         if (csvFile && loadedDataMode === 'upload') {
-          void handleCsvUpload(csvFile)
+          // Re-ingesting the file would otherwise re-detect the layout and wipe
+          // the merges set above, so pass the saved joining through to be honoured.
+          void handleCsvUpload(csvFile, { merges: presetMerges, singleField: presetSingleField })
         } else if (csvFile) {
           setCsvDataFile(csvFile)
         }
