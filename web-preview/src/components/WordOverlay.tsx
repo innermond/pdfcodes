@@ -108,6 +108,11 @@ export function WordOverlay({
   const stepYMm = cardHeightPt / MM / 100
   useEffect(() => {
     if (!selected) return
+    // Bind to the preview SVG (focusable) rather than `window`, so arrows only
+    // nudge the word while the preview is focused — arrows pressed while a
+    // select/input elsewhere has focus won't move the code.
+    const svg = svgRef.current
+    if (!svg) return
     function handleKey(e: KeyboardEvent) {
       // Nudge only the axis pressed, so the other axis keeps its alignment: a
       // horizontal nudge must not freeze the vertical snap, and a vertical nudge
@@ -134,9 +139,9 @@ export function WordOverlay({
       e.preventDefault()
       onChange(next)
     }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [selected, startXMm, startYMm, stepXMm, stepYMm, onChange])
+    svg.addEventListener('keydown', handleKey)
+    return () => svg.removeEventListener('keydown', handleKey)
+  }, [selected, startXMm, startYMm, stepXMm, stepYMm, onChange, svgRef])
 
   if (!metrics) {
     return (
@@ -194,6 +199,9 @@ export function WordOverlay({
     onSelect()
     const svg = svgRef.current
     if (!svg) return
+    // Focus the preview so arrow keys nudge this word (and not whatever control
+    // last had focus). preventScroll avoids the page jumping to the canvas.
+    svg.focus({ preventScroll: true })
     const viewBox = svg.viewBox.baseVal
     const rect = svg.getBoundingClientRect()
     const scaleX = viewBox.width / rect.width

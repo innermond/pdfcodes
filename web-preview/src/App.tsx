@@ -1490,6 +1490,7 @@ export default function App() {
                 <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
                 <SelectField<Align | 'custom'>
                   label="Aliniere orizontală"
+                  warning={selected.xMm !== null ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
                   value={selected.xMm !== null ? 'custom' : selected.align}
                   onChange={(v) =>
                     v === 'custom'
@@ -1512,11 +1513,12 @@ export default function App() {
                     { value: 'left', label: 'stânga' },
                     { value: 'center', label: 'centru' },
                     { value: 'right', label: 'dreapta' },
-                    { value: 'custom', label: 'personalizat' },
+                    { value: 'custom', label: 'la punct fix' },
                   ]}
                 />
                 <SelectField<VAlign>
                   label="Aliniere verticală"
+                  warning={selected.valign === 'custom' ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
                   value={selected.valign}
                   onChange={(v) =>
                     updateWord(selectedIndex, {
@@ -1536,7 +1538,7 @@ export default function App() {
                     { value: 'top', label: 'sus' },
                     { value: 'middle', label: 'mijloc' },
                     { value: 'bottom', label: 'jos' },
-                    { value: 'custom', label: 'personalizat' },
+                    { value: 'custom', label: 'la punct fix' },
                   ]}
                 />
                 <NumberField label="Y (mm)" value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v, valign: 'custom' })} />
