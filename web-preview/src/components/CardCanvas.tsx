@@ -10,6 +10,8 @@ export function CardCanvas({
   contourImageUrl,
   contourWidthPt,
   contourHeightPt,
+  contourOffsetXPt = 0,
+  contourOffsetYPt = 0,
   contourOpacity,
   contourBlendMode,
   words,
@@ -26,6 +28,9 @@ export function CardCanvas({
   contourImageUrl: string | null
   contourWidthPt: number
   contourHeightPt: number
+  // Translate the contour within the card (right/up positive, PDF points).
+  contourOffsetXPt?: number
+  contourOffsetYPt?: number
   contourOpacity: number
   contourBlendMode: BlendMode
   words: WordStyle[]
@@ -62,8 +67,8 @@ export function CardCanvas({
       {contourImageUrl && (
         <image
           href={contourImageUrl}
-          x={0}
-          y={cardHeightPt - contourHeightPt}
+          x={contourOffsetXPt}
+          y={cardHeightPt - contourHeightPt - contourOffsetYPt}
           width={contourWidthPt}
           height={contourHeightPt}
           preserveAspectRatio="none"

@@ -4,6 +4,7 @@ use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
+use crate::generate::image_bg::build_image_background_pdf;
 use crate::generate::shapes::{build_shape_pdf, build_simple_background_pdf, ShapeKind};
 use crate::geometry::CardLayout;
 use crate::options::Options;
@@ -212,6 +213,10 @@ pub fn generate(
         background_page_number: 1,
         contour_page_number: 1,
         no_cut: false,
+        contour_offset_x_mm: 0.0,
+        contour_offset_y_mm: 0.0,
+        contour_canvas_width_mm: None,
+        contour_canvas_height_mm: None,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -278,6 +283,10 @@ struct JsOptions {
     background_page_number: Option<u32>,
     contour_page_number: Option<u32>,
     no_cut: bool,
+    contour_offset_x_mm: f32,
+    contour_offset_y_mm: f32,
+    contour_canvas_width_mm: Option<f32>,
+    contour_canvas_height_mm: Option<f32>,
 }
 
 impl Default for JsOptions {
@@ -323,6 +332,10 @@ impl Default for JsOptions {
             background_page_number: None,
             contour_page_number: None,
             no_cut: false,
+            contour_offset_x_mm: base.contour_offset_x_mm,
+            contour_offset_y_mm: base.contour_offset_y_mm,
+            contour_canvas_width_mm: None,
+            contour_canvas_height_mm: None,
         }
     }
 }
@@ -463,6 +476,10 @@ pub fn generate_with_options(
         background_page_number: js_opts.background_page_number.unwrap_or(1),
         contour_page_number: js_opts.contour_page_number.unwrap_or(1),
         no_cut: js_opts.no_cut,
+        contour_offset_x_mm: js_opts.contour_offset_x_mm,
+        contour_offset_y_mm: js_opts.contour_offset_y_mm,
+        contour_canvas_width_mm: js_opts.contour_canvas_width_mm,
+        contour_canvas_height_mm: js_opts.contour_canvas_height_mm,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -538,5 +555,26 @@ pub fn generate_simple_background_pdf(
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
     build_simple_background_pdf(card_w, card_h, fill)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+// Generate a single-page background PDF sized `card_width_mm` x
+// `card_height_mm` from a raster image (`image_bytes`, a PNG or JPEG). The image
+// is decoded and embedded losslessly, stretched to fill the card. Intended as a
+// generated print background built from a user-supplied/created image (the
+// "Crează fundal" feature); the result feeds the same pipeline as an uploaded
+// background PDF.
+#[wasm_bindgen]
+pub fn generate_image_background_pdf(
+    image_bytes: &[u8],
+    card_width_mm: f32,
+    card_height_mm: f32,
+) -> Result<Vec<u8>, JsError> {
+    if !(card_width_mm > 0.0) || !(card_height_mm > 0.0) {
+        return Err(JsError::new("card dimensions must be positive"));
+    }
+    let card_w = card_width_mm * crate::geometry::MM;
+    let card_h = card_height_mm * crate::geometry::MM;
+    build_image_background_pdf(image_bytes, card_w, card_h)
         .map_err(|e| JsError::new(&e.to_string()))
 }

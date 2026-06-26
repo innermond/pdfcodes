@@ -120,6 +120,17 @@ pub struct Options {
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
     pub no_cut: bool,
+    // Translate the contour outline by this many mm (right/up positive) relative
+    // to its default position, so the cut can be nudged to align with the print
+    // background. Applied in the standalone contour page and the combine overlay.
+    pub contour_offset_x_mm: f32,
+    pub contour_offset_y_mm: f32,
+    // For the no-cut standalone contour: lay the cut page out at this size (the
+    // print background's card size) instead of the contour PDF's own size, so a
+    // contour smaller than the background can be offset within it and still cut
+    // in the right place. `None`/0 keeps the contour's own size (legacy).
+    pub contour_canvas_width_mm: Option<f32>,
+    pub contour_canvas_height_mm: Option<f32>,
 }
 
 impl Options {
@@ -171,6 +182,10 @@ impl Default for Options {
             background_page_number: 1,
             contour_page_number: 1,
             no_cut: false,
+            contour_offset_x_mm: 0.0,
+            contour_offset_y_mm: 0.0,
+            contour_canvas_width_mm: None,
+            contour_canvas_height_mm: None,
         }
     }
 }
