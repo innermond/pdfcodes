@@ -9,7 +9,7 @@ import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/g
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
-import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
+import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
@@ -264,6 +264,9 @@ export default function App() {
   // NaN = no override; pre-filled with the detected MediaBox on file load.
   const [bgTargetWidthMm, setBgTargetWidthMm] = useState<number>(NaN)
   const [bgTargetHeightMm, setBgTargetHeightMm] = useState<number>(NaN)
+  // When locked, the target width/height inputs keep the uploaded PDF's original
+  // aspect ratio; editing one derives the other. Unlocked lets them move freely.
+  const [lockAspect, setLockAspect] = useState(true)
   // Multi-page PDF page selection (1-based). The page count drives whether the
   // page stepper is shown; the page number is sent to the generator so the print
   // output uses the same page as the preview.
@@ -280,6 +283,10 @@ export default function App() {
   const cancelGenRef = useRef<(() => void) | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
+  // A one-card proof ("Mostră"): a single rendered card with the contour over it,
+  // generated on the main thread independent of the full batch.
+  const [sampleArtifact, setSampleArtifact] = useState<{ blob: Blob } | null>(null)
+  const [sampleLoading, setSampleLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
   const [codeDataMode, setCodeDataMode] = useState<CodeDataMode>('generate')
   const [uploadedCsvPreview, setUploadedCsvPreview] = useState('')
@@ -1242,6 +1249,8 @@ export default function App() {
     setGenProgress(null)
     setPrintArtifact(null)
     setContourResult(null)
+    // Drop any one-card proof so the full run's results don't sit next to a stale one.
+    setSampleArtifact(null)
     try {
       const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
       const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
@@ -1316,6 +1325,66 @@ export default function App() {
       setGenLoading(false)
       setGenProgress(null)
       cancelGenRef.current = null
+    }
+  }
+
+  // Generate a single sample card ("Mostră") with the contour over it — a quick
+  // proof of how one code renders, without producing the whole batch. Runs on the
+  // main thread via the same WASM entry point as the worker, forcing a single
+  // no-cut card and the (view-only) combine overlay when a contour is loaded.
+  async function handleGenerateSample() {
+    if (!backgroundFile) {
+      setGenError('Este necesar un PDF de fundal pentru print.')
+      return
+    }
+    const fontResult = resolveFontFiles(fonts)
+    if ('error' in fontResult) {
+      setGenError(fontResult.error)
+      return
+    }
+
+    setSampleLoading(true)
+    setGenError(null)
+    try {
+      // One data row, independent of the full "Generează CSV" run: a fresh first
+      // code in generate mode, or the first line of the uploaded CSV.
+      let row: string
+      if (codeDataMode === 'upload') {
+        if (!csvDataFile) {
+          setGenError('Încarcă un fișier CSV cu date.')
+          return
+        }
+        row = (await csvDataFile.text()).split('\n').find((l) => l.trim().length > 0) ?? ''
+      } else {
+        row = generateCsvPreview(1, codeColumns, codeSeparator).split('\n')[0] ?? ''
+      }
+
+      const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
+      const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
+      const sampleCombine = contourBackgroundFile != null
+      // Force a single isolated card (no-cut) with the contour overlaid.
+      const samplePageOptions = { ...pageOptions, noCut: true, combine: sampleCombine }
+      const printOptions = buildJsOptions(
+        words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, samplePageOptions, false,
+        bgWidthOverride, bgHeightOverride, backgroundPageNumber,
+        sampleCombine ? contourPageNumber : undefined,
+        sampleCombine ? clampedContourOffsetXMm : undefined,
+        sampleCombine ? clampedContourOffsetYMm : undefined,
+      )
+
+      await ensureWasmInit()
+      const bgBytes = new Uint8Array(await backgroundFile.arrayBuffer())
+      const contourBytes = sampleCombine ? new Uint8Array(await contourBackgroundFile!.arrayBuffer()) : undefined
+      const fontBytes = await Promise.all(fontResult.files.map(async (f) => new Uint8Array(await f.arrayBuffer())))
+
+      const out = generate_with_options(row, bgBytes, contourBytes, fontBytes, printOptions)
+      const pdf = out.pdf.slice()
+      out.free()
+      setSampleArtifact({ blob: new Blob([pdf], { type: 'application/pdf' }) })
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSampleLoading(false)
     }
   }
 
@@ -1496,9 +1565,48 @@ export default function App() {
                     ({background.widthPt.toFixed(0)} × {background.heightPt.toFixed(0)} pt)
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime țintă (mm)" value={bgTargetWidthMm} onChange={setBgTargetWidthMm} />
-                  <NumberField label="Înălțime țintă (mm)" value={bgTargetHeightMm} onChange={setBgTargetHeightMm} />
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="min-w-40 flex-1">
+                    <NumberField
+                      label="Lățime țintă (mm)"
+                      value={bgTargetWidthMm}
+                      onChange={(w) => {
+                        setBgTargetWidthMm(w)
+                        const aspect = background.widthPt / background.heightPt
+                        if (lockAspect && isFinite(aspect) && aspect > 0 && isFinite(w) && w > 0) {
+                          setBgTargetHeightMm(Math.round((w / aspect) * 100) / 100)
+                        }
+                      }}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLockAspect((v) => !v)}
+                    aria-pressed={lockAspect}
+                    title={lockAspect ? 'Proporții păstrate — apasă pentru dimensiuni libere' : 'Dimensiuni libere — apasă pentru a păstra proporțiile'}
+                    aria-label={lockAspect ? 'Păstrează proporțiile' : 'Dimensiuni libere'}
+                    className={
+                      'mb-1 rounded px-2 py-1 text-base transition ' +
+                      (lockAspect
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                        : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600')
+                    }
+                  >
+                    {lockAspect ? '🔒' : '🔓'}
+                  </button>
+                  <div className="min-w-40 flex-1">
+                    <NumberField
+                      label="Înălțime țintă (mm)"
+                      value={bgTargetHeightMm}
+                      onChange={(h) => {
+                        setBgTargetHeightMm(h)
+                        const aspect = background.widthPt / background.heightPt
+                        if (lockAspect && isFinite(aspect) && aspect > 0 && isFinite(h) && h > 0) {
+                          setBgTargetWidthMm(Math.round((h * aspect) * 100) / 100)
+                        }
+                      }}
+                    />
+                  </div>
                 </div>
               </>
             )}
@@ -1956,13 +2064,25 @@ export default function App() {
                 </span>
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={handleGenerate}
-                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-              >
-                Generează PDF
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={sampleLoading}
+                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
+                >
+                  Generează PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateSample}
+                  disabled={sampleLoading}
+                  title="Generează un singur card cu conturul deasupra — o probă rapidă, fără tot lotul."
+                  className="self-start rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  {sampleLoading ? 'Se generează mostra…' : 'Generează o mostră (un card)'}
+                </button>
+              </div>
             )}
             {genError && <p className="text-sm text-red-600 dark:text-red-400">{genError}</p>}
               </>
@@ -2027,8 +2147,16 @@ export default function App() {
             )}
           </Section>
 
-          {(printArtifact || contourResult) && (
+          {(printArtifact || contourResult || sampleArtifact) && (
             <Section title="Rezultat">
+              {sampleArtifact && (
+                <FileDownload
+                  title="Mostră (un card)"
+                  blob={sampleArtifact.blob}
+                  name="mostra.pdf"
+                  note="Probă cu un singur card — conturul este suprapus ca strat vizibil pe ecran (neimprimabil)."
+                />
+              )}
               {printArtifact && (
                 <FileDownload
                   title="Print"
