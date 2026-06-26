@@ -265,9 +265,9 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.xMm!))
       : new Float32Array(),
     align: words.map((w) => w.align),
-    // "Combină paginile" is a grid-mode (decupare) overlay; force it off in
-    // no-cut mode so a stale value can't keep merging the contour onto pages.
-    combine: page.combine && !page.noCut,
+    // "Combină paginile" overlays the contour onto the print pages (view-only,
+    // non-printing). It works in both grid (decupare) and no-cut mode.
+    combine: page.combine,
     debug: page.debug,
     noCut: page.noCut,
     safeMarginMm,

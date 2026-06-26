@@ -229,7 +229,7 @@ export default function App() {
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
-  const [contourOpacity, setContourOpacity] = useState(0.5)
+  const [contourOpacity, setContourOpacity] = useState(1.0)
   const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
   const [contourSource, setContourSource] = useState<ContourSource>('upload')
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
@@ -1245,11 +1245,12 @@ export default function App() {
     try {
       const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
       const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
-      // "Combină paginile" (combine) overlays the contour onto the imposition
-      // grid and only applies in decupare (grid) mode. In no-cut mode it's inert
-      // — guard it here so a value left over from grid mode doesn't keep merging
-      // the contour (the no-cut equivalent is "cu contur"/`bundleContour` below).
-      const combine = !pageOptions.noCut && pageOptions.combine === true
+      // "Combină paginile" (combine) overlays the contour onto the print pages as
+      // a view-only (non-printing) layer. It works in both decupare (grid) and
+      // no-cut mode. Require a loaded contour: the overlay needs the contour bytes
+      // (and `build_overlay` errors without them), so this also keeps a stale
+      // combine flag from failing generation when no contour is present.
+      const combine = pageOptions.combine === true && contourBackgroundFile != null
       // Page picks from multi-page uploads. The print background uses
       // `backgroundPageNumber`; for the combine overlay the contour PDF's page is
       // also sent on the print options. The contour job loads the contour PDF as
@@ -1900,15 +1901,18 @@ export default function App() {
                 label="Non-decupare"
                 checked={pageOptions.noCut}
                 onChange={(v) =>
-                  // "Combină paginile" and "cu contur" are mutually exclusive
-                  // (grid vs no-cut); switching modes hides one checkbox, so clear
-                  // the now-hidden flag instead of leaving a stale value behind.
-                  setPageOptions((prev) => ({ ...prev, noCut: v, combine: v ? false : prev.combine, cuContur: v ? prev.cuContur : false }))
+                  // "Combină paginile" works in both modes, so it survives the
+                  // toggle. "cu contur" is no-cut-only; clear it when leaving
+                  // no-cut so a stale value isn't carried into grid mode.
+                  setPageOptions((prev) => ({ ...prev, noCut: v, cuContur: v ? prev.cuContur : false }))
                 }
               />
               {pageOptions.noCut ? (
                 needsPrintInput && contourBackgroundFile != null && (
-                  <CheckboxField label="cu contur" checked={pageOptions.cuContur} onChange={(v) => setPageOption('cuContur', v)} />
+                  <>
+                    <CheckboxField label="cu contur" checked={pageOptions.cuContur} onChange={(v) => setPageOption('cuContur', v)} />
+                    <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
+                  </>
                 )
               ) : (
                 <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
@@ -1922,7 +1926,7 @@ export default function App() {
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
                 {needsPrintInput && contourBackgroundFile != null
-                  ? ' „cu contur” adaugă PDF-ul de contur ca fișier separat în arhivă.'
+                  ? ' „cu contur” adaugă PDF-ul de contur ca fișier separat în arhivă, iar „Combină paginile” suprapune conturul peste fundal ca strat vizibil pe ecran (neimprimabil).'
                   : ''}
               </p>
             )}
