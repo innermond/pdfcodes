@@ -8,6 +8,9 @@ export interface PdfBackground {
   imageUrl: string
   widthPt: number
   heightPt: number
+  // Total number of pages in the source PDF. Always 1 for generated backgrounds
+  // (solid color / shapes); >1 means the user can pick which page to use.
+  pageCount: number
 }
 
 // Build the preview for a simple solid-color background directly from the
@@ -30,16 +33,21 @@ export function solidColorBackground(
     ctx.fillStyle = colorToCss(color)
     ctx.fillRect(0, 0, 1, 1)
   }
-  return { imageUrl: canvas.toDataURL('image/png'), widthPt, heightPt }
+  return { imageUrl: canvas.toDataURL('image/png'), widthPt, heightPt, pageCount: 1 }
 }
 
-// Render the first page of a background PDF to an image, plus its page size
-// in PDF points (matching the MediaBox-derived `card_w`/`card_h` in
-// src/generate/mod.rs).
-export async function renderPdfBackground(file: File): Promise<PdfBackground> {
+// Render one page of a background PDF to an image, plus its page size in PDF
+// points (matching the MediaBox-derived `card_w`/`card_h` in
+// src/generate/mod.rs) and the document's total page count. `pageNumber` is
+// 1-based and clamped to the valid range; the generator must be told the same
+// page number (see `background_page_number` in src/options.rs) so the print
+// output matches this preview.
+export async function renderPdfBackground(file: File, pageNumber = 1): Promise<PdfBackground> {
   const data = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data }).promise
-  const page = await pdf.getPage(1)
+  const pageCount = pdf.numPages
+  const safePage = Math.min(Math.max(1, Math.floor(pageNumber)), pageCount)
+  const page = await pdf.getPage(safePage)
 
   const baseViewport = page.getViewport({ scale: 1 })
 
@@ -62,5 +70,6 @@ export async function renderPdfBackground(file: File): Promise<PdfBackground> {
     imageUrl: canvas.toDataURL('image/png'),
     widthPt: baseViewport.width,
     heightPt: baseViewport.height,
+    pageCount,
   }
 }

@@ -130,11 +130,15 @@ export function SelectField<T extends string>({
   value,
   options,
   onChange,
+  warning,
 }: {
   label: string
   value: T
   options: { value: T; label: string }[]
   onChange: (value: T) => void
+  // When set, the control is shown in an amber warning state and the message is
+  // rendered below it (e.g. an alignment that risks codes overflowing the card).
+  warning?: string
 }) {
   return (
     <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
@@ -142,7 +146,11 @@ export function SelectField<T extends string>({
       <select
         value={value}
         onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange(e.target.value as T)}
-        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400"
+        className={`rounded border px-2 py-1 focus:outline-none dark:bg-gray-800 dark:text-gray-100 ${
+          warning
+            ? 'border-amber-500 bg-amber-50 focus:border-amber-600 dark:border-amber-500 dark:bg-amber-950/40 dark:focus:border-amber-400'
+            : 'border-gray-300 focus:border-blue-500 dark:border-gray-600 dark:focus:border-blue-400'
+        }`}
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
@@ -150,6 +158,7 @@ export function SelectField<T extends string>({
           </option>
         ))}
       </select>
+      {warning && <span className="text-xs text-amber-600 dark:text-amber-400">{warning}</span>}
     </label>
   )
 }

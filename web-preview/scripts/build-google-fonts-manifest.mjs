@@ -57,14 +57,26 @@ async function main() {
     while (queue.length) {
       const fam = queue.pop()
       try {
-        const detail = await fetchJson(`${API}/${fam.id}?subsets=latin`)
+        // Request latin AND latin-ext: gwfh returns a different gstatic .ttf
+        // URL per subset, and the latin-only file is stripped of the Romanian
+        // precomposed letters (ă/ș/ț). Fetching latin-ext keeps those glyphs so
+        // the picker's fonts render diacritics, matching a full-family download.
+        const detail = await fetchJson(`${API}/${fam.id}?subsets=latin,latin-ext`)
         const variants = {}
         for (const [slot, candidates] of Object.entries(WANTED)) {
           const url = pickVariant(detail.variants, candidates)
           if (url) variants[slot] = url
         }
         if (variants.regular) {
-          manifest[fam.family] = { category: fam.category, variants }
+          const entry = { category: fam.category, variants }
+          // Record Latin-Extended support so the picker can warn when a font
+          // can't render Romanian diacritics (ș ț ă, in the latin-ext subset).
+          // `detail.subsets` lists every supported subset regardless of the
+          // `?subsets=latin` request. Stored only when true to keep the JSON lean.
+          if (Array.isArray(detail.subsets) && detail.subsets.includes('latin-ext')) {
+            entry.latinExt = true
+          }
+          manifest[fam.family] = entry
         }
       } catch (err) {
         console.warn(`skip ${fam.family}: ${err.message}`)

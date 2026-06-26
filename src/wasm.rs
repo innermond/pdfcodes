@@ -23,6 +23,8 @@ pub struct WasmGenerateOutput {
     sharp_turn_count_total: Option<usize>,
     time_cutting_per_card_s: Option<f32>,
     time_cutting_total_s: Option<f32>,
+    text_overflow_count: usize,
+    text_overflow_samples: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -75,6 +77,18 @@ impl WasmGenerateOutput {
     #[wasm_bindgen(getter)]
     pub fn time_cutting_total_s(&self) -> Option<f32> {
         self.time_cutting_total_s
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn text_overflow_count(&self) -> usize {
+        self.text_overflow_count
+    }
+
+    // The offending codes, joined by '\n' (wasm-bindgen getters can't return
+    // Vec<String>); the worker splits them back into a list for the UI.
+    #[wasm_bindgen(getter)]
+    pub fn text_overflow_samples(&self) -> String {
+        self.text_overflow_samples.join("\n")
     }
 }
 
@@ -194,6 +208,10 @@ pub fn generate(
         text_contour_blend_modes,
         // The positional entry point keeps the previous fixed spacing.
         text_char_spacing_pt: Vec::new(),
+        // The positional entry point always uses the first page.
+        background_page_number: 1,
+        contour_page_number: 1,
+        no_cut: false,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -210,6 +228,8 @@ pub fn generate(
         sharp_turn_count_total: out.sharp_turn_count_total,
         time_cutting_per_card_s: out.time_cutting_per_card_s,
         time_cutting_total_s: out.time_cutting_total_s,
+        text_overflow_count: out.text_overflow_count,
+        text_overflow_samples: out.text_overflow_samples,
     })
 }
 
@@ -255,6 +275,9 @@ struct JsOptions {
     text_contour_widths_mm: Vec<f32>,
     text_contour_blend_modes: Vec<String>,
     text_char_spacings_pt: Vec<f32>,
+    background_page_number: Option<u32>,
+    contour_page_number: Option<u32>,
+    no_cut: bool,
 }
 
 impl Default for JsOptions {
@@ -297,6 +320,9 @@ impl Default for JsOptions {
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
             text_char_spacings_pt: Vec::new(),
+            background_page_number: None,
+            contour_page_number: None,
+            no_cut: false,
         }
     }
 }
@@ -310,10 +336,12 @@ pub fn cards_per_page(background: &[u8], options: JsValue) -> Result<usize, JsEr
         .map_err(|e| JsError::new(&e.to_string()))?;
 
     let doc = Document::load_mem(background).map_err(|e| JsError::new(&e.to_string()))?;
-    let (_, page_id) = doc
-        .get_pages()
-        .into_iter()
-        .next()
+    let pages = doc.get_pages();
+    let page_num = js_opts.background_page_number.unwrap_or(1);
+    let page_id = pages
+        .get(&page_num)
+        .copied()
+        .or_else(|| pages.values().next().copied())
         .ok_or_else(|| JsError::new("No pages in background PDF"))?;
     let media_box = doc
         .get_dictionary(page_id)
@@ -339,6 +367,7 @@ pub fn cards_per_page(background: &[u8], options: JsValue) -> Result<usize, JsEr
         offset_x_mm: js_opts.offset_x_mm,
         offset_y_mm: js_opts.offset_y_mm,
         circle_diameter_mm: js_opts.circle_diameter_mm,
+        no_cut: js_opts.no_cut,
         ..Options::default()
     };
     Ok(CardLayout::compute(card_w, card_h, &opts).cards_per_page)
@@ -431,6 +460,9 @@ pub fn generate_with_options(
         text_contour_widths_mm: js_opts.text_contour_widths_mm,
         text_contour_blend_modes,
         text_char_spacing_pt: js_opts.text_char_spacings_pt,
+        background_page_number: js_opts.background_page_number.unwrap_or(1),
+        contour_page_number: js_opts.contour_page_number.unwrap_or(1),
+        no_cut: js_opts.no_cut,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -447,6 +479,8 @@ pub fn generate_with_options(
         sharp_turn_count_total: out.sharp_turn_count_total,
         time_cutting_per_card_s: out.time_cutting_per_card_s,
         time_cutting_total_s: out.time_cutting_total_s,
+        text_overflow_count: out.text_overflow_count,
+        text_overflow_samples: out.text_overflow_samples,
     })
 }
 
