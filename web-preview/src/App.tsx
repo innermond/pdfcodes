@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
@@ -185,6 +185,11 @@ function pickDistinctPage(chosenPage: number, pageCount: number): number {
   if (c - 1 >= 1) return c - 1
   return c
 }
+
+// Preview zoom bounds and per-click multiplier (display-only magnification).
+const PREVIEW_ZOOM_MIN = 0.5
+const PREVIEW_ZOOM_MAX = 4
+const PREVIEW_ZOOM_STEP = 1.25
 
 // Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
 // usual rounded corner), "in" curves them toward the interior (scalloped).
@@ -1570,6 +1575,41 @@ export default function App() {
   // close. Works in every browser — no EyeDropper API needed.
   const previewRef = useRef<HTMLDivElement>(null)
   const [colorSamplingActive, setColorSamplingActive] = useState(false)
+  // Display-only magnification of the preview (1 = fit-to-panel). Applied as the
+  // wrapper width so the `w-full` CardCanvas SVG follows it; dragging and color
+  // sampling read the SVG's live size, so no coordinate math depends on this.
+  const [previewZoom, setPreviewZoom] = useState(1)
+  const zoomInPreview = () => setPreviewZoom((z) => Math.min(PREVIEW_ZOOM_MAX, Math.round(z * PREVIEW_ZOOM_STEP * 100) / 100))
+  const zoomOutPreview = () => setPreviewZoom((z) => Math.max(PREVIEW_ZOOM_MIN, Math.round((z / PREVIEW_ZOOM_STEP) * 100) / 100))
+  // Drag-to-pan the zoomed preview by scrolling its viewport. Mouse-only — touch
+  // and trackpad keep their native scrolling. Word drags stop propagation, so
+  // this only fires for pointer-downs on the background (never hijacks a word).
+  const previewScrollRef = useRef<HTMLDivElement>(null)
+  function handlePreviewPanStart(e: ReactPointerEvent<HTMLDivElement>) {
+    const el = previewScrollRef.current
+    if (!el || colorSamplingActive) return
+    if (e.pointerType !== 'mouse' || e.button !== 0) return
+    if (previewZoom <= 1) return
+    e.preventDefault()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startLeft = el.scrollLeft
+    const startTop = el.scrollTop
+    el.setPointerCapture(e.pointerId)
+    el.style.cursor = 'grabbing'
+    const onMove = (ev: PointerEvent) => {
+      el.scrollLeft = startLeft - (ev.clientX - startX)
+      el.scrollTop = startTop - (ev.clientY - startY)
+    }
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      el.releasePointerCapture(ev.pointerId)
+      el.style.cursor = ''
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
   async function requestColorSample(): Promise<string | null> {
     if (!background || !previewRef.current?.querySelector('svg')) return null
     // Rasterize the background up front so the click samples synchronously.
@@ -2374,32 +2414,76 @@ export default function App() {
         <div className="flex flex-col gap-4">
           <Section title="Previzualizare">
             {background ? (
-              <div ref={previewRef} className={colorSamplingActive ? 'cursor-crosshair [&_*]:!cursor-crosshair' : undefined}>
-                <CardCanvas
-                  backgroundImageUrl={background.imageUrl}
-                  cardWidthPt={effectiveCardWidthMm * MM}
-                  cardHeightPt={effectiveCardHeightMm * MM}
-                  contourImageUrl={contourBackground?.imageUrl ?? null}
-                  contourWidthPt={effectiveContourWidthMm * MM}
-                  contourHeightPt={effectiveContourHeightMm * MM}
-                  contourOffsetXPt={clampedContourOffsetXMm * MM}
-                  contourOffsetYPt={clampedContourOffsetYMm * MM}
-                  contourOpacity={contourOpacity}
-                  contourBlendMode={contourBlendMode}
-                  words={words}
-                  fonts={fonts}
-                  safeMarginMm={safeMarginMm}
-                  backgroundPaddingMm={backgroundPaddingMm}
-                  selectedIndex={selectedIndex}
-                  onSelect={setSelectedIndex}
-                  onChangeWord={updateWord}
-                />
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Zoom:</span>
+                  <button
+                    type="button"
+                    onClick={zoomOutPreview}
+                    disabled={previewZoom <= PREVIEW_ZOOM_MIN}
+                    aria-label="Micșorează previzualizarea"
+                    title="Micșorează"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    −
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewZoom(1)}
+                    aria-label="Resetează zoom la 100%"
+                    title="Resetează la 100%"
+                    className="min-w-14 rounded border border-gray-300 px-2 py-1 text-sm font-medium tabular-nums text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    {Math.round(previewZoom * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={zoomInPreview}
+                    disabled={previewZoom >= PREVIEW_ZOOM_MAX}
+                    aria-label="Mărește previzualizarea"
+                    title="Mărește"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    +
+                  </button>
+                </div>
+                <div
+                  ref={previewScrollRef}
+                  onPointerDown={handlePreviewPanStart}
+                  className={`overflow-auto select-none ${previewZoom > 1 ? 'max-h-[75vh]' : ''} ${previewZoom > 1 && !colorSamplingActive ? 'cursor-grab' : ''}`}
+                >
+                  <div
+                    ref={previewRef}
+                    style={{ width: `${previewZoom * 100}%` }}
+                    className={[previewZoom <= 1 ? 'mx-auto' : '', colorSamplingActive ? 'cursor-crosshair [&_*]:!cursor-crosshair' : ''].filter(Boolean).join(' ') || undefined}
+                  >
+                    <CardCanvas
+                      backgroundImageUrl={background.imageUrl}
+                      cardWidthPt={effectiveCardWidthMm * MM}
+                      cardHeightPt={effectiveCardHeightMm * MM}
+                      contourImageUrl={contourBackground?.imageUrl ?? null}
+                      contourWidthPt={effectiveContourWidthMm * MM}
+                      contourHeightPt={effectiveContourHeightMm * MM}
+                      contourOffsetXPt={clampedContourOffsetXMm * MM}
+                      contourOffsetYPt={clampedContourOffsetYMm * MM}
+                      contourOpacity={contourOpacity}
+                      contourBlendMode={contourBlendMode}
+                      words={words}
+                      fonts={fonts}
+                      safeMarginMm={safeMarginMm}
+                      backgroundPaddingMm={backgroundPaddingMm}
+                      selectedIndex={selectedIndex}
+                      onSelect={setSelectedIndex}
+                      onChangeWord={updateWord}
+                    />
+                  </div>
+                </div>
                 {colorSamplingActive && (
-                  <p className="mt-2 text-center text-xs text-blue-600 dark:text-blue-400">
+                  <p className="text-center text-xs text-blue-600 dark:text-blue-400">
                     Click pe previzualizare pentru a alege culoarea · Esc pentru anulare
                   </p>
                 )}
-              </div>
+              </>
             ) : (
               <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă un PDF de fundal pentru a vedea previzualizarea.</p>
             )}
