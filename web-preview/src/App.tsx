@@ -1599,44 +1599,13 @@ export default function App() {
               </>
             ) : (
               <>
-                <LinkedDimensions
-                  widthLabel="Lățime (mm)"
-                  heightLabel="Înălțime (mm)"
-                  width={genBgWidthMm}
-                  height={genBgHeightMm}
-                  onWidth={setGenBgWidthMm}
-                  onHeight={setGenBgHeightMm}
-                  // Live ratio (starts at the image's aspect) so the lock follows
-                  // the orientation after a swap or rotation.
-                  aspect={genBgWidthMm / genBgHeightMm}
-                  locked={lockAspect}
-                  onToggleLock={() => setLockAspect((v) => !v)}
-                  onSwap={() => {
-                    const w = genBgWidthMm
-                    setGenBgWidthMm(genBgHeightMm)
-                    setGenBgHeightMm(w)
-                  }}
-                />
-                {genBgImageFile && background && (
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={rotateBackground}
-                      title="Rotește imaginea cu 90° (portret ⇄ peisaj)"
-                      className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-                    >
-                      ↻ Rotește 90°
-                    </button>
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
-                  </div>
-                )}
                 <FileField
                   label="Imagine fundal (PNG sau JPEG)"
                   accept="image/png,image/jpeg"
                   onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Imaginea este întinsă pentru a umple cardul la dimensiunile de mai sus.
+                  Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
                 </p>
                 {genBgLoading && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
@@ -1678,6 +1647,39 @@ export default function App() {
                     type="button"
                     onClick={rotateBackground}
                     title="Rotește fundalul cu 90° (portret ⇄ peisaj)"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    ↻ Rotește 90°
+                  </button>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                </div>
+              </>
+            )}
+            {backgroundSource === 'generate' && background && (
+              <>
+                <LinkedDimensions
+                  widthLabel="Lățime țintă (mm)"
+                  heightLabel="Înălțime țintă (mm)"
+                  width={genBgWidthMm}
+                  height={genBgHeightMm}
+                  onWidth={setGenBgWidthMm}
+                  onHeight={setGenBgHeightMm}
+                  // Live target ratio (starts at the image's aspect) so the lock
+                  // follows the orientation after a swap or rotation.
+                  aspect={genBgWidthMm / genBgHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                  onSwap={() => {
+                    const w = genBgWidthMm
+                    setGenBgWidthMm(genBgHeightMm)
+                    setGenBgHeightMm(w)
+                  }}
+                />
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={rotateBackground}
+                    title="Rotește imaginea cu 90° (portret ⇄ peisaj)"
                     className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     ↻ Rotește 90°
