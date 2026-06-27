@@ -137,6 +137,14 @@ pub struct Options {
     // in the right place. `None`/0 keeps the contour's own size (legacy).
     pub contour_canvas_width_mm: Option<f32>,
     pub contour_canvas_height_mm: Option<f32>,
+    // Resize/rotate applied to the contour in the combine overlay so it matches
+    // the standalone cut (which gets the same transform through the background
+    // pipeline). Width/height are the target card size in mm (`None`/0 keeps the
+    // contour's own size); rotation is clockwise degrees (multiple of 90),
+    // combined with the contour page's own /Rotate. Default: no transform.
+    pub contour_target_width_mm: Option<f32>,
+    pub contour_target_height_mm: Option<f32>,
+    pub contour_rotation: i64,
 }
 
 impl Options {
@@ -194,6 +202,9 @@ impl Default for Options {
             contour_offset_y_mm: 0.0,
             contour_canvas_width_mm: None,
             contour_canvas_height_mm: None,
+            contour_target_width_mm: None,
+            contour_target_height_mm: None,
+            contour_rotation: 0,
         }
     }
 }

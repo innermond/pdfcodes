@@ -244,6 +244,13 @@ export function buildJsOptions(
   contourCanvasHeightMm?: number | null,
   // Extra clockwise rotation (deg, multiple of 90) applied to the print background.
   backgroundRotation?: number | null,
+  // Resize/rotate applied to the contour in the combine overlay so it matches
+  // the standalone cut (which receives the same transform through the background
+  // pipeline). Width/height are the target card-mm; rotation is clockwise degrees
+  // (multiple of 90). Only consumed when an overlay is built (combine).
+  contourTargetWidthMm?: number | null,
+  contourTargetHeightMm?: number | null,
+  contourRotation?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -304,5 +311,8 @@ export function buildJsOptions(
     ...(contourOffsetYMm != null && contourOffsetYMm !== 0 ? { contourOffsetYMm } : {}),
     ...(contourCanvasWidthMm != null && contourCanvasWidthMm > 0 ? { contourCanvasWidthMm } : {}),
     ...(contourCanvasHeightMm != null && contourCanvasHeightMm > 0 ? { contourCanvasHeightMm } : {}),
+    ...(contourTargetWidthMm != null && contourTargetWidthMm > 0 ? { contourTargetWidthMm } : {}),
+    ...(contourTargetHeightMm != null && contourTargetHeightMm > 0 ? { contourTargetHeightMm } : {}),
+    ...(contourRotation != null && contourRotation !== 0 ? { contourRotation } : {}),
   }
 }

@@ -18,6 +18,14 @@ pub(crate) fn build_overlay(
     // cell, matching the standalone contour so the combine preview/output align.
     offset_x: f32,
     offset_y: f32,
+    // Resize/rotate the overlaid contour so it matches the standalone cut (which
+    // gets the same transform through the background pipeline). `rotation` is
+    // clockwise degrees (multiple of 90), combined with the page's own /Rotate;
+    // `target_width_mm`/`target_height_mm` scale the displayed contour to that
+    // card size (`None`/0 keeps its own size).
+    rotation: i64,
+    target_width_mm: Option<f32>,
+    target_height_mm: Option<f32>,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let contour_doc = Document::load_mem(contour_background_bytes)?;
     let contour_pages = contour_doc.get_pages();
@@ -33,19 +41,58 @@ pub(crate) fn build_overlay(
     let contour_page_dict = contour_page_obj.as_dict()?;
     let contour_media_box = contour_page_dict.get(b"MediaBox")?.as_array()?.clone();
 
-    let card_w_c = match &contour_media_box[2] {
+    let raw_w = match &contour_media_box[2] {
         Object::Integer(w) => *w as f32,
         Object::Real(w) => *w,
         _ => layout.card_w,
     };
-    let card_h_c = match &contour_media_box[3] {
+    let raw_h = match &contour_media_box[3] {
         Object::Integer(h) => *h as f32,
         Object::Real(h) => *h,
         _ => layout.card_h,
     };
-    let card_box_c = vec![Object::Real(0.0), Object::Real(0.0), Object::Real(card_w_c), Object::Real(card_h_c)];
 
-    let contour_content_bytes = contour_doc.get_page_content(*contour_page_id)?;
+    // Bake the page's /Rotate plus the user rotation into the form content, then
+    // report the *displayed* size (swapped for 90/270) — exactly as the
+    // background pipeline does in mod.rs, so overlay and standalone cut agree.
+    let page_rotate = match contour_page_dict.get(b"Rotate") {
+        Ok(Object::Integer(r)) => *r,
+        _ => 0,
+    };
+    let rotate = (((page_rotate + rotation) % 360) + 360) % 360;
+    let (rot_w, rot_h, rotate_prefix): (f32, f32, Vec<u8>) = match rotate {
+        90 => (raw_h, raw_w, format!("0 -1 1 0 0 {raw_w:.4} cm\n").into_bytes()),
+        180 => (raw_w, raw_h, format!("-1 0 0 -1 {raw_w:.4} {raw_h:.4} cm\n").into_bytes()),
+        270 => (raw_h, raw_w, format!("0 1 -1 0 {raw_h:.4} 0 cm\n").into_bytes()),
+        _ => (raw_w, raw_h, Vec::new()),
+    };
+
+    let raw_content = contour_doc.get_page_content(*contour_page_id)?;
+    let rotated_content = if rotate_prefix.is_empty() {
+        raw_content
+    } else {
+        [b"q\n".to_vec(), rotate_prefix, raw_content, b"\nQ\n".to_vec()].concat()
+    };
+
+    // Scale the displayed contour to the target card size (if given), matching
+    // the `card_width_mm`/`card_height_mm` scale the standalone job applies.
+    let (card_w_c, card_h_c, contour_content_bytes) = match (target_width_mm, target_height_mm) {
+        (Some(tw_mm), Some(th_mm)) if tw_mm > 0.0 && th_mm > 0.0 => {
+            let target_w = tw_mm * crate::geometry::MM;
+            let target_h = th_mm * crate::geometry::MM;
+            if (target_w - rot_w).abs() > 0.1 || (target_h - rot_h).abs() > 0.1 {
+                let sx = target_w / rot_w;
+                let sy = target_h / rot_h;
+                let prefix = format!("q {sx:.6} 0 0 {sy:.6} 0 0 cm\n").into_bytes();
+                let content = [prefix, rotated_content, b"\nQ".to_vec()].concat();
+                (target_w, target_h, content)
+            } else {
+                (rot_w, rot_h, rotated_content)
+            }
+        }
+        _ => (rot_w, rot_h, rotated_content),
+    };
+    let card_box_c = vec![Object::Real(0.0), Object::Real(0.0), Object::Real(card_w_c), Object::Real(card_h_c)];
 
     let mut id_map = std::collections::HashMap::new();
     let mut bg_xobj_dict_c = Dictionary::new();

@@ -219,6 +219,9 @@ pub fn generate(
         contour_offset_y_mm: 0.0,
         contour_canvas_width_mm: None,
         contour_canvas_height_mm: None,
+        contour_target_width_mm: None,
+        contour_target_height_mm: None,
+        contour_rotation: 0,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -291,6 +294,9 @@ struct JsOptions {
     contour_offset_y_mm: f32,
     contour_canvas_width_mm: Option<f32>,
     contour_canvas_height_mm: Option<f32>,
+    contour_target_width_mm: Option<f32>,
+    contour_target_height_mm: Option<f32>,
+    contour_rotation: i64,
 }
 
 impl Default for JsOptions {
@@ -342,6 +348,9 @@ impl Default for JsOptions {
             contour_offset_y_mm: base.contour_offset_y_mm,
             contour_canvas_width_mm: None,
             contour_canvas_height_mm: None,
+            contour_target_width_mm: None,
+            contour_target_height_mm: None,
+            contour_rotation: 0,
         }
     }
 }
@@ -488,6 +497,9 @@ pub fn generate_with_options(
         contour_offset_y_mm: js_opts.contour_offset_y_mm,
         contour_canvas_width_mm: js_opts.contour_canvas_width_mm,
         contour_canvas_height_mm: js_opts.contour_canvas_height_mm,
+        contour_target_width_mm: js_opts.contour_target_width_mm,
+        contour_target_height_mm: js_opts.contour_target_height_mm,
+        contour_rotation: js_opts.contour_rotation,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

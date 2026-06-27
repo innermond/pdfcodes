@@ -173,6 +173,19 @@ function contourBoxMm(shape: ShapeKind, cardWMm: number, cardHMm: number, insetM
   return { x: insetMm, y: insetMm, w: iw, h: ih }
 }
 
+// Pick a page distinct from `chosenPage` within a `pageCount`-page PDF: prefer
+// the next page, fall back to the previous one when `chosenPage` is the last
+// page, and settle on `chosenPage` itself when there's no other page (a
+// single-page PDF). Used to default the contour to a different page than the
+// print background when both reuse the same uploaded PDF.
+function pickDistinctPage(chosenPage: number, pageCount: number): number {
+  const total = Math.max(1, Math.round(pageCount))
+  const c = Math.min(Math.max(1, Math.round(chosenPage)), total)
+  if (c + 1 <= total) return c + 1
+  if (c - 1 >= 1) return c - 1
+  return c
+}
+
 // Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
 // usual rounded corner), "in" curves them toward the interior (scalloped).
 type CornerOrientation = 'out' | 'in'
@@ -278,6 +291,16 @@ export default function App() {
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
   const [contourPageNumber, setContourPageNumber] = useState(1)
   const [contourPageCount, setContourPageCount] = useState(1)
+  // User-editable target size for an uploaded contour PDF (NaN = no override,
+  // pre-filled with the detected MediaBox on load), plus a lock that keeps the
+  // contour's aspect ratio and a rotation (0/90/180/270, clockwise) — the same
+  // resize/switch/rotate machinery the background upload uses. The contour-only
+  // cut job applies these through the background pipeline (scale + /Rotate); the
+  // combine overlay applies them in build_overlay.
+  const [contourTargetWidthMm, setContourTargetWidthMm] = useState<number>(NaN)
+  const [contourTargetHeightMm, setContourTargetHeightMm] = useState<number>(NaN)
+  const [contourLockAspect, setContourLockAspect] = useState(true)
+  const [contourRotation, setContourRotation] = useState(0)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
   const [printArtifact, setPrintArtifact] = useState<PrintArtifact | null>(null)
@@ -418,15 +441,46 @@ export default function App() {
     ? cardTargetHeightMm
     : (background ? background.heightPt / MM : 0)
 
-  // Contour offset bounds: the contour box must stay fully inside the
-  // background, so the slack on each axis is (card − contour) clamped at 0
-  // (no room when the contour is the same size as, or larger than, the card).
-  const contourOffsetMaxXMm = Math.max(0, effectiveCardWidthMm - (contourBackground?.widthPt ?? 0) / MM)
-  const contourOffsetMaxYMm = Math.max(0, effectiveCardHeightMm - (contourBackground?.heightPt ?? 0) / MM)
+  // Effective contour size: the user's target override when set (upload or preset
+  // shape), otherwise the rendered contour's own size. Drives the preview scale
+  // and the offset room, mirroring effectiveCard* for the background.
+  const effectiveContourWidthMm = contourBackground && isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
+    ? contourTargetWidthMm
+    : (contourBackground ? contourBackground.widthPt / MM : 0)
+  const effectiveContourHeightMm = contourBackground && isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
+    ? contourTargetHeightMm
+    : (contourBackground ? contourBackground.heightPt / MM : 0)
+  // Whether a preset shape is still at its card-sized default (target ≈ card), so
+  // its full-card page has the outline centred — vs resized smaller, where it
+  // behaves like a normal sub-card contour.
+  const contourShapeFullCard = contourSource === 'shape' && !!background
+    && (!(isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0)
+      || (Math.abs(contourTargetWidthMm - effectiveCardWidthMm) < 0.1
+        && Math.abs(contourTargetHeightMm - effectiveCardHeightMm) < 0.1))
+
+  // Contour offset bounds: the contour must stay fully inside the background.
+  // An uploaded contour PDF (or a resized preset shape) is anchored bottom-left,
+  // so its slack is (card − contour) and offsets run 0→max. A card-sized preset
+  // shape is drawn as its tight box — a circle only spans min(w, h) — centred
+  // inside a full-card page, so the page leaves no slack; instead the room to
+  // nudge is the margin on each side, and offsets run symmetrically −max→max.
+  // This is what lets a circle on a non-square card move along its longer axis.
+  const contourShapeBox = contourShapeFullCard
+    ? contourBoxMm(shapeKind, effectiveCardWidthMm, effectiveCardHeightMm, shapeInsetMm)
+    : null
+  const contourOffsetMaxXMm = contourShapeBox
+    ? Math.max(0, (effectiveCardWidthMm - contourShapeBox.w) / 2)
+    : Math.max(0, effectiveCardWidthMm - effectiveContourWidthMm)
+  const contourOffsetMaxYMm = contourShapeBox
+    ? Math.max(0, (effectiveCardHeightMm - contourShapeBox.h) / 2)
+    : Math.max(0, effectiveCardHeightMm - effectiveContourHeightMm)
+  // A centred shape can move either way; a corner-anchored upload only forward.
+  const contourOffsetMinXMm = contourShapeBox ? -contourOffsetMaxXMm : 0
+  const contourOffsetMinYMm = contourShapeBox ? -contourOffsetMaxYMm : 0
   // Re-clamp at point-of-use so a later contour/size change can't leave a stale
   // out-of-range value reaching the preview or the generator.
-  const clampedContourOffsetXMm = Math.min(Math.max(0, contourOffsetXMm), contourOffsetMaxXMm)
-  const clampedContourOffsetYMm = Math.min(Math.max(0, contourOffsetYMm), contourOffsetMaxYMm)
+  const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
+  const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -1066,37 +1120,81 @@ export default function App() {
     setContourBackgroundFile(file)
     setContourPageNumber(1)
     setContourPageCount(1)
+    setContourTargetWidthMm(NaN)
+    setContourTargetHeightMm(NaN)
+    setContourRotation(0)
     if (!file) return
-    // When the contour reuses the same PDF as the background (Step 1), default
-    // to page 2 if it exists: a single multi-page PDF usually carries the print
-    // design on page 1 and the cut outline on the next page.
+    // When the contour reuses the same PDF as the background (Step 1), default to
+    // a DIFFERENT page than the one chosen for the background: a multi-page PDF
+    // usually carries the print design and the cut outline on separate pages.
     const sameAsBackground = backgroundFile != null && isSameFile(file, backgroundFile)
+    const prefill = (bg: PdfBackground) => {
+      setContourBackground(bg)
+      setContourTargetWidthMm(bg.widthPt / MM)
+      setContourTargetHeightMm(bg.heightPt / MM)
+    }
     renderPdfBackground(file)
       .then((bg) => {
         setContourPageCount(bg.pageCount)
-        if (sameAsBackground && bg.pageCount >= 2) {
-          setContourPageNumber(2)
-          return renderPdfBackground(file, 2).then(setContourBackground)
+        // Pick a page other than the background's: prefer the next page, fall back
+        // to the previous one when the background is on the last page, and settle
+        // for the background's own page when there's no other (single-page PDF).
+        const contourPage = sameAsBackground ? pickDistinctPage(backgroundPageNumber, bg.pageCount) : 1
+        if (sameAsBackground && contourPage !== 1) {
+          setContourPageNumber(contourPage)
+          return renderPdfBackground(file, contourPage).then(prefill)
         }
-        setContourBackground(bg)
+        prefill(bg)
       })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
   // Re-render the contour preview from a different page of the uploaded PDF.
+  // A new page may have a different MediaBox, so its dimensions are re-detected
+  // (same as a fresh upload), keeping the current rotation.
   function handleContourPageChange(pageNumber: number) {
     if (!contourBackgroundFile) return
     const page = Math.min(Math.max(1, Math.round(pageNumber)), contourPageCount)
     setContourPageNumber(page)
     setContourBackgroundError(null)
-    renderPdfBackground(contourBackgroundFile, page)
-      .then(setContourBackground)
+    renderPdfBackground(contourBackgroundFile, page, contourRotation)
+      .then((bg) => {
+        setContourBackground(bg)
+        setContourTargetWidthMm(bg.widthPt / MM)
+        setContourTargetHeightMm(bg.heightPt / MM)
+      })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Rotate the uploaded contour by another 90° clockwise (cycling 0→90→180→270),
+  // mirroring rotateBackground: re-render the preview rotated and transpose the
+  // target dimensions so the contour box follows the new orientation.
+  function rotateContour() {
+    if (!contourBackgroundFile) return
+    const next = (contourRotation + 90) % 360
+    setContourRotation(next)
+    const w = contourTargetWidthMm
+    setContourTargetWidthMm(contourTargetHeightMm)
+    setContourTargetHeightMm(w)
+    setContourBackgroundError(null)
+    // A preset shape's generation effect depends on contourRotation and re-renders
+    // the rotated outline itself; only the uploaded file needs a manual re-render.
+    if (contourSource === 'upload') {
+      renderPdfBackground(contourBackgroundFile, contourPageNumber, next)
+        .then(setContourBackground)
+        .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+    }
   }
 
   function handleContourSourceChange(source: ContourSource) {
     setContourSource(source)
     setShapeError(null)
+    // Reset the resize/rotate overrides on every switch so the new source starts
+    // from its own detected/card size (upload re-detects on load; the preset
+    // shape re-prefills to the card size in its generation effect).
+    setContourTargetWidthMm(NaN)
+    setContourTargetHeightMm(NaN)
+    setContourRotation(0)
     if (source === 'upload') {
       setContourBackground(null)
       setContourBackgroundFile(null)
@@ -1170,7 +1268,10 @@ export default function App() {
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
-        return renderPdfBackground(file)
+        // Render rotated so the preview matches the cut/overlay, which bake the
+        // same rotation — the generated shape is treated exactly like an uploaded
+        // contour PDF for resize/rotate.
+        return renderPdfBackground(file, 1, contourRotation)
       })
       .then((bg) => {
         if (!cancelled && bg) {
@@ -1178,6 +1279,12 @@ export default function App() {
           setContourPageNumber(1)
           setContourPageCount(1)
           setShapeError(null)
+          // Prefill the target box to the shape's own (card) size the first time,
+          // so the resize controls show real numbers; a later user resize/rotate
+          // (non-NaN) is preserved across shape/inset/card tweaks. The shape is
+          // always generated at the card size; the target only scales it.
+          setContourTargetWidthMm((v) => (isFinite(v) && v > 0 ? v : cardWidthMm))
+          setContourTargetHeightMm((v) => (isFinite(v) && v > 0 ? v : cardHeightMm))
         }
       })
       .catch((err) => {
@@ -1186,7 +1293,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, contourRotation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -1308,6 +1415,12 @@ export default function App() {
     try {
       const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
       const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
+      // Contour resize/rotate (uploaded PDF or preset shape alike). For the
+      // standalone cut the contour PDF *is* the background, so these feed
+      // cardWidth/Height + backgroundRotation; for the combine overlay they ride
+      // the dedicated contour* options so `build_overlay` applies the same transform.
+      const contourWidthOverride = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : null
+      const contourHeightOverride = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : null
       // "Combină paginile" (combine) overlays the contour onto the print pages as
       // a view-only (non-printing) layer. It works in both decupare (grid) and
       // no-cut mode. Require a loaded contour: the overlay needs the contour bytes
@@ -1323,19 +1436,20 @@ export default function App() {
       // "canvas" so the no-cut cut page is sized to the background (a smaller,
       // offset contour then cuts in the right place); otherwise leave it so the
       // contour keeps its own page size (unchanged behaviour).
-      const contourOffsetActive = clampedContourOffsetXMm > 0 || clampedContourOffsetYMm > 0
+      const contourOffsetActive = clampedContourOffsetXMm !== 0 || clampedContourOffsetYMm !== 0
       const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined)
         : null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
       const contourOptions = needsContourInput
         // The contour job loads the contour PDF as its background, so its page is
-        // the 9th arg (backgroundPageNumber); the 10th (contourPageNumber, only
-        // for the combine overlay) is unused here — pass undefined so the offset
-        // and canvas args land in their correct slots.
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, null, null, contourPageNumber, undefined, clampedContourOffsetXMm, clampedContourOffsetYMm, contourCanvasWMm, contourCanvasHMm), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        // the 9th arg (backgroundPageNumber) and its resize/rotate ride the
+        // background slots: cardWidth/Height (7th/8th) and backgroundRotation
+        // (15th). The 10th (contourPageNumber, only for the combine overlay) is
+        // unused here — undefined so the offset/canvas args land in their slots.
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, contourPageNumber, undefined, clampedContourOffsetXMm, clampedContourOffsetYMm, contourCanvasWMm, contourCanvasHMm, contourRotation), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
@@ -1416,6 +1530,8 @@ export default function App() {
       const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
       const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
       const sampleCombine = contourBackgroundFile != null
+      const contourWidthOverride = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : null
+      const contourHeightOverride = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : null
       // Force a single isolated card (no-cut) with the contour overlaid.
       const samplePageOptions = { ...pageOptions, noCut: true, combine: sampleCombine }
       const printOptions = buildJsOptions(
@@ -1425,6 +1541,9 @@ export default function App() {
         sampleCombine ? clampedContourOffsetXMm : undefined,
         sampleCombine ? clampedContourOffsetYMm : undefined,
         undefined, undefined, bgRotation,
+        sampleCombine ? contourWidthOverride : undefined,
+        sampleCombine ? contourHeightOverride : undefined,
+        sampleCombine ? contourRotation : undefined,
       )
 
       await ensureWasmInit()
@@ -1753,6 +1872,41 @@ export default function App() {
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   Dimensiune contur: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
+                {/* Resize / switch dimensions / rotate apply to both the uploaded
+                    contour PDF and the generated preset shape (treated alike). */}
+                {(contourSource === 'upload' || contourSource === 'shape') && (
+                  <>
+                    <LinkedDimensions
+                      widthLabel="Lățime țintă contur (mm)"
+                      heightLabel="Înălțime țintă contur (mm)"
+                      width={contourTargetWidthMm}
+                      height={contourTargetHeightMm}
+                      onWidth={setContourTargetWidthMm}
+                      onHeight={setContourTargetHeightMm}
+                      // Live target ratio (starts at the contour's detected ratio)
+                      // so the lock follows the orientation after a swap or rotation.
+                      aspect={contourTargetWidthMm / contourTargetHeightMm}
+                      locked={contourLockAspect}
+                      onToggleLock={() => setContourLockAspect((v) => !v)}
+                      onSwap={() => {
+                        const w = contourTargetWidthMm
+                        setContourTargetWidthMm(contourTargetHeightMm)
+                        setContourTargetHeightMm(w)
+                      }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={rotateContour}
+                        title="Rotește conturul cu 90° (portret ⇄ peisaj)"
+                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        ↻ Rotește 90°
+                      </button>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
+                    </div>
+                  </>
+                )}
                 <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} />
                 <SelectField
                   label="Mod combinare contur"
@@ -1761,18 +1915,44 @@ export default function App() {
                   onChange={setContourBlendMode}
                 />
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
-                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                    <NumberField
-                      label={`Decalaj X contur (0–${contourOffsetMaxXMm.toFixed(1)} mm)`}
-                      value={clampedContourOffsetXMm}
-                      onChange={(v) => setContourOffsetXMm(Math.min(Math.max(0, v), contourOffsetMaxXMm))}
-                    />
-                    <NumberField
-                      label={`Decalaj Y contur (0–${contourOffsetMaxYMm.toFixed(1)} mm)`}
-                      value={clampedContourOffsetYMm}
-                      onChange={(v) => setContourOffsetYMm(Math.min(Math.max(0, v), contourOffsetMaxYMm))}
-                    />
-                  </div>
+                  <>
+                    <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                      <NumberField
+                        label={`Decalaj X contur (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
+                        value={clampedContourOffsetXMm}
+                        onChange={(v) => setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
+                      />
+                      <NumberField
+                        label={`Decalaj Y contur (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
+                        value={clampedContourOffsetYMm}
+                        onChange={(v) => setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
+                      />
+                    </div>
+                    {/* Snap the contour to the centre of its available room on each
+                        axis: the midpoint of [min, max] (0 for a centred full-card
+                        shape, (card − contour)/2 for a resized/corner-anchored one). */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-sm text-gray-600 dark:text-gray-400">Centrează:</span>
+                      <button
+                        type="button"
+                        onClick={() => setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
+                        disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
+                        title="Centrează conturul pe orizontală"
+                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        ↔ Orizontal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
+                        disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
+                        title="Centrează conturul pe verticală"
+                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        ↕ Vertical
+                      </button>
+                    </div>
+                  </>
                 ) : (
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Conturul ocupă tot fundalul — nu există spațiu pentru decalaj. Folosește un contur mai mic decât fundalul.
@@ -2200,8 +2380,8 @@ export default function App() {
                   cardWidthPt={effectiveCardWidthMm * MM}
                   cardHeightPt={effectiveCardHeightMm * MM}
                   contourImageUrl={contourBackground?.imageUrl ?? null}
-                  contourWidthPt={contourBackground?.widthPt ?? 0}
-                  contourHeightPt={contourBackground?.heightPt ?? 0}
+                  contourWidthPt={effectiveContourWidthMm * MM}
+                  contourHeightPt={effectiveContourHeightMm * MM}
                   contourOffsetXPt={clampedContourOffsetXMm * MM}
                   contourOffsetYPt={clampedContourOffsetYMm * MM}
                   contourOpacity={contourOpacity}

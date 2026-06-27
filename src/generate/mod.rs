@@ -320,7 +320,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         let contour_bytes = contour_background_bytes.ok_or("--combineb requires a contour background PDF")?;
         let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
         let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number, offset_x, offset_y)?)
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm)?)
     } else {
         None
     };
