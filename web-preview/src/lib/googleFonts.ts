@@ -73,9 +73,50 @@ export function googleFontsCss2Url(families: string[], text: string = PREVIEW_SA
 
 const fontCache = new Map<string, Promise<LoadedFont>>()
 
+// Persistent (cross-reload) cache of the downloaded font responses, keyed by
+// their immutable fonts.gstatic.com URL. The version suffix lets us invalidate
+// it later if the stored representation ever changes.
+const FONT_CACHE_NAME = 'pdfcodes-google-fonts-v1'
+
+// Ask the browser, once, to mark this origin's storage as persistent so the
+// cached fonts aren't evicted under storage pressure. Best-effort: it may be
+// denied or unsupported, which is fine — the cache still works, just evictable.
+let persistRequested = false
+function requestPersistentStorage(): void {
+  if (persistRequested) return
+  persistRequested = true
+  void navigator.storage?.persist?.().catch(() => {})
+}
+
+// Fetch the .ttf bytes for `url`, preferring the persistent Cache Storage so a
+// font downloaded once is reused across reloads/sessions (fonts rarely change,
+// and gstatic URLs are content-addressed). Falls back to a plain network fetch
+// where the Cache API is unavailable (non-secure context, private mode, older
+// browsers). `family` is only used for the error message.
+async function fetchFontBytes(url: string, family: string): Promise<ArrayBuffer> {
+  if (typeof caches === 'undefined') {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`Nu s-a putut descărca fontul "${family}" (${res.status}).`)
+    return res.arrayBuffer()
+  }
+  const cache = await caches.open(FONT_CACHE_NAME)
+  let res = await cache.match(url)
+  if (!res) {
+    res = await fetch(url)
+    if (!res.ok) throw new Error(`Nu s-a putut descărca fontul "${family}" (${res.status}).`)
+    requestPersistentStorage()
+    // Best-effort persist; ignore quota/storage failures and keep the bytes.
+    try {
+      await cache.put(url, res.clone())
+    } catch { /* storage full or unavailable — fall through with the fetched bytes */ }
+  }
+  return res.arrayBuffer()
+}
+
 // Fetch the .ttf bytes for `family`/`style` from fonts.gstatic.com (CORS-
-// enabled) and register them as a usable font, caching by family+style so
-// repeated selections don't re-download.
+// enabled) and register them as a usable font. Two cache layers: an in-memory
+// promise map (same-session re-selection) and persistent Cache Storage (across
+// reloads), so a given font is downloaded over the network at most once ever.
 export async function fetchGoogleFont(family: string, style: GoogleFontStyle): Promise<LoadedFont> {
   const key = `${family}::${style}`
   let promise = fontCache.get(key)
@@ -84,9 +125,7 @@ export async function fetchGoogleFont(family: string, style: GoogleFontStyle): P
       const manifest = await loadManifest()
       const url = manifest[family]?.variants[style]
       if (!url) throw new Error(`Stilul "${style}" nu este disponibil pentru fontul "${family}".`)
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`Nu s-a putut descărca fontul "${family}" (${res.status}).`)
-      const buffer = await res.arrayBuffer()
+      const buffer = await fetchFontBytes(url, family)
       return loadFontBytes(buffer, `${family} ${style}.ttf`)
     })()
     fontCache.set(key, promise)
