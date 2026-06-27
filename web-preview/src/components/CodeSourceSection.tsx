@@ -13,6 +13,7 @@ const CHARSET_OPTIONS: { value: CodeCharset; label: string }[] = [
 const MODE_OPTIONS: { value: CodeMode; label: string }[] = [
   { value: 'random', label: 'Generat aleator' },
   { value: 'range', label: 'Interval numeric' },
+  { value: 'text', label: 'Text fix' },
 ]
 
 const PAD_MODE_OPTIONS: { value: CodePadMode; label: string }[] = [
@@ -67,21 +68,30 @@ function CodeColumnEditor({
         <TextField label="Sufix (opțional)" value={column.postfix} onChange={(v) => set('postfix', v)} />
         <SelectField label="Tip cod" value={column.mode} options={MODE_OPTIONS} onChange={(v) => set('mode', v)} />
 
-        {column.mode === 'random' ? (
+        {column.mode === 'random' && (
           <>
             <SelectField label="Caractere" value={column.charset} options={CHARSET_OPTIONS} onChange={(v) => set('charset', v)} />
             <NumberField label="Lungime cod" value={column.length} onChange={(v) => set('length', v)} step={1} />
           </>
-        ) : (
+        )}
+        {column.mode === 'range' && (
           <>
             <NumberField label="Start interval" value={column.rangeStart} onChange={(v) => set('rangeStart', v)} step={1} />
             <NumberField label="Pas" value={column.rangeStep} onChange={(v) => set('rangeStep', v)} step={1} />
           </>
         )}
-        <SelectField label="Mod completare" value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
-        <TextField label="Caractere de completare" value={column.padChar} onChange={(v) => set('padChar', v)} />
-        {column.padMode === 'width' && (
-          <NumberField label="Lățime totală (caractere)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
+        {column.mode === 'text' && (
+          <TextField label="Text" value={column.text} onChange={(v) => set('text', v)} placeholder="ex. SPECIMEN" />
+        )}
+        {/* Padding only applies to generated codes, not a fixed text label. */}
+        {column.mode !== 'text' && (
+          <>
+            <SelectField label="Mod completare" value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
+            <TextField label="Caractere de completare" value={column.padChar} onChange={(v) => set('padChar', v)} />
+            {column.padMode === 'width' && (
+              <NumberField label="Lățime totală (caractere)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
+            )}
+          </>
         )}
       </div>
       {column.padChar.length > 0 && column.padMode === 'width' && column.mode === 'random' &&
@@ -322,8 +332,8 @@ export function CodeSourceSection({
         <>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Generează un CSV pentru a personaliza PDF-ul. Fiecare cod are formatul „prefix cod sufix" (prefixul și
-            sufixul sunt opționale), iar codurile pot fi generate aleator (alfabetic, numeric sau mixt) sau ca interval
-            numeric.
+            sufixul sunt opționale), iar codurile pot fi generate aleator (alfabetic, numeric sau mixt), ca interval
+            numeric, sau ca „Text fix” — același text pe fiecare rând (un filigran, exceptat de la verificarea unicității).
           </p>
 
           <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">

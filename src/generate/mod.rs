@@ -133,19 +133,43 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let media_box_obj = bg_page_dict.get(b"MediaBox")?;
     let media_box_orig = media_box_obj.as_array()?.clone();
 
-    let orig_w = match &media_box_orig[2] {
+    let raw_w = match &media_box_orig[2] {
         Object::Integer(w) => *w as f32,
         Object::Real(w) => *w,
         _ => 595.0,
     };
-    let orig_h = match &media_box_orig[3] {
+    let raw_h = match &media_box_orig[3] {
         Object::Integer(h) => *h as f32,
         Object::Real(h) => *h,
         _ => 842.0,
     };
 
-    // Get background content bytes for XObject
-    let bg_content_bytes_raw = doc.get_page_content(*bg_page_id)?;
+    // Honor the page's /Rotate (clockwise, multiple of 90). A rotated page is
+    // displayed with its dimensions swapped (for 90/270), so we bake the rotation
+    // into the background XObject's content and report the *displayed* size — this
+    // matches what the pdf.js preview shows (its viewport already applies /Rotate),
+    // so a landscape-stored/portrait-displayed PDF no longer flips orientation.
+    let page_rotate = match bg_page_dict.get(b"Rotate") {
+        Ok(Object::Integer(r)) => *r,
+        _ => 0,
+    };
+    // Combine the page's intrinsic rotation with any extra rotation the user
+    // applied in the UI, normalized to 0/90/180/270.
+    let rotate = (((page_rotate + opts.background_rotation) % 360) + 360) % 360;
+    let (orig_w, orig_h, rotate_prefix): (f32, f32, Vec<u8>) = match rotate {
+        90 => (raw_h, raw_w, format!("0 -1 1 0 0 {raw_w:.4} cm\n").into_bytes()),
+        180 => (raw_w, raw_h, format!("-1 0 0 -1 {raw_w:.4} {raw_h:.4} cm\n").into_bytes()),
+        270 => (raw_h, raw_w, format!("0 1 -1 0 {raw_h:.4} 0 cm\n").into_bytes()),
+        _ => (raw_w, raw_h, Vec::new()),
+    };
+
+    // Get background content bytes for XObject, with the page rotation baked in
+    // (wrapped in q/Q so the transform doesn't leak into anything appended later).
+    let bg_content_bytes_raw = if rotate_prefix.is_empty() {
+        doc.get_page_content(*bg_page_id)?
+    } else {
+        [b"q\n".to_vec(), rotate_prefix, doc.get_page_content(*bg_page_id)?, b"\nQ\n".to_vec()].concat()
+    };
 
     // Apply user-specified card dimensions via a PDF `cm` scale transform.
     // This rescales the background content without rasterization; the BBox
@@ -296,7 +320,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         let contour_bytes = contour_background_bytes.ok_or("--combineb requires a contour background PDF")?;
         let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
         let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number, offset_x, offset_y)?)
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm)?)
     } else {
         None
     };
@@ -428,6 +452,80 @@ mod tests {
         let mut buf = Vec::new();
         doc.save_to(&mut buf).unwrap();
         buf
+    }
+
+    // A single-page PDF with the given MediaBox (points) and `/Rotate` value.
+    fn rotated_page_pdf(w: f32, h: f32, rotate: i64) -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content_id = doc.add_object(Stream::new(Dictionary::new(), Content { operations: vec![] }.encode().unwrap()));
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set("Contents", Object::Reference(content_id));
+        page_dict.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(w), Object::Real(h)]));
+        page_dict.set("Rotate", Object::Integer(rotate));
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Count", Object::Integer(1));
+        pages_dict.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+        let mut catalog_dict = Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog_dict));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn no_cut_background_honors_page_rotation() {
+        // A landscape MediaBox (200x100) with /Rotate 90 is *displayed* portrait
+        // (100x200). The generated no-cut card page must adopt the displayed size,
+        // so the orientation matches the pdf.js preview instead of flipping.
+        let bg = rotated_page_pdf(200.0, 100.0, 90);
+        let out = generate_pdf(Some("1A 1\n"), &bg, None, &Options { no_cut: true, ..Options::default() })
+            .expect("rotated no-cut generation should succeed");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        let (w, h) = (num(&mb[2]), num(&mb[3]));
+        assert!((w - 100.0).abs() < 0.5 && (h - 200.0).abs() < 0.5, "expected displayed 100x200, got {w}x{h}");
+
+        // An unrotated landscape page stays landscape (no swap).
+        let flat = rotated_page_pdf(200.0, 100.0, 0);
+        let out2 = generate_pdf(Some("1A 1\n"), &flat, None, &Options { no_cut: true, ..Options::default() }).unwrap();
+        let doc2 = Document::load_mem(&out2.pdf).unwrap();
+        let pid2 = *doc2.get_pages().values().next().unwrap();
+        let mb2 = doc2.get_object(pid2).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        assert!((num(&mb2[2]) - 200.0).abs() < 0.5 && (num(&mb2[3]) - 100.0).abs() < 0.5, "unrotated page should stay 200x100");
+    }
+
+    #[test]
+    fn no_cut_background_honors_user_rotation() {
+        // A user-applied 90° rotation on an unrotated landscape page (200x100)
+        // must produce a portrait (100x200) card, same as an intrinsic /Rotate 90.
+        let bg = rotated_page_pdf(200.0, 100.0, 0);
+        let out = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_rotation: 90, no_cut: true, ..Options::default() })
+            .expect("user-rotated no-cut generation should succeed");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        assert!((num(&mb[2]) - 100.0).abs() < 0.5 && (num(&mb[3]) - 200.0).abs() < 0.5, "expected displayed 100x200, got {}x{}", num(&mb[2]), num(&mb[3]));
+
+        // User rotation stacks with the page's own /Rotate: 90 (page) + 90 (user)
+        // = 180, so the dimensions return to the stored 200x100.
+        let bg90 = rotated_page_pdf(200.0, 100.0, 90);
+        let out2 = generate_pdf(Some("1A 1\n"), &bg90, None, &Options { background_rotation: 90, no_cut: true, ..Options::default() }).unwrap();
+        let doc2 = Document::load_mem(&out2.pdf).unwrap();
+        let pid2 = *doc2.get_pages().values().next().unwrap();
+        let mb2 = doc2.get_object(pid2).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        assert!((num(&mb2[2]) - 200.0).abs() < 0.5 && (num(&mb2[3]) - 100.0).abs() < 0.5, "90+90 should be 180 → 200x100");
     }
 
     #[test]

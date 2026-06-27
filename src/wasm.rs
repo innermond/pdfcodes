@@ -199,6 +199,7 @@ pub fn generate(
         text_background_padding_mm,
         text_background_widths_mm,
         text_background_alphas,
+        text_alphas: Vec::new(),
         text_background_blend_modes,
         split_chars,
         card_width_mm: None,
@@ -212,11 +213,15 @@ pub fn generate(
         // The positional entry point always uses the first page.
         background_page_number: 1,
         contour_page_number: 1,
+        background_rotation: 0,
         no_cut: false,
         contour_offset_x_mm: 0.0,
         contour_offset_y_mm: 0.0,
         contour_canvas_width_mm: None,
         contour_canvas_height_mm: None,
+        contour_target_width_mm: None,
+        contour_target_height_mm: None,
+        contour_rotation: 0,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -271,6 +276,7 @@ struct JsOptions {
     text_background_padding_mm: f32,
     text_background_widths_mm: Vec<f32>,
     text_background_alphas: Vec<f32>,
+    text_alphas: Vec<f32>,
     text_background_blend_modes: Vec<String>,
     split_chars: String,
     card_width_mm: Option<f32>,
@@ -282,11 +288,15 @@ struct JsOptions {
     text_char_spacings_pt: Vec<f32>,
     background_page_number: Option<u32>,
     contour_page_number: Option<u32>,
+    background_rotation: i64,
     no_cut: bool,
     contour_offset_x_mm: f32,
     contour_offset_y_mm: f32,
     contour_canvas_width_mm: Option<f32>,
     contour_canvas_height_mm: Option<f32>,
+    contour_target_width_mm: Option<f32>,
+    contour_target_height_mm: Option<f32>,
+    contour_rotation: i64,
 }
 
 impl Default for JsOptions {
@@ -320,6 +330,7 @@ impl Default for JsOptions {
             text_background_padding_mm: base.text_background_padding_mm,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            text_alphas: Vec::new(),
             text_background_blend_modes: Vec::new(),
             split_chars: base.split_chars,
             card_width_mm: None,
@@ -331,11 +342,15 @@ impl Default for JsOptions {
             text_char_spacings_pt: Vec::new(),
             background_page_number: None,
             contour_page_number: None,
+            background_rotation: 0,
             no_cut: false,
             contour_offset_x_mm: base.contour_offset_x_mm,
             contour_offset_y_mm: base.contour_offset_y_mm,
             contour_canvas_width_mm: None,
             contour_canvas_height_mm: None,
+            contour_target_width_mm: None,
+            contour_target_height_mm: None,
+            contour_rotation: 0,
         }
     }
 }
@@ -464,6 +479,7 @@ pub fn generate_with_options(
         text_background_padding_mm: js_opts.text_background_padding_mm,
         text_background_widths_mm: js_opts.text_background_widths_mm,
         text_background_alphas: js_opts.text_background_alphas,
+        text_alphas: js_opts.text_alphas,
         text_background_blend_modes,
         split_chars: js_opts.split_chars,
         card_width_mm: js_opts.card_width_mm,
@@ -475,11 +491,15 @@ pub fn generate_with_options(
         text_char_spacing_pt: js_opts.text_char_spacings_pt,
         background_page_number: js_opts.background_page_number.unwrap_or(1),
         contour_page_number: js_opts.contour_page_number.unwrap_or(1),
+        background_rotation: js_opts.background_rotation,
         no_cut: js_opts.no_cut,
         contour_offset_x_mm: js_opts.contour_offset_x_mm,
         contour_offset_y_mm: js_opts.contour_offset_y_mm,
         contour_canvas_width_mm: js_opts.contour_canvas_width_mm,
         contour_canvas_height_mm: js_opts.contour_canvas_height_mm,
+        contour_target_width_mm: js_opts.contour_target_width_mm,
+        contour_target_height_mm: js_opts.contour_target_height_mm,
+        contour_rotation: js_opts.contour_rotation,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

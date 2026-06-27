@@ -42,17 +42,21 @@ export function solidColorBackground(
 // 1-based and clamped to the valid range; the generator must be told the same
 // page number (see `background_page_number` in src/options.rs) so the print
 // output matches this preview.
-export async function renderPdfBackground(file: File, pageNumber = 1): Promise<PdfBackground> {
+export async function renderPdfBackground(file: File, pageNumber = 1, rotation = 0): Promise<PdfBackground> {
   const data = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data }).promise
   const pageCount = pdf.numPages
   const safePage = Math.min(Math.max(1, Math.floor(pageNumber)), pageCount)
   const page = await pdf.getPage(safePage)
 
-  const baseViewport = page.getViewport({ scale: 1 })
+  // Combine the page's intrinsic /Rotate with the user-applied rotation so the
+  // rendered image and the reported width/height reflect the displayed orientation
+  // (the generator combines them identically, keeping preview and output in sync).
+  const totalRotation = (((page.rotate + rotation) % 360) + 360) % 360
+  const baseViewport = page.getViewport({ scale: 1, rotation: totalRotation })
 
   const renderScale = 2
-  const renderViewport = page.getViewport({ scale: renderScale })
+  const renderViewport = page.getViewport({ scale: renderScale, rotation: totalRotation })
   const canvas = document.createElement('canvas')
   canvas.width = renderViewport.width
   canvas.height = renderViewport.height

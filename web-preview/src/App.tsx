@@ -2,14 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { CardCanvas } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
-import { CheckboxField, ColorField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
-import { FileDownload, ResultPanel } from './components/ResultPanel'
+import { CheckboxField, ColorField, FileField, LinkedDimensions, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
+import { DownloadBothButton, FileDownload, ResultPanel } from './components/ResultPanel'
 import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
-import { ensureWasmInit, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
+import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
@@ -173,6 +173,19 @@ function contourBoxMm(shape: ShapeKind, cardWMm: number, cardHMm: number, insetM
   return { x: insetMm, y: insetMm, w: iw, h: ih }
 }
 
+// Pick a page distinct from `chosenPage` within a `pageCount`-page PDF: prefer
+// the next page, fall back to the previous one when `chosenPage` is the last
+// page, and settle on `chosenPage` itself when there's no other page (a
+// single-page PDF). Used to default the contour to a different page than the
+// print background when both reuse the same uploaded PDF.
+function pickDistinctPage(chosenPage: number, pageCount: number): number {
+  const total = Math.max(1, Math.round(pageCount))
+  const c = Math.min(Math.max(1, Math.round(chosenPage)), total)
+  if (c + 1 <= total) return c + 1
+  if (c - 1 >= 1) return c - 1
+  return c
+}
+
 // Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
 // usual rounded corner), "in" curves them toward the interior (scalloped).
 type CornerOrientation = 'out' | 'in'
@@ -229,7 +242,7 @@ export default function App() {
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
-  const [contourOpacity, setContourOpacity] = useState(0.5)
+  const [contourOpacity, setContourOpacity] = useState(1.0)
   const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
   const [contourSource, setContourSource] = useState<ContourSource>('upload')
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
@@ -264,6 +277,12 @@ export default function App() {
   // NaN = no override; pre-filled with the detected MediaBox on file load.
   const [bgTargetWidthMm, setBgTargetWidthMm] = useState<number>(NaN)
   const [bgTargetHeightMm, setBgTargetHeightMm] = useState<number>(NaN)
+  // When locked, the target width/height inputs keep the uploaded PDF's original
+  // aspect ratio; editing one derives the other. Unlocked lets them move freely.
+  const [lockAspect, setLockAspect] = useState(true)
+  // User-applied rotation of the uploaded background (0/90/180/270, clockwise),
+  // baked into both the preview and the generated output.
+  const [bgRotation, setBgRotation] = useState(0)
   // Multi-page PDF page selection (1-based). The page count drives whether the
   // page stepper is shown; the page number is sent to the generator so the print
   // output uses the same page as the preview.
@@ -272,6 +291,16 @@ export default function App() {
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
   const [contourPageNumber, setContourPageNumber] = useState(1)
   const [contourPageCount, setContourPageCount] = useState(1)
+  // User-editable target size for an uploaded contour PDF (NaN = no override,
+  // pre-filled with the detected MediaBox on load), plus a lock that keeps the
+  // contour's aspect ratio and a rotation (0/90/180/270, clockwise) — the same
+  // resize/switch/rotate machinery the background upload uses. The contour-only
+  // cut job applies these through the background pipeline (scale + /Rotate); the
+  // combine overlay applies them in build_overlay.
+  const [contourTargetWidthMm, setContourTargetWidthMm] = useState<number>(NaN)
+  const [contourTargetHeightMm, setContourTargetHeightMm] = useState<number>(NaN)
+  const [contourLockAspect, setContourLockAspect] = useState(true)
+  const [contourRotation, setContourRotation] = useState(0)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
   const [printArtifact, setPrintArtifact] = useState<PrintArtifact | null>(null)
@@ -280,6 +309,10 @@ export default function App() {
   const cancelGenRef = useRef<(() => void) | null>(null)
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
+  // A one-card proof ("Mostră"): a single rendered card with the contour over it,
+  // generated on the main thread independent of the full batch.
+  const [sampleArtifact, setSampleArtifact] = useState<{ blob: Blob } | null>(null)
+  const [sampleLoading, setSampleLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
   const [codeDataMode, setCodeDataMode] = useState<CodeDataMode>('generate')
   const [uploadedCsvPreview, setUploadedCsvPreview] = useState('')
@@ -396,22 +429,58 @@ export default function App() {
   // otherwise fall back to what the PDF or simple-background source reports.
   // Declared here (above the effects that depend on it) so a change to the
   // target size re-snaps and re-scales word positions just like a new PDF would.
-  const effectiveCardWidthMm = backgroundSource === 'upload' && background && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0
-    ? bgTargetWidthMm
+  // Both "upload" and "create" build a background PDF that's scaled to a target
+  // card size: upload's target is `bgTarget*`, create's is `genBg*`. The simple
+  // source has no separate target — its card is the rendered background itself.
+  const cardTargetWidthMm = backgroundSource === 'upload' ? bgTargetWidthMm : backgroundSource === 'generate' ? genBgWidthMm : NaN
+  const cardTargetHeightMm = backgroundSource === 'upload' ? bgTargetHeightMm : backgroundSource === 'generate' ? genBgHeightMm : NaN
+  const effectiveCardWidthMm = background && isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0
+    ? cardTargetWidthMm
     : (background ? background.widthPt / MM : 0)
-  const effectiveCardHeightMm = backgroundSource === 'upload' && background && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0
-    ? bgTargetHeightMm
+  const effectiveCardHeightMm = background && isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0
+    ? cardTargetHeightMm
     : (background ? background.heightPt / MM : 0)
 
-  // Contour offset bounds: the contour box must stay fully inside the
-  // background, so the slack on each axis is (card − contour) clamped at 0
-  // (no room when the contour is the same size as, or larger than, the card).
-  const contourOffsetMaxXMm = Math.max(0, effectiveCardWidthMm - (contourBackground?.widthPt ?? 0) / MM)
-  const contourOffsetMaxYMm = Math.max(0, effectiveCardHeightMm - (contourBackground?.heightPt ?? 0) / MM)
+  // Effective contour size: the user's target override when set (upload or preset
+  // shape), otherwise the rendered contour's own size. Drives the preview scale
+  // and the offset room, mirroring effectiveCard* for the background.
+  const effectiveContourWidthMm = contourBackground && isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
+    ? contourTargetWidthMm
+    : (contourBackground ? contourBackground.widthPt / MM : 0)
+  const effectiveContourHeightMm = contourBackground && isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
+    ? contourTargetHeightMm
+    : (contourBackground ? contourBackground.heightPt / MM : 0)
+  // Whether a preset shape is still at its card-sized default (target ≈ card), so
+  // its full-card page has the outline centred — vs resized smaller, where it
+  // behaves like a normal sub-card contour.
+  const contourShapeFullCard = contourSource === 'shape' && !!background
+    && (!(isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0)
+      || (Math.abs(contourTargetWidthMm - effectiveCardWidthMm) < 0.1
+        && Math.abs(contourTargetHeightMm - effectiveCardHeightMm) < 0.1))
+
+  // Contour offset bounds: the contour must stay fully inside the background.
+  // An uploaded contour PDF (or a resized preset shape) is anchored bottom-left,
+  // so its slack is (card − contour) and offsets run 0→max. A card-sized preset
+  // shape is drawn as its tight box — a circle only spans min(w, h) — centred
+  // inside a full-card page, so the page leaves no slack; instead the room to
+  // nudge is the margin on each side, and offsets run symmetrically −max→max.
+  // This is what lets a circle on a non-square card move along its longer axis.
+  const contourShapeBox = contourShapeFullCard
+    ? contourBoxMm(shapeKind, effectiveCardWidthMm, effectiveCardHeightMm, shapeInsetMm)
+    : null
+  const contourOffsetMaxXMm = contourShapeBox
+    ? Math.max(0, (effectiveCardWidthMm - contourShapeBox.w) / 2)
+    : Math.max(0, effectiveCardWidthMm - effectiveContourWidthMm)
+  const contourOffsetMaxYMm = contourShapeBox
+    ? Math.max(0, (effectiveCardHeightMm - contourShapeBox.h) / 2)
+    : Math.max(0, effectiveCardHeightMm - effectiveContourHeightMm)
+  // A centred shape can move either way; a corner-anchored upload only forward.
+  const contourOffsetMinXMm = contourShapeBox ? -contourOffsetMaxXMm : 0
+  const contourOffsetMinYMm = contourShapeBox ? -contourOffsetMaxYMm : 0
   // Re-clamp at point-of-use so a later contour/size change can't leave a stale
   // out-of-range value reaching the preview or the generator.
-  const clampedContourOffsetXMm = Math.min(Math.max(0, contourOffsetXMm), contourOffsetMaxXMm)
-  const clampedContourOffsetYMm = Math.min(Math.max(0, contourOffsetYMm), contourOffsetMaxYMm)
+  const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
+  const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -838,6 +907,7 @@ export default function App() {
     setBackgroundFile(file)
     setBgTargetWidthMm(NaN)
     setBgTargetHeightMm(NaN)
+    setBgRotation(0)
     setBackgroundPageNumber(1)
     setBackgroundPageCount(1)
     if (!file) return
@@ -863,12 +933,36 @@ export default function App() {
     const page = Math.min(Math.max(1, Math.round(pageNumber)), backgroundPageCount)
     setBackgroundPageNumber(page)
     setBackgroundError(null)
-    renderPdfBackground(backgroundFile, page)
+    renderPdfBackground(backgroundFile, page, bgRotation)
       .then((bg) => {
         setBackground(bg)
         setBgTargetWidthMm(bg.widthPt / MM)
         setBgTargetHeightMm(bg.heightPt / MM)
       })
+      .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Rotate the background (uploaded PDF or generated-from-image) by another 90°
+  // clockwise (cycling 0→90→180→270). The rotation is applied non-destructively
+  // (preview viewport + the `backgroundRotation` generation option); here we
+  // re-render the preview and transpose the active source's target dimensions so
+  // the card follows the new orientation.
+  function rotateBackground() {
+    if (!backgroundFile) return
+    const next = (bgRotation + 90) % 360
+    setBgRotation(next)
+    if (backgroundSource === 'generate') {
+      const w = genBgWidthMm
+      setGenBgWidthMm(genBgHeightMm)
+      setGenBgHeightMm(w)
+    } else {
+      const w = bgTargetWidthMm
+      setBgTargetWidthMm(bgTargetHeightMm)
+      setBgTargetHeightMm(w)
+    }
+    setBackgroundError(null)
+    renderPdfBackground(backgroundFile, backgroundPageNumber, next)
+      .then(setBackground)
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
@@ -884,6 +978,7 @@ export default function App() {
       setBackgroundFile(null)
       setBgTargetWidthMm(NaN)
       setBgTargetHeightMm(NaN)
+      setBgRotation(0)
       setBackgroundPageNumber(1)
       setBackgroundPageCount(1)
     }
@@ -936,6 +1031,22 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
 
+  // Loading a source image resets the shared rotation and gives the target inputs
+  // the image's proportions so the card matches it on load (the width is kept and
+  // the height derived from the natural aspect).
+  function handleGenBgImageChange(file: File | null) {
+    setGenBgImageFile(file)
+    setBgRotation(0)
+    if (!file) return
+    createImageBitmap(file)
+      .then((bmp) => {
+        const a = bmp.width / bmp.height
+        if (typeof bmp.close === 'function') bmp.close()
+        if (a > 0) setGenBgHeightMm(Math.round((genBgWidthMm / a) * 100) / 100)
+      })
+      .catch(() => {})
+  }
+
   // Build a print background PDF from a raster image (PNG/JPEG) whenever the
   // "create background" source is active and the image / dimensions change,
   // feeding it through the same `backgroundFile`/`background` pipeline as an
@@ -943,24 +1054,28 @@ export default function App() {
   // produced PDF is rasterised via `renderPdfBackground` for the preview.
   useEffect(() => {
     if (backgroundSource !== 'generate' || !genBgImageFile) return
-    if (!(genBgWidthMm > 0) || !(genBgHeightMm > 0)) {
-      setBackground(null)
-      setBackgroundFile(null)
-      setBackgroundError('Lățimea și înălțimea fundalului trebuie să fie numere pozitive.')
-      return
-    }
     let cancelled = false
     setGenBgLoading(true)
     setBackgroundError(null)
     ensureWasmInit()
       .then(async () => {
+        // Build the image PDF once at the image's own aspect (normalized width);
+        // `genBgWidthMm/HeightMm` is the *target* card size (applied as a scale at
+        // generation) and `bgRotation` the rotation — exactly like an uploaded PDF,
+        // so both sources share the same rotate/scale/override machinery and the
+        // build no longer rebuilds on dimension/rotation changes.
+        const bmp = await createImageBitmap(genBgImageFile)
+        const aspect = bmp.width / bmp.height
+        if (typeof bmp.close === 'function') bmp.close()
+        const refW = 100
+        const refH = aspect > 0 ? 100 / aspect : 100
         const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
-        const bytes = generate_image_background_pdf(imageBytes, genBgWidthMm, genBgHeightMm)
+        const bytes = generate_image_background_pdf(imageBytes, refW, refH)
         if (cancelled) return null
         const file = new File([bytes.buffer as ArrayBuffer], 'fundal-imagine.pdf', { type: 'application/pdf' })
         setBackgroundFile(file)
         await ensureDefaultFont()
-        return renderPdfBackground(file)
+        return renderPdfBackground(file, 1, bgRotation)
       })
       .then((bg) => {
         if (cancelled || !bg) return
@@ -986,7 +1101,7 @@ export default function App() {
       cancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backgroundSource, genBgImageFile, genBgWidthMm, genBgHeightMm])
+  }, [backgroundSource, genBgImageFile])
 
   // Default the code/text color to one that contrasts the simple background so
   // codes are visible. Stays in effect (also recoloring newly added words) only
@@ -1005,37 +1120,81 @@ export default function App() {
     setContourBackgroundFile(file)
     setContourPageNumber(1)
     setContourPageCount(1)
+    setContourTargetWidthMm(NaN)
+    setContourTargetHeightMm(NaN)
+    setContourRotation(0)
     if (!file) return
-    // When the contour reuses the same PDF as the background (Step 1), default
-    // to page 2 if it exists: a single multi-page PDF usually carries the print
-    // design on page 1 and the cut outline on the next page.
+    // When the contour reuses the same PDF as the background (Step 1), default to
+    // a DIFFERENT page than the one chosen for the background: a multi-page PDF
+    // usually carries the print design and the cut outline on separate pages.
     const sameAsBackground = backgroundFile != null && isSameFile(file, backgroundFile)
+    const prefill = (bg: PdfBackground) => {
+      setContourBackground(bg)
+      setContourTargetWidthMm(bg.widthPt / MM)
+      setContourTargetHeightMm(bg.heightPt / MM)
+    }
     renderPdfBackground(file)
       .then((bg) => {
         setContourPageCount(bg.pageCount)
-        if (sameAsBackground && bg.pageCount >= 2) {
-          setContourPageNumber(2)
-          return renderPdfBackground(file, 2).then(setContourBackground)
+        // Pick a page other than the background's: prefer the next page, fall back
+        // to the previous one when the background is on the last page, and settle
+        // for the background's own page when there's no other (single-page PDF).
+        const contourPage = sameAsBackground ? pickDistinctPage(backgroundPageNumber, bg.pageCount) : 1
+        if (sameAsBackground && contourPage !== 1) {
+          setContourPageNumber(contourPage)
+          return renderPdfBackground(file, contourPage).then(prefill)
         }
-        setContourBackground(bg)
+        prefill(bg)
       })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
   // Re-render the contour preview from a different page of the uploaded PDF.
+  // A new page may have a different MediaBox, so its dimensions are re-detected
+  // (same as a fresh upload), keeping the current rotation.
   function handleContourPageChange(pageNumber: number) {
     if (!contourBackgroundFile) return
     const page = Math.min(Math.max(1, Math.round(pageNumber)), contourPageCount)
     setContourPageNumber(page)
     setContourBackgroundError(null)
-    renderPdfBackground(contourBackgroundFile, page)
-      .then(setContourBackground)
+    renderPdfBackground(contourBackgroundFile, page, contourRotation)
+      .then((bg) => {
+        setContourBackground(bg)
+        setContourTargetWidthMm(bg.widthPt / MM)
+        setContourTargetHeightMm(bg.heightPt / MM)
+      })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Rotate the uploaded contour by another 90° clockwise (cycling 0→90→180→270),
+  // mirroring rotateBackground: re-render the preview rotated and transpose the
+  // target dimensions so the contour box follows the new orientation.
+  function rotateContour() {
+    if (!contourBackgroundFile) return
+    const next = (contourRotation + 90) % 360
+    setContourRotation(next)
+    const w = contourTargetWidthMm
+    setContourTargetWidthMm(contourTargetHeightMm)
+    setContourTargetHeightMm(w)
+    setContourBackgroundError(null)
+    // A preset shape's generation effect depends on contourRotation and re-renders
+    // the rotated outline itself; only the uploaded file needs a manual re-render.
+    if (contourSource === 'upload') {
+      renderPdfBackground(contourBackgroundFile, contourPageNumber, next)
+        .then(setContourBackground)
+        .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+    }
   }
 
   function handleContourSourceChange(source: ContourSource) {
     setContourSource(source)
     setShapeError(null)
+    // Reset the resize/rotate overrides on every switch so the new source starts
+    // from its own detected/card size (upload re-detects on load; the preset
+    // shape re-prefills to the card size in its generation effect).
+    setContourTargetWidthMm(NaN)
+    setContourTargetHeightMm(NaN)
+    setContourRotation(0)
     if (source === 'upload') {
       setContourBackground(null)
       setContourBackgroundFile(null)
@@ -1100,16 +1259,19 @@ export default function App() {
     let cancelled = false
     const cardWidthMm = effectiveCardWidthMm
     const cardHeightMm = effectiveCardHeightMm
-    // Stroke the contour in a color that contrasts the background so it stays
-    // visible; for an uploaded background (unknown color) default to black.
-    const strokeColor = backgroundSource === 'simple' ? contrastColor(simpleBgColor) : '0:0:0:1'
+    // Stroke the preset-shape contour in magenta (CMYK 0:1:0:0) — the
+    // conventional cut-line colour, and visible over most backgrounds.
+    const strokeColor = '0:1:0:0'
     ensureWasmInit()
       .then(() => {
         const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
-        return renderPdfBackground(file)
+        // Render rotated so the preview matches the cut/overlay, which bake the
+        // same rotation — the generated shape is treated exactly like an uploaded
+        // contour PDF for resize/rotate.
+        return renderPdfBackground(file, 1, contourRotation)
       })
       .then((bg) => {
         if (!cancelled && bg) {
@@ -1117,6 +1279,12 @@ export default function App() {
           setContourPageNumber(1)
           setContourPageCount(1)
           setShapeError(null)
+          // Prefill the target box to the shape's own (card) size the first time,
+          // so the resize controls show real numbers; a later user resize/rotate
+          // (non-NaN) is preserved across shape/inset/card tweaks. The shape is
+          // always generated at the card size; the target only scales it.
+          setContourTargetWidthMm((v) => (isFinite(v) && v > 0 ? v : cardWidthMm))
+          setContourTargetHeightMm((v) => (isFinite(v) && v > 0 ? v : cardHeightMm))
         }
       })
       .catch((err) => {
@@ -1125,7 +1293,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
+  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, contourRotation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -1242,14 +1410,23 @@ export default function App() {
     setGenProgress(null)
     setPrintArtifact(null)
     setContourResult(null)
+    // Drop any one-card proof so the full run's results don't sit next to a stale one.
+    setSampleArtifact(null)
     try {
-      const bgWidthOverride = backgroundSource === 'upload' && isFinite(bgTargetWidthMm) && bgTargetWidthMm > 0 ? bgTargetWidthMm : null
-      const bgHeightOverride = backgroundSource === 'upload' && isFinite(bgTargetHeightMm) && bgTargetHeightMm > 0 ? bgTargetHeightMm : null
-      // "Combină paginile" (combine) overlays the contour onto the imposition
-      // grid and only applies in decupare (grid) mode. In no-cut mode it's inert
-      // — guard it here so a value left over from grid mode doesn't keep merging
-      // the contour (the no-cut equivalent is "cu contur"/`bundleContour` below).
-      const combine = !pageOptions.noCut && pageOptions.combine === true
+      const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
+      const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
+      // Contour resize/rotate (uploaded PDF or preset shape alike). For the
+      // standalone cut the contour PDF *is* the background, so these feed
+      // cardWidth/Height + backgroundRotation; for the combine overlay they ride
+      // the dedicated contour* options so `build_overlay` applies the same transform.
+      const contourWidthOverride = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : null
+      const contourHeightOverride = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : null
+      // "Combină paginile" (combine) overlays the contour onto the print pages as
+      // a view-only (non-printing) layer. It works in both decupare (grid) and
+      // no-cut mode. Require a loaded contour: the overlay needs the contour bytes
+      // (and `build_overlay` errors without them), so this also keeps a stale
+      // combine flag from failing generation when no contour is present.
+      const combine = pageOptions.combine === true && contourBackgroundFile != null
       // Page picks from multi-page uploads. The print background uses
       // `backgroundPageNumber`; for the combine overlay the contour PDF's page is
       // also sent on the print options. The contour job loads the contour PDF as
@@ -1259,28 +1436,25 @@ export default function App() {
       // "canvas" so the no-cut cut page is sized to the background (a smaller,
       // offset contour then cuts in the right place); otherwise leave it so the
       // contour keeps its own page size (unchanged behaviour).
-      const contourOffsetActive = clampedContourOffsetXMm > 0 || clampedContourOffsetYMm > 0
+      const contourOffsetActive = clampedContourOffsetXMm !== 0 || clampedContourOffsetYMm !== 0
       const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, combine ? clampedContourOffsetXMm : undefined, combine ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined)
         : null
-      // "cu contur": in no-cut mode, bundle the contour into the print archive.
-      // This needs the contour options/bytes even when the mode is print-only,
-      // so widen the conditions that build them below.
-      const bundleContour = pageOptions.noCut && pageOptions.cuContur && needsPrintInput && contourBackgroundFile != null
       const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && shapeInsetMm === 0
-      const contourOptions = needsContourInput || bundleContour
+      const contourOptions = needsContourInput
         // The contour job loads the contour PDF as its background, so its page is
-        // the 9th arg (backgroundPageNumber); the 10th (contourPageNumber, only
-        // for the combine overlay) is unused here — pass undefined so the offset
-        // and canvas args land in their correct slots.
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, null, null, contourPageNumber, undefined, clampedContourOffsetXMm, clampedContourOffsetYMm, contourCanvasWMm, contourCanvasHMm), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        // the 9th arg (backgroundPageNumber) and its resize/rotate ride the
+        // background slots: cardWidth/Height (7th/8th) and backgroundRotation
+        // (15th). The 10th (contourPageNumber, only for the combine overlay) is
+        // unused here — undefined so the offset/canvas args land in their slots.
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, contourPageNumber, undefined, clampedContourOffsetXMm, clampedContourOffsetYMm, contourCanvasWMm, contourCanvasHMm, contourRotation), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
       const contour =
-        (needsContourInput || combine || bundleContour) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
+        (needsContourInput || combine) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
       const fontBufs = await Promise.all(fontResult.files.map((f) => f.arrayBuffer()))
       const mode: 'print' | 'contour' | 'both' =
         needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
@@ -1301,7 +1475,6 @@ export default function App() {
           pagesPerBatch: PAGES_PER_BATCH,
           totalRows: effectiveRowCount > 0 ? effectiveRowCount : null,
           csv: csvDataFile,
-          bundleContour,
         },
         setGenProgress,
       )
@@ -1320,6 +1493,72 @@ export default function App() {
       setGenLoading(false)
       setGenProgress(null)
       cancelGenRef.current = null
+    }
+  }
+
+  // Generate a single sample card ("Mostră") with the contour over it — a quick
+  // proof of how one code renders, without producing the whole batch. Runs on the
+  // main thread via the same WASM entry point as the worker, forcing a single
+  // no-cut card and the (view-only) combine overlay when a contour is loaded.
+  async function handleGenerateSample() {
+    if (!backgroundFile) {
+      setGenError('Este necesar un PDF de fundal pentru print.')
+      return
+    }
+    const fontResult = resolveFontFiles(fonts)
+    if ('error' in fontResult) {
+      setGenError(fontResult.error)
+      return
+    }
+
+    setSampleLoading(true)
+    setGenError(null)
+    try {
+      // One data row, independent of the full "Generează CSV" run: a fresh first
+      // code in generate mode, or the first line of the uploaded CSV.
+      let row: string
+      if (codeDataMode === 'upload') {
+        if (!csvDataFile) {
+          setGenError('Încarcă un fișier CSV cu date.')
+          return
+        }
+        row = (await csvDataFile.text()).split('\n').find((l) => l.trim().length > 0) ?? ''
+      } else {
+        row = generateCsvPreview(1, codeColumns, codeSeparator).split('\n')[0] ?? ''
+      }
+
+      const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
+      const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
+      const sampleCombine = contourBackgroundFile != null
+      const contourWidthOverride = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : null
+      const contourHeightOverride = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : null
+      // Force a single isolated card (no-cut) with the contour overlaid.
+      const samplePageOptions = { ...pageOptions, noCut: true, combine: sampleCombine }
+      const printOptions = buildJsOptions(
+        words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, samplePageOptions, false,
+        bgWidthOverride, bgHeightOverride, backgroundPageNumber,
+        sampleCombine ? contourPageNumber : undefined,
+        sampleCombine ? clampedContourOffsetXMm : undefined,
+        sampleCombine ? clampedContourOffsetYMm : undefined,
+        undefined, undefined, bgRotation,
+        sampleCombine ? contourWidthOverride : undefined,
+        sampleCombine ? contourHeightOverride : undefined,
+        sampleCombine ? contourRotation : undefined,
+      )
+
+      await ensureWasmInit()
+      const bgBytes = new Uint8Array(await backgroundFile.arrayBuffer())
+      const contourBytes = sampleCombine ? new Uint8Array(await contourBackgroundFile!.arrayBuffer()) : undefined
+      const fontBytes = await Promise.all(fontResult.files.map(async (f) => new Uint8Array(await f.arrayBuffer())))
+
+      const out = generate_with_options(row, bgBytes, contourBytes, fontBytes, printOptions)
+      const pdf = out.pdf.slice()
+      out.free()
+      setSampleArtifact({ blob: new Blob([pdf], { type: 'application/pdf' }) })
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSampleLoading(false)
     }
   }
 
@@ -1457,10 +1696,18 @@ export default function App() {
               </>
             ) : backgroundSource === 'simple' ? (
               <>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime (mm)" value={simpleBgWidthMm} onChange={setSimpleBgWidthMm} />
-                  <NumberField label="Înălțime (mm)" value={simpleBgHeightMm} onChange={setSimpleBgHeightMm} />
-                </div>
+                <LinkedDimensions
+                  widthLabel="Lățime (mm)"
+                  heightLabel="Înălțime (mm)"
+                  width={simpleBgWidthMm}
+                  height={simpleBgHeightMm}
+                  onWidth={setSimpleBgWidthMm}
+                  onHeight={setSimpleBgHeightMm}
+                  // No source artwork — lock keeps the ratio currently set.
+                  aspect={simpleBgWidthMm / simpleBgHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                />
                 <ColorField
                   label="Culoare fundal (opțional)"
                   value={simpleBgColor}
@@ -1471,17 +1718,13 @@ export default function App() {
               </>
             ) : (
               <>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime (mm)" value={genBgWidthMm} onChange={setGenBgWidthMm} />
-                  <NumberField label="Înălțime (mm)" value={genBgHeightMm} onChange={setGenBgHeightMm} />
-                </div>
                 <FileField
                   label="Imagine fundal (PNG sau JPEG)"
                   accept="image/png,image/jpeg"
-                  onChange={(files) => setGenBgImageFile(files?.[0] ?? null)}
+                  onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                 />
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Imaginea este întinsă pentru a umple cardul la dimensiunile de mai sus.
+                  Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
                 </p>
                 {genBgLoading && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
@@ -1500,9 +1743,67 @@ export default function App() {
                     ({background.widthPt.toFixed(0)} × {background.heightPt.toFixed(0)} pt)
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime țintă (mm)" value={bgTargetWidthMm} onChange={setBgTargetWidthMm} />
-                  <NumberField label="Înălțime țintă (mm)" value={bgTargetHeightMm} onChange={setBgTargetHeightMm} />
+                <LinkedDimensions
+                  widthLabel="Lățime țintă (mm)"
+                  heightLabel="Înălțime țintă (mm)"
+                  width={bgTargetWidthMm}
+                  height={bgTargetHeightMm}
+                  onWidth={setBgTargetWidthMm}
+                  onHeight={setBgTargetHeightMm}
+                  // Live target ratio (starts at the PDF's detected ratio) so the
+                  // lock follows the orientation after a swap or rotation.
+                  aspect={bgTargetWidthMm / bgTargetHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                  onSwap={() => {
+                    const w = bgTargetWidthMm
+                    setBgTargetWidthMm(bgTargetHeightMm)
+                    setBgTargetHeightMm(w)
+                  }}
+                />
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={rotateBackground}
+                    title="Rotește fundalul cu 90° (portret ⇄ peisaj)"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    ↻ Rotește 90°
+                  </button>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                </div>
+              </>
+            )}
+            {backgroundSource === 'generate' && background && (
+              <>
+                <LinkedDimensions
+                  widthLabel="Lățime țintă (mm)"
+                  heightLabel="Înălțime țintă (mm)"
+                  width={genBgWidthMm}
+                  height={genBgHeightMm}
+                  onWidth={setGenBgWidthMm}
+                  onHeight={setGenBgHeightMm}
+                  // Live target ratio (starts at the image's aspect) so the lock
+                  // follows the orientation after a swap or rotation.
+                  aspect={genBgWidthMm / genBgHeightMm}
+                  locked={lockAspect}
+                  onToggleLock={() => setLockAspect((v) => !v)}
+                  onSwap={() => {
+                    const w = genBgWidthMm
+                    setGenBgWidthMm(genBgHeightMm)
+                    setGenBgHeightMm(w)
+                  }}
+                />
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={rotateBackground}
+                    title="Rotește imaginea cu 90° (portret ⇄ peisaj)"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    ↻ Rotește 90°
+                  </button>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
                 </div>
               </>
             )}
@@ -1571,6 +1872,41 @@ export default function App() {
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   Dimensiune contur: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
+                {/* Resize / switch dimensions / rotate apply to both the uploaded
+                    contour PDF and the generated preset shape (treated alike). */}
+                {(contourSource === 'upload' || contourSource === 'shape') && (
+                  <>
+                    <LinkedDimensions
+                      widthLabel="Lățime țintă contur (mm)"
+                      heightLabel="Înălțime țintă contur (mm)"
+                      width={contourTargetWidthMm}
+                      height={contourTargetHeightMm}
+                      onWidth={setContourTargetWidthMm}
+                      onHeight={setContourTargetHeightMm}
+                      // Live target ratio (starts at the contour's detected ratio)
+                      // so the lock follows the orientation after a swap or rotation.
+                      aspect={contourTargetWidthMm / contourTargetHeightMm}
+                      locked={contourLockAspect}
+                      onToggleLock={() => setContourLockAspect((v) => !v)}
+                      onSwap={() => {
+                        const w = contourTargetWidthMm
+                        setContourTargetWidthMm(contourTargetHeightMm)
+                        setContourTargetHeightMm(w)
+                      }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={rotateContour}
+                        title="Rotește conturul cu 90° (portret ⇄ peisaj)"
+                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        ↻ Rotește 90°
+                      </button>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
+                    </div>
+                  </>
+                )}
                 <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} />
                 <SelectField
                   label="Mod combinare contur"
@@ -1579,18 +1915,44 @@ export default function App() {
                   onChange={setContourBlendMode}
                 />
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
-                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                    <NumberField
-                      label={`Decalaj X contur (0–${contourOffsetMaxXMm.toFixed(1)} mm)`}
-                      value={clampedContourOffsetXMm}
-                      onChange={(v) => setContourOffsetXMm(Math.min(Math.max(0, v), contourOffsetMaxXMm))}
-                    />
-                    <NumberField
-                      label={`Decalaj Y contur (0–${contourOffsetMaxYMm.toFixed(1)} mm)`}
-                      value={clampedContourOffsetYMm}
-                      onChange={(v) => setContourOffsetYMm(Math.min(Math.max(0, v), contourOffsetMaxYMm))}
-                    />
-                  </div>
+                  <>
+                    <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                      <NumberField
+                        label={`Decalaj X contur (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
+                        value={clampedContourOffsetXMm}
+                        onChange={(v) => setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
+                      />
+                      <NumberField
+                        label={`Decalaj Y contur (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
+                        value={clampedContourOffsetYMm}
+                        onChange={(v) => setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
+                      />
+                    </div>
+                    {/* Snap the contour to the centre of its available room on each
+                        axis: the midpoint of [min, max] (0 for a centred full-card
+                        shape, (card − contour)/2 for a resized/corner-anchored one). */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <span className="text-sm text-gray-600 dark:text-gray-400">Centrează:</span>
+                      <button
+                        type="button"
+                        onClick={() => setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
+                        disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
+                        title="Centrează conturul pe orizontală"
+                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        ↔ Orizontal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
+                        disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
+                        title="Centrează conturul pe verticală"
+                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      >
+                        ↕ Vertical
+                      </button>
+                    </div>
+                  </>
                 ) : (
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Conturul ocupă tot fundalul — nu există spațiu pentru decalaj. Folosește un contur mai mic decât fundalul.
@@ -1705,6 +2067,11 @@ export default function App() {
                     setAutoTextColor(false)
                     updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
                   }}
+                />
+                <NumberField
+                  label="Opacitate (0-1)"
+                  value={selected.opacity}
+                  onChange={(v) => updateWord(selectedIndex, { opacity: Math.min(Math.max(0, v), 1) })}
                 />
                 <SelectField
                   label="Mod îmbinare text"
@@ -1899,16 +2266,14 @@ export default function App() {
               <CheckboxField
                 label="Non-decupare"
                 checked={pageOptions.noCut}
-                onChange={(v) =>
-                  // "Combină paginile" and "cu contur" are mutually exclusive
-                  // (grid vs no-cut); switching modes hides one checkbox, so clear
-                  // the now-hidden flag instead of leaving a stale value behind.
-                  setPageOptions((prev) => ({ ...prev, noCut: v, combine: v ? false : prev.combine, cuContur: v ? prev.cuContur : false }))
-                }
+                onChange={(v) => setPageOption('noCut', v)}
               />
               {pageOptions.noCut ? (
-                needsPrintInput && contourBackgroundFile != null && (
-                  <CheckboxField label="cu contur" checked={pageOptions.cuContur} onChange={(v) => setPageOption('cuContur', v)} />
+                // "Combină paginile" needs a contour to overlay, so it only shows
+                // in no-cut mode once a contour PDF is loaded.
+                needsPrintInput &&
+                contourBackgroundFile != null && (
+                  <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
                 )
               ) : (
                 <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
@@ -1922,7 +2287,7 @@ export default function App() {
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
                 {needsPrintInput && contourBackgroundFile != null
-                  ? ' „cu contur” adaugă PDF-ul de contur ca fișier separat în arhivă.'
+                  ? ' „Combină paginile” suprapune conturul peste fundal ca strat vizibil pe ecran (neimprimabil).'
                   : ''}
               </p>
             )}
@@ -1957,13 +2322,25 @@ export default function App() {
                 </span>
               </div>
             ) : (
-              <button
-                type="button"
-                onClick={handleGenerate}
-                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
-              >
-                Generează PDF
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleGenerate}
+                  disabled={sampleLoading}
+                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
+                >
+                  Generează PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateSample}
+                  disabled={sampleLoading}
+                  title="Generează un singur card cu conturul deasupra — o probă rapidă, fără tot lotul."
+                  className="self-start rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  {sampleLoading ? 'Se generează mostra…' : 'Generează o mostră (un card)'}
+                </button>
+              </div>
             )}
             {genError && <p className="text-sm text-red-600 dark:text-red-400">{genError}</p>}
               </>
@@ -2003,8 +2380,8 @@ export default function App() {
                   cardWidthPt={effectiveCardWidthMm * MM}
                   cardHeightPt={effectiveCardHeightMm * MM}
                   contourImageUrl={contourBackground?.imageUrl ?? null}
-                  contourWidthPt={contourBackground?.widthPt ?? 0}
-                  contourHeightPt={contourBackground?.heightPt ?? 0}
+                  contourWidthPt={effectiveContourWidthMm * MM}
+                  contourHeightPt={effectiveContourHeightMm * MM}
                   contourOffsetXPt={clampedContourOffsetXMm * MM}
                   contourOffsetYPt={clampedContourOffsetYMm * MM}
                   contourOpacity={contourOpacity}
@@ -2028,8 +2405,16 @@ export default function App() {
             )}
           </Section>
 
-          {(printArtifact || contourResult) && (
+          {(printArtifact || contourResult || sampleArtifact) && (
             <Section title="Rezultat">
+              {sampleArtifact && (
+                <FileDownload
+                  title="Mostră (un card)"
+                  blob={sampleArtifact.blob}
+                  name="mostra.pdf"
+                  note="Probă cu un singur card — conturul este suprapus ca strat vizibil pe ecran (neimprimabil)."
+                />
+              )}
               {printArtifact && (
                 <FileDownload
                   title="Print"
@@ -2053,6 +2438,12 @@ export default function App() {
                 </p>
               )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
+              {mode === 'both' && printArtifact && contourResult && (
+                <DownloadBothButton
+                  print={{ blob: printArtifact.blob, name: printArtifact.name, isZip: printArtifact.isZip }}
+                  contourPdf={contourResult.pdf}
+                />
+              )}
             </Section>
           )}
         </div>

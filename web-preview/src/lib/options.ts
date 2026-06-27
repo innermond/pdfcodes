@@ -59,6 +59,8 @@ export interface WordStyle {
   xMm: number | null
   yMm: number
   color: string
+  // Opacity (0 transparent – 1 opaque) of the code's text fill.
+  opacity: number
   blendMode: BlendMode
   rotationDeg: number
   flipX: boolean
@@ -88,6 +90,7 @@ export function defaultWordStyle(index: number): WordStyle {
     xMm: null,
     yMm: index === 0 ? 10 : 3,
     color: '0:0:0:1', // CMYK black
+    opacity: 1,
     blendMode: 'normal',
     rotationDeg: 0,
     flipX: false,
@@ -194,9 +197,6 @@ export interface PageOptions {
   // "Non-decupare" (no-cut): one card per page, page sized to the card, no
   // imposition grid and no registration circles.
   noCut: boolean
-  // When `noCut` is set, also bundle the contour PDF as a separate file in the
-  // (always-ZIP) print archive. Handled by the generation worker, not Rust.
-  cuContur: boolean
 }
 
 // Defaults mirror `Options::default()` in src/options.rs.
@@ -214,7 +214,6 @@ export const defaultPageOptions: PageOptions = {
   preparationTimeS: 60,
   travelSpeedMmS: 16,
   noCut: false,
-  cuContur: false,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s
@@ -243,6 +242,15 @@ export function buildJsOptions(
   contourOffsetYMm?: number | null,
   contourCanvasWidthMm?: number | null,
   contourCanvasHeightMm?: number | null,
+  // Extra clockwise rotation (deg, multiple of 90) applied to the print background.
+  backgroundRotation?: number | null,
+  // Resize/rotate applied to the contour in the combine overlay so it matches
+  // the standalone cut (which receives the same transform through the background
+  // pipeline). Width/height are the target card-mm; rotation is clockwise degrees
+  // (multiple of 90). Only consumed when an overlay is built (combine).
+  contourTargetWidthMm?: number | null,
+  contourTargetHeightMm?: number | null,
+  contourRotation?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -265,13 +273,15 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.xMm!))
       : new Float32Array(),
     align: words.map((w) => w.align),
-    // "Combină paginile" is a grid-mode (decupare) overlay; force it off in
-    // no-cut mode so a stale value can't keep merging the contour onto pages.
-    combine: page.combine && !page.noCut,
+    // "Combină paginile" overlays the contour onto the print pages (view-only,
+    // non-printing). It works in both grid (decupare) and no-cut mode.
+    combine: page.combine,
     debug: page.debug,
     noCut: page.noCut,
     safeMarginMm,
     textColors: words.map((w) => w.color),
+    // Text fill opacity, one per word (always sent — text always renders).
+    textAlphas: new Float32Array(words.map((w) => w.opacity ?? 1)),
     textBlendModes: words.map((w) => w.blendMode),
     textRotations: new Float32Array(words.map((w) => w.rotationDeg)),
     textFlipX: words.map((w) => w.flipX),
@@ -295,10 +305,14 @@ export function buildJsOptions(
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
+    ...(backgroundRotation != null && backgroundRotation !== 0 ? { backgroundRotation } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
     ...(contourOffsetXMm != null && contourOffsetXMm !== 0 ? { contourOffsetXMm } : {}),
     ...(contourOffsetYMm != null && contourOffsetYMm !== 0 ? { contourOffsetYMm } : {}),
     ...(contourCanvasWidthMm != null && contourCanvasWidthMm > 0 ? { contourCanvasWidthMm } : {}),
     ...(contourCanvasHeightMm != null && contourCanvasHeightMm > 0 ? { contourCanvasHeightMm } : {}),
+    ...(contourTargetWidthMm != null && contourTargetWidthMm > 0 ? { contourTargetWidthMm } : {}),
+    ...(contourTargetHeightMm != null && contourTargetHeightMm > 0 ? { contourTargetHeightMm } : {}),
+    ...(contourRotation != null && contourRotation !== 0 ? { contourRotation } : {}),
   }
 }

@@ -78,6 +78,9 @@ pub struct Options {
     // rectangle, one per word position (or a single entry for every word).
     // Empty means fully opaque.
     pub text_background_alphas: Vec<f32>,
+    // Opacity (0.0 transparent - 1.0 opaque) of the text fill itself, one per
+    // word position (or a single entry for every word). Empty means fully opaque.
+    pub text_alphas: Vec<f32>,
     // Blend mode for the `text_backgrounds` rectangle, one per word position
     // (or a single entry for every word). Empty means `Normal` for every
     // word.
@@ -116,6 +119,9 @@ pub struct Options {
     // separately-loaded contour PDF used by the `--combineb` overlay.
     pub background_page_number: u32,
     pub contour_page_number: u32,
+    // Extra clockwise rotation (degrees, multiple of 90) the user applied to the
+    // print background, added to the page's own /Rotate before baking. Default 0.
+    pub background_rotation: i64,
     // "Non-decupare" (no-cut) mode: skip imposition entirely. Each card (or the
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
@@ -131,6 +137,14 @@ pub struct Options {
     // in the right place. `None`/0 keeps the contour's own size (legacy).
     pub contour_canvas_width_mm: Option<f32>,
     pub contour_canvas_height_mm: Option<f32>,
+    // Resize/rotate applied to the contour in the combine overlay so it matches
+    // the standalone cut (which gets the same transform through the background
+    // pipeline). Width/height are the target card size in mm (`None`/0 keeps the
+    // contour's own size); rotation is clockwise degrees (multiple of 90),
+    // combined with the contour page's own /Rotate. Default: no transform.
+    pub contour_target_width_mm: Option<f32>,
+    pub contour_target_height_mm: Option<f32>,
+    pub contour_rotation: i64,
 }
 
 impl Options {
@@ -170,6 +184,7 @@ impl Default for Options {
             text_background_padding_mm: 0.0,
             text_background_widths_mm: Vec::new(),
             text_background_alphas: Vec::new(),
+            text_alphas: Vec::new(),
             text_background_blend_modes: Vec::new(),
             split_chars: " ".to_string(),
             card_width_mm: None,
@@ -181,11 +196,15 @@ impl Default for Options {
             text_char_spacing_pt: Vec::new(),
             background_page_number: 1,
             contour_page_number: 1,
+            background_rotation: 0,
             no_cut: false,
             contour_offset_x_mm: 0.0,
             contour_offset_y_mm: 0.0,
             contour_canvas_width_mm: None,
             contour_canvas_height_mm: None,
+            contour_target_width_mm: None,
+            contour_target_height_mm: None,
+            contour_rotation: 0,
         }
     }
 }

@@ -165,6 +165,22 @@ describe('generateCodesCsv', () => {
   it('returns an empty string for zero rows', () => {
     expect(generateCodesCsv(0, [defaultCodeColumn()], ' ')).toBe('')
   })
+
+  it('repeats the fixed text on every row in text mode', () => {
+    const csv = generateCodesCsv(3, [column({ mode: 'text', text: 'SPECIMEN' })], ' ')
+    expect(csv.split('\n')).toEqual(['SPECIMEN', 'SPECIMEN', 'SPECIMEN'])
+  })
+
+  it('applies prefix/postfix to a fixed text but no padding', () => {
+    const csv = generateCodesCsv(1, [column({ mode: 'text', text: 'WM', prefix: '[', postfix: ']', padMode: 'width', padChar: '0', padLength: 10 })], ' ')
+    expect(csv).toBe('[WM]')
+  })
+
+  it('mixes a fixed-text column with a generated one', () => {
+    const columns = [column({ mode: 'range', rangeStart: 1 }), column({ mode: 'text', text: 'COPY' })]
+    const csv = generateCodesCsv(2, columns, ';')
+    expect(csv.split('\n')).toEqual(['1;COPY', '2;COPY'])
+  })
 })
 
 describe('generateCsvPreview', () => {
@@ -181,11 +197,18 @@ describe('generateCsvPreview', () => {
 })
 
 describe('streamCodesCsv', () => {
-  async function collect(generator: AsyncGenerator<{ text: string; rowsDone: number }>) {
-    const chunks: { text: string; rowsDone: number }[] = []
+  async function collect(generator: AsyncGenerator<{ text: string; rowsDone: number; duplicates: number }>) {
+    const chunks: { text: string; rowsDone: number; duplicates: number }[] = []
     for await (const chunk of generator) chunks.push(chunk)
     return chunks
   }
+
+  it('never reports duplicates for a fixed-text column, even when every row repeats', async () => {
+    const chunks = await collect(streamCodesCsv(50, [column({ mode: 'text', text: 'SAME' })], ' ', 20))
+    expect(chunks.at(-1)?.duplicates).toBe(0)
+    const lines = chunks.map((c) => c.text).join('').split('\n').filter((l) => l.length > 0)
+    expect(lines).toEqual(Array.from({ length: 50 }, () => 'SAME'))
+  })
 
   it('yields the full CSV across multiple chunks with increasing rowsDone', async () => {
     const columns = [column({ mode: 'range', rangeStart: 1 })]
