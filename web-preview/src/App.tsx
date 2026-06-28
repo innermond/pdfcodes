@@ -271,10 +271,11 @@ export default function App() {
   // the contour box stays fully inside the background — see contourOffsetMax*.
   const [contourOffsetXMm, setContourOffsetXMm] = useState(0)
   const [contourOffsetYMm, setContourOffsetYMm] = useState(0)
-  // Whether the contour offset is still auto-centered (kept centered as the card
-  // or contour is resized) vs. explicitly nudged by the user (then preserved).
-  // A ref so flipping it doesn't itself trigger a render.
-  const contourOffsetAutoRef = useRef(true)
+  // Last contour offset bounds, used to preserve the offset's *relative* position
+  // (its fraction of the available slack) when the card or contour is resized —
+  // so a centered contour stays centered and a nudged one stays proportional,
+  // instead of keeping a stale absolute mm that drifts off as dimensions change.
+  const prevContourBoundsRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null)
 
   const [sampleText, setSampleText] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
@@ -503,38 +504,48 @@ export default function App() {
   const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
   const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
 
-  // Keep the contour centered as the card or the contour is resized, so a size
-  // change never leaves a stale absolute offset that's off-position in the new
-  // dimensions (e.g. changing the background width while the contour keeps its
-  // old X). Runs only while the offset is auto (the user hasn't nudged it) and
-  // for preset shapes; the user's manual offsets and uploaded contours are left
-  // alone. Bounds (min/max) change with the dimensions, so centering on them
-  // covers both background and contour resizes, in any order.
+  // Preserve the contour offset's relative position across any resize of the card
+  // or the contour. We remember the previous bounds and re-express the offset at
+  // the same fraction of the new bounds, so: a centered contour (fraction 0.5)
+  // stays centered, and a nudged one keeps its proportional spot — instead of a
+  // stale absolute mm that ends up off-position when dimensions change (the
+  // reported bug). Only for preset shapes; uploaded contours keep their absolute
+  // placement. The offset itself is in the deps so its closure is never stale.
   useEffect(() => {
-    if (contourSource !== 'shape' || !contourBackground || !contourOffsetAutoRef.current) return
-    const cx = (contourOffsetMinXMm + contourOffsetMaxXMm) / 2
-    const cy = (contourOffsetMinYMm + contourOffsetMaxYMm) / 2
+    if (contourSource !== 'shape' || !contourBackground) { prevContourBoundsRef.current = null; return }
+    const cur = { minX: contourOffsetMinXMm, maxX: contourOffsetMaxXMm, minY: contourOffsetMinYMm, maxY: contourOffsetMaxYMm }
+    const prev = prevContourBoundsRef.current
+    prevContourBoundsRef.current = cur
+    if (!prev) return
+    const fx = prev.maxX > prev.minX ? (contourOffsetXMm - prev.minX) / (prev.maxX - prev.minX) : 0.5
+    const fy = prev.maxY > prev.minY ? (contourOffsetYMm - prev.minY) / (prev.maxY - prev.minY) : 0.5
+    const nx = cur.minX + fx * (cur.maxX - cur.minX)
+    const ny = cur.minY + fy * (cur.maxY - cur.minY)
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setContourOffsetXMm(cx)
-    setContourOffsetYMm(cy)
-  }, [contourSource, contourBackground, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
+    if (Math.abs(nx - contourOffsetXMm) > 1e-6) setContourOffsetXMm(nx)
+    if (Math.abs(ny - contourOffsetYMm) > 1e-6) setContourOffsetYMm(ny)
+  }, [contourSource, contourBackground, contourOffsetXMm, contourOffsetYMm, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
 
   // Cut region for the preview's "dim exterior" overlay. A preset shape is always
   // generated at its native (card) size, so derive its tight box there and pass
   // it as fractions of that native size (PDF y-up); an uploaded contour has no
   // fillable region, so leave it null and let CardCanvas dim outside its bbox.
   const contourCutShape: ContourCutShape | null =
-    contourSource === 'shape' && contourBackground
+    contourSource === 'shape' && contourBackground && effectiveCardWidthMm > 0 && effectiveCardHeightMm > 0
       ? (() => {
-          const nW = contourBackground.widthPt / MM
-          const nH = contourBackground.heightPt / MM
-          const b = contourBoxMm(shapeKind, nW, nH, shapeInsetMm)
+          // The shape is drawn at the (unrotated) card size, then rendered rotated.
+          // Build the box from the unrotated dims and pass `rotation` so CardCanvas
+          // rotates the mask to match the rendered contour image.
+          const uW = effectiveCardWidthMm
+          const uH = effectiveCardHeightMm
+          const b = contourBoxMm(shapeKind, uW, uH, shapeInsetMm)
           return {
             kind: shapeKind,
             orientation: shapeCornerOrientation,
-            frac: { x: b.x / nW, y: b.y / nH, w: b.w / nW, h: b.h / nH },
-            rxFrac: shapeCornerRadiusMm / nW,
-            ryFrac: shapeCornerRadiusMm / nH,
+            rotation: contourRotation,
+            frac: { x: b.x / uW, y: b.y / uH, w: b.w / uW, h: b.h / uH },
+            rxFrac: shapeCornerRadiusMm / uW,
+            ryFrac: shapeCornerRadiusMm / uH,
           }
         })()
       : null
@@ -868,10 +879,11 @@ export default function App() {
         if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
         if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
-        // A saved offset is an explicit placement — preserve it (don't let the
-        // auto-center effect overwrite it on load).
-        if (typeof preset.contourOffsetXMm === 'number') { contourOffsetAutoRef.current = false; setContourOffsetXMm(preset.contourOffsetXMm) }
-        if (typeof preset.contourOffsetYMm === 'number') { contourOffsetAutoRef.current = false; setContourOffsetYMm(preset.contourOffsetYMm) }
+        // A saved offset is an explicit placement — load it as the new baseline
+        // (clearing remembered bounds so it isn't rescaled against stale slack).
+        prevContourBoundsRef.current = null
+        if (typeof preset.contourOffsetXMm === 'number') setContourOffsetXMm(preset.contourOffsetXMm)
+        if (typeof preset.contourOffsetYMm === 'number') setContourOffsetYMm(preset.contourOffsetYMm)
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
         const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
@@ -1291,10 +1303,11 @@ export default function App() {
     setContourTargetWidthMm(NaN)
     setContourTargetHeightMm(NaN)
     setContourRotation(0)
-    // A freshly selected preset shape starts full-card (auto-tracks the card)
-    // and auto-centered (offset follows resizes until the user nudges it).
+    // A freshly selected preset shape starts full-card (auto-tracks the card).
+    // Drop the remembered offset bounds so the new contour isn't rescaled
+    // against the previous source's slack.
     contourShapeTargetAutoRef.current = true
-    contourOffsetAutoRef.current = true
+    prevContourBoundsRef.current = null
     if (source === 'upload') {
       setContourBackground(null)
       setContourBackgroundFile(null)
@@ -1769,7 +1782,7 @@ export default function App() {
     <ColorSampleContext.Provider value={background ? requestColorSample : null}>
     <div className="mx-auto max-w-6xl px-4 py-8 dark:bg-gray-950 dark:text-gray-100">
       <div className="mb-1 flex items-start justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">pdfcodes preview</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Printare coduri unice / Decupare pe contur</h1>
         <button
           type="button"
           onClick={toggleTheme}
@@ -2117,13 +2130,14 @@ export default function App() {
                       <NumberField
                         label={`Decalaj X contur (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetXMm}
-                        // Explicit nudge: stop auto-centering so this position sticks.
-                        onChange={(v) => { contourOffsetAutoRef.current = false; setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm)) }}
+                        // A nudge sets a relative position that's then preserved
+                        // proportionally across later resizes (see the effect above).
+                        onChange={(v) => setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
                       />
                       <NumberField
                         label={`Decalaj Y contur (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetYMm}
-                        onChange={(v) => { contourOffsetAutoRef.current = false; setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm)) }}
+                        onChange={(v) => setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
                       />
                     </div>
                     {/* Snap the contour to the centre of its available room on each
@@ -2133,7 +2147,7 @@ export default function App() {
                       <span className="text-sm text-gray-600 dark:text-gray-400">Centrează:</span>
                       <button
                         type="button"
-                        onClick={() => { contourOffsetAutoRef.current = true; setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2) }}
+                        onClick={() => setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
                         disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
                         title="Centrează conturul pe orizontală"
                         className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -2142,7 +2156,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => { contourOffsetAutoRef.current = true; setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2) }}
+                        onClick={() => setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
                         disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
                         title="Centrează conturul pe verticală"
                         className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -2406,8 +2420,8 @@ export default function App() {
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 După descărcare,{' '}
                 <a
-                  href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent('Cerere ofertă pdfcodes')}&body=${encodeURIComponent(
-                    'Bună,\n\nAș dori o ofertă pentru proiectul meu. Am atașat fișierul .zip cu setările descărcat din pdfcodes preview.\n\n' +
+                  href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent('Cerere ofertă')}&body=${encodeURIComponent(
+                    'Bună,\n\nAș dori o ofertă pentru proiectul meu. Am atașat fișierul .zip cu setările descărcat din aplicatia de printare coduri si decupare pe contur.\n\n' +
                       'Trebuie să vă trimit și un fișier cu codurile, sau sa va spun cum să fie generate.\n\nMulțumesc!',
                   )}`}
                   className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"

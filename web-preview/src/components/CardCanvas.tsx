@@ -11,6 +11,9 @@ import { WordOverlay } from './WordOverlay'
 export type ContourCutShape = {
   kind: string
   orientation: 'out' | 'in'
+  // Clockwise rotation (deg) applied to the rendered contour image; the mask is
+  // rotated to match. The frac/box are in the shape's *unrotated* card frame.
+  rotation: number
   frac: { x: number; y: number; w: number; h: number }
   rxFrac: number
   ryFrac: number
@@ -70,14 +73,24 @@ export function CardCanvas({
     const ih = contourHeightPt
     const iy = cardHeightPt - contourHeightPt - contourOffsetYPt
     if (contourCutShape) {
-      const { frac, rxFrac, ryFrac, kind, orientation } = contourCutShape
+      const { frac, rxFrac, ryFrac, kind, orientation, rotation } = contourCutShape
+      // The rendered contour image is the unrotated shape rotated `rot` clockwise
+      // and scaled into [ix,iy,iw,ih]. Reproduce that: build the shape in its
+      // unrotated footprint (dims swapped for 90/270) centered on the rect, then
+      // rotate it about the rect center to match the image.
+      const rot = ((rotation % 360) + 360) % 360
+      const cx = ix + iw / 2, cy = iy + ih / 2
+      const swapped = rot === 90 || rot === 270
+      const boxW = swapped ? ih : iw
+      const boxH = swapped ? iw : ih
+      const x0 = cx - boxW / 2, y0 = cy - boxH / 2
       const d = contourMaskPathD(
         kind,
-        // Flip Y: the normalized box is PDF y-up; the image rect is SVG y-down.
-        { x: ix + frac.x * iw, y: iy + (1 - (frac.y + frac.h)) * ih, w: frac.w * iw, h: frac.h * ih },
-        { rx: rxFrac * iw, ry: ryFrac * ih, orientation },
+        // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
+        { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
+        { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation },
       )
-      return <path d={d} fill="black" />
+      return <path d={d} fill="black" transform={rot ? `rotate(${rot} ${cx} ${cy})` : undefined} />
     }
     // Uploaded contour: no fillable region, so dim outside its bounding box.
     return <rect x={ix} y={iy} width={iw} height={ih} fill="black" />
