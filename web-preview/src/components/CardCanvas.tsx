@@ -1,7 +1,20 @@
-import { useRef } from 'react'
+import { useId, useRef } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
 import type { BlendMode, WordStyle } from '../lib/options'
+import { contourMaskPathD } from '../lib/contourMask'
 import { WordOverlay } from './WordOverlay'
+
+// Describes the cut region for the "dim exterior" overlay. A preset shape carries
+// its kind + normalized box (fractions of the contour's own space, PDF y-up) so
+// the mask is shape-precise; `null` (an uploaded contour) falls back to the
+// contour's bounding box.
+export type ContourCutShape = {
+  kind: string
+  orientation: 'out' | 'in'
+  frac: { x: number; y: number; w: number; h: number }
+  rxFrac: number
+  ryFrac: number
+}
 
 export function CardCanvas({
   backgroundImageUrl,
@@ -14,6 +27,8 @@ export function CardCanvas({
   contourOffsetYPt = 0,
   contourOpacity,
   contourBlendMode,
+  dimExterior = false,
+  contourCutShape = null,
   words,
   fonts,
   safeMarginMm,
@@ -33,6 +48,9 @@ export function CardCanvas({
   contourOffsetYPt?: number
   contourOpacity: number
   contourBlendMode: BlendMode
+  // Dim everything outside the cut region so the user sees what the cut keeps.
+  dimExterior?: boolean
+  contourCutShape?: ContourCutShape | null
   words: WordStyle[]
   fonts: (LoadedFont | null)[]
   safeMarginMm: number
@@ -42,6 +60,28 @@ export function CardCanvas({
   onChangeWord: (index: number, next: Partial<WordStyle>) => void
 }) {
   const svgRef = useRef<SVGSVGElement>(null)
+  const maskId = useId()
+
+  // The "dim exterior" knockout: the cut region to keep bright, positioned to
+  // match exactly where the contour image is drawn below (lines for x/y/w/h).
+  const dimKnockout = dimExterior && contourImageUrl ? (() => {
+    const ix = contourOffsetXPt
+    const iw = contourWidthPt
+    const ih = contourHeightPt
+    const iy = cardHeightPt - contourHeightPt - contourOffsetYPt
+    if (contourCutShape) {
+      const { frac, rxFrac, ryFrac, kind, orientation } = contourCutShape
+      const d = contourMaskPathD(
+        kind,
+        // Flip Y: the normalized box is PDF y-up; the image rect is SVG y-down.
+        { x: ix + frac.x * iw, y: iy + (1 - (frac.y + frac.h)) * ih, w: frac.w * iw, h: frac.h * ih },
+        { rx: rxFrac * iw, ry: ryFrac * ih, orientation },
+      )
+      return <path d={d} fill="black" />
+    }
+    // Uploaded contour: no fillable region, so dim outside its bounding box.
+    return <rect x={ix} y={iy} width={iw} height={ih} fill="black" />
+  })() : null
 
   return (
     <svg
@@ -75,6 +115,17 @@ export function CardCanvas({
           opacity={contourOpacity}
           style={{ mixBlendMode: contourBlendMode }}
         />
+      )}
+      {dimKnockout && (
+        <>
+          <defs>
+            <mask id={maskId}>
+              <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="white" />
+              {dimKnockout}
+            </mask>
+          </defs>
+          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="black" opacity={0.58} mask={`url(#${maskId})`} />
+        </>
       )}
       {words.map((word, index) => (
         <WordOverlay

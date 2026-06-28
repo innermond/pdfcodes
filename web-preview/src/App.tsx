@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { CardCanvas } from './components/CardCanvas'
+import { CardCanvas, type ContourCutShape } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
 import { CheckboxField, ColorField, FileField, LinkedDimensions, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
@@ -258,6 +258,9 @@ export default function App() {
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
   const [contourOpacity, setContourOpacity] = useState(1.0)
   const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
+  // Preview-only: dim everything outside the cut region so the user can see what
+  // the contour keeps from the background. Does not affect the generated PDFs.
+  const [dimContourExterior, setDimContourExterior] = useState(false)
   const [contourSource, setContourSource] = useState<ContourSource>('upload')
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
   const [shapeInsetMm, setShapeInsetMm] = useState(2)
@@ -268,6 +271,10 @@ export default function App() {
   // the contour box stays fully inside the background — see contourOffsetMax*.
   const [contourOffsetXMm, setContourOffsetXMm] = useState(0)
   const [contourOffsetYMm, setContourOffsetYMm] = useState(0)
+  // Whether the contour offset is still auto-centered (kept centered as the card
+  // or contour is resized) vs. explicitly nudged by the user (then preserved).
+  // A ref so flipping it doesn't itself trigger a render.
+  const contourOffsetAutoRef = useRef(true)
 
   const [sampleText, setSampleText] = useState('')
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
@@ -495,6 +502,42 @@ export default function App() {
   // out-of-range value reaching the preview or the generator.
   const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
   const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
+
+  // Keep the contour centered as the card or the contour is resized, so a size
+  // change never leaves a stale absolute offset that's off-position in the new
+  // dimensions (e.g. changing the background width while the contour keeps its
+  // old X). Runs only while the offset is auto (the user hasn't nudged it) and
+  // for preset shapes; the user's manual offsets and uploaded contours are left
+  // alone. Bounds (min/max) change with the dimensions, so centering on them
+  // covers both background and contour resizes, in any order.
+  useEffect(() => {
+    if (contourSource !== 'shape' || !contourBackground || !contourOffsetAutoRef.current) return
+    const cx = (contourOffsetMinXMm + contourOffsetMaxXMm) / 2
+    const cy = (contourOffsetMinYMm + contourOffsetMaxYMm) / 2
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setContourOffsetXMm(cx)
+    setContourOffsetYMm(cy)
+  }, [contourSource, contourBackground, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
+
+  // Cut region for the preview's "dim exterior" overlay. A preset shape is always
+  // generated at its native (card) size, so derive its tight box there and pass
+  // it as fractions of that native size (PDF y-up); an uploaded contour has no
+  // fillable region, so leave it null and let CardCanvas dim outside its bbox.
+  const contourCutShape: ContourCutShape | null =
+    contourSource === 'shape' && contourBackground
+      ? (() => {
+          const nW = contourBackground.widthPt / MM
+          const nH = contourBackground.heightPt / MM
+          const b = contourBoxMm(shapeKind, nW, nH, shapeInsetMm)
+          return {
+            kind: shapeKind,
+            orientation: shapeCornerOrientation,
+            frac: { x: b.x / nW, y: b.y / nH, w: b.w / nW, h: b.h / nH },
+            rxFrac: shapeCornerRadiusMm / nW,
+            ryFrac: shapeCornerRadiusMm / nH,
+          }
+        })()
+      : null
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -825,8 +868,10 @@ export default function App() {
         if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
         if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
-        if (typeof preset.contourOffsetXMm === 'number') setContourOffsetXMm(preset.contourOffsetXMm)
-        if (typeof preset.contourOffsetYMm === 'number') setContourOffsetYMm(preset.contourOffsetYMm)
+        // A saved offset is an explicit placement — preserve it (don't let the
+        // auto-center effect overwrite it on load).
+        if (typeof preset.contourOffsetXMm === 'number') { contourOffsetAutoRef.current = false; setContourOffsetXMm(preset.contourOffsetXMm) }
+        if (typeof preset.contourOffsetYMm === 'number') { contourOffsetAutoRef.current = false; setContourOffsetYMm(preset.contourOffsetYMm) }
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
         const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
@@ -1246,8 +1291,10 @@ export default function App() {
     setContourTargetWidthMm(NaN)
     setContourTargetHeightMm(NaN)
     setContourRotation(0)
-    // A freshly selected preset shape starts full-card (auto-tracks the card).
+    // A freshly selected preset shape starts full-card (auto-tracks the card)
+    // and auto-centered (offset follows resizes until the user nudges it).
     contourShapeTargetAutoRef.current = true
+    contourOffsetAutoRef.current = true
     if (source === 'upload') {
       setContourBackground(null)
       setContourBackgroundFile(null)
@@ -2019,6 +2066,10 @@ export default function App() {
                       height={contourTargetHeightMm}
                       // Editing the target is an explicit resize: stop auto-tracking
                       // the card so a preset shape keeps the user's chosen size.
+                      // Editing the target is an explicit resize: stop auto-tracking
+                      // the card so a preset shape keeps the user's chosen size. The
+                      // offset stays auto-centered (see the effect below) so the
+                      // resized shape doesn't jump to the corner.
                       onWidth={(v) => { contourShapeTargetAutoRef.current = false; setContourTargetWidthMm(v) }}
                       onHeight={(v) => { contourShapeTargetAutoRef.current = false; setContourTargetHeightMm(v) }}
                       // Live target ratio (starts at the contour's detected ratio)
@@ -2053,18 +2104,26 @@ export default function App() {
                   options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                   onChange={setContourBlendMode}
                 />
+                {/* Preview-only aid: dims the background outside the cut so the
+                    user sees what the contour keeps. Doesn't change the output. */}
+                <CheckboxField
+                  label="Întunecă exteriorul conturului (doar previzualizare)"
+                  checked={dimContourExterior}
+                  onChange={setDimContourExterior}
+                />
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
                   <>
                     <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                       <NumberField
                         label={`Decalaj X contur (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetXMm}
-                        onChange={(v) => setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
+                        // Explicit nudge: stop auto-centering so this position sticks.
+                        onChange={(v) => { contourOffsetAutoRef.current = false; setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm)) }}
                       />
                       <NumberField
                         label={`Decalaj Y contur (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetYMm}
-                        onChange={(v) => setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
+                        onChange={(v) => { contourOffsetAutoRef.current = false; setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm)) }}
                       />
                     </div>
                     {/* Snap the contour to the centre of its available room on each
@@ -2074,7 +2133,7 @@ export default function App() {
                       <span className="text-sm text-gray-600 dark:text-gray-400">Centrează:</span>
                       <button
                         type="button"
-                        onClick={() => setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
+                        onClick={() => { contourOffsetAutoRef.current = true; setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2) }}
                         disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
                         title="Centrează conturul pe orizontală"
                         className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -2083,7 +2142,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
+                        onClick={() => { contourOffsetAutoRef.current = true; setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2) }}
                         disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
                         title="Centrează conturul pe verticală"
                         className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -2567,6 +2626,8 @@ export default function App() {
                       contourOffsetYPt={clampedContourOffsetYMm * MM}
                       contourOpacity={contourOpacity}
                       contourBlendMode={contourBlendMode}
+                      dimExterior={dimContourExterior}
+                      contourCutShape={contourCutShape}
                       words={words}
                       fonts={fonts}
                       safeMarginMm={safeMarginMm}
