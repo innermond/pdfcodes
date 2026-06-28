@@ -67,6 +67,12 @@ interface Preset {
 // the client. Set VITE_GENERATE_PASSWORD to enable the gate; if unset, the
 // section is always shown.
 const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | undefined
+// Base URL of a server-side proxy used to fetch remote background images,
+// sidestepping the browser's CORS restrictions. The target image URL is
+// URL-encoded and appended, so the value must end with the query/path that
+// receives it, e.g. `/image-proxy?url=` (Laravel) or `http://localhost:8000/proxy.php?url=`
+// (local PHP during dev). If unset, remote-URL background fetching is disabled.
+const IMAGE_PROXY = import.meta.env.VITE_IMAGE_PROXY as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
 const SEPARATOR_DEFAULT = ','
 
@@ -244,6 +250,9 @@ export default function App() {
   const [genBgHeightMm, setGenBgHeightMm] = useState(54)
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
+  // The image can come from a local file picker or a remote URL (sub-toggle).
+  const [genBgImageSource, setGenBgImageSource] = useState<'file' | 'url'>('file')
+  const [genBgImageUrl, setGenBgImageUrl] = useState('')
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
@@ -1052,6 +1061,43 @@ export default function App() {
       .catch(() => {})
   }
 
+  // Fetch a remote PNG/JPEG (always through the server-side `IMAGE_PROXY` to
+  // sidestep CORS) and feed it through the same pipeline as a local file. The
+  // bytes are validated by magic number (not the server's content-type) and
+  // wrapped in a File so `handleGenBgImageChange` drives the rest unchanged.
+  async function handleGenBgUrlLoad() {
+    const url = genBgImageUrl.trim()
+    if (!url) return
+    if (!IMAGE_PROXY) {
+      setBackgroundError('Descărcarea după URL nu este configurată (lipsește proxy-ul de imagini).')
+      return
+    }
+    setGenBgLoading(true)
+    setBackgroundError(null)
+    try {
+      const resp = await fetch(IMAGE_PROXY + encodeURIComponent(url))
+      if (!resp.ok) throw new Error(`Nu s-a putut descărca imaginea (HTTP ${resp.status}).`)
+      const blob = await resp.blob()
+      const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+      const isPng = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47
+      const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff
+      if (!isPng && !isJpeg) throw new Error('Doar imagini PNG sau JPEG sunt acceptate.')
+      const type = isPng ? 'image/png' : 'image/jpeg'
+      const name = url.split('/').pop()?.split('?')[0] || (isPng ? 'fundal.png' : 'fundal.jpg')
+      handleGenBgImageChange(new File([blob], name, { type }))
+    } catch (err) {
+      // Network failures (proxy down/unreachable) surface as a TypeError.
+      setBackgroundError(
+        err instanceof TypeError
+          ? 'Nu s-a putut contacta proxy-ul de imagini.'
+          : err instanceof Error ? err.message : String(err),
+      )
+      setGenBgImageFile(null)
+    } finally {
+      setGenBgLoading(false)
+    }
+  }
+
   // Build a print background PDF from a raster image (PNG/JPEG) whenever the
   // "create background" source is active and the image / dimensions change,
   // feeding it through the same `backgroundFile`/`background` pipeline as an
@@ -1200,6 +1246,8 @@ export default function App() {
     setContourTargetWidthMm(NaN)
     setContourTargetHeightMm(NaN)
     setContourRotation(0)
+    // A freshly selected preset shape starts full-card (auto-tracks the card).
+    contourShapeTargetAutoRef.current = true
     if (source === 'upload') {
       setContourBackground(null)
       setContourBackgroundFile(null)
@@ -1256,6 +1304,12 @@ export default function App() {
     prevCardDimsRef.current = w > 0 && h > 0 ? { w, h } : null
   }, [effectiveCardWidthMm, effectiveCardHeightMm, contourSource, shapeKind, shapeInsetMm])
 
+  // Whether a preset shape's target box is still auto-tracking the card (so it
+  // stays full-card as the background is resized) vs. explicitly resized by the
+  // user (then it's preserved). A ref so flipping it doesn't re-run the shape
+  // effect; the effect reads it at run time.
+  const contourShapeTargetAutoRef = useRef(true)
+
   // Generate a preset-shape contour PDF whenever the shape source is active
   // and the shape/inset/corner-radius/card size changes, feeding it through
   // the same `contourBackgroundFile` pipeline as an uploaded contour PDF.
@@ -1287,7 +1341,9 @@ export default function App() {
           // Prefill the target box to the shape's own (card) size the first time,
           // so the resize controls show real numbers; a later user resize/rotate
           // (non-NaN) is preserved across shape/inset/card tweaks. The shape is
-          // always generated at the card size; the target only scales it.
+          // always generated at the card size; the target only scales it. While
+          // auto-tracking, the synchronous effect below keeps the target equal to
+          // the card as it's resized (this async path would lag a card change).
           setContourTargetWidthMm((v) => (isFinite(v) && v > 0 ? v : cardWidthMm))
           setContourTargetHeightMm((v) => (isFinite(v) && v > 0 ? v : cardHeightMm))
         }
@@ -1299,6 +1355,16 @@ export default function App() {
       cancelled = true
     }
   }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, contourRotation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
+
+  // Keep an auto-tracking preset shape's target box equal to the card as the
+  // background is resized — synchronously, so the contour offset never references
+  // the previous card size while the async shape rebuild above is in flight. Once
+  // the user resizes the contour (ref flips off) this stops and their size sticks.
+  useEffect(() => {
+    if (contourSource !== 'shape' || !background || !contourShapeTargetAutoRef.current) return
+    setContourTargetWidthMm(effectiveCardWidthMm)
+    setContourTargetHeightMm(effectiveCardHeightMm)
+  }, [contourSource, background, effectiveCardWidthMm, effectiveCardHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -1758,11 +1824,41 @@ export default function App() {
               </>
             ) : (
               <>
-                <FileField
-                  label="Imagine fundal (PNG sau JPEG)"
-                  accept="image/png,image/jpeg"
-                  onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
+                <RadioGroupField<'file' | 'url'>
+                  label="Sursă imagine"
+                  value={genBgImageSource}
+                  onChange={setGenBgImageSource}
+                  options={[
+                    { value: 'file', label: 'Fișier local' },
+                    { value: 'url', label: 'URL' },
+                  ]}
                 />
+                {genBgImageSource === 'file' ? (
+                  <FileField
+                    label="Imagine fundal (PNG sau JPEG)"
+                    accept="image/png,image/jpeg"
+                    onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
+                  />
+                ) : (
+                  <div className="flex items-end gap-2">
+                    <div className="min-w-0 flex-1">
+                      <TextField
+                        label="URL imagine (PNG sau JPEG)"
+                        value={genBgImageUrl}
+                        onChange={setGenBgImageUrl}
+                        placeholder="https://exemplu.ro/imagine.png"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleGenBgUrlLoad}
+                      disabled={genBgLoading}
+                      className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      Încarcă
+                    </button>
+                  </div>
+                )}
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
                 </p>
@@ -1921,14 +2017,17 @@ export default function App() {
                       heightLabel="Înălțime țintă contur (mm)"
                       width={contourTargetWidthMm}
                       height={contourTargetHeightMm}
-                      onWidth={setContourTargetWidthMm}
-                      onHeight={setContourTargetHeightMm}
+                      // Editing the target is an explicit resize: stop auto-tracking
+                      // the card so a preset shape keeps the user's chosen size.
+                      onWidth={(v) => { contourShapeTargetAutoRef.current = false; setContourTargetWidthMm(v) }}
+                      onHeight={(v) => { contourShapeTargetAutoRef.current = false; setContourTargetHeightMm(v) }}
                       // Live target ratio (starts at the contour's detected ratio)
                       // so the lock follows the orientation after a swap or rotation.
                       aspect={contourTargetWidthMm / contourTargetHeightMm}
                       locked={contourLockAspect}
                       onToggleLock={() => setContourLockAspect((v) => !v)}
                       onSwap={() => {
+                        contourShapeTargetAutoRef.current = false
                         const w = contourTargetWidthMm
                         setContourTargetWidthMm(contourTargetHeightMm)
                         setContourTargetHeightMm(w)
