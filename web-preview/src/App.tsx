@@ -463,42 +463,43 @@ export default function App() {
     ? cardTargetHeightMm
     : (background ? background.heightPt / MM : 0)
 
-  // Effective contour size: the user's target override when set (upload or preset
-  // shape), otherwise the rendered contour's own size. Drives the preview scale
-  // and the offset room, mirroring effectiveCard* for the background.
-  const effectiveContourWidthMm = contourBackground && isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
-    ? contourTargetWidthMm
-    : (contourBackground ? contourBackground.widthPt / MM : 0)
-  const effectiveContourHeightMm = contourBackground && isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
-    ? contourTargetHeightMm
-    : (contourBackground ? contourBackground.heightPt / MM : 0)
-  // Whether a preset shape is still at its card-sized default (target ≈ card), so
-  // its full-card page has the outline centred — vs resized smaller, where it
-  // behaves like a normal sub-card contour.
-  const contourShapeFullCard = contourSource === 'shape' && !!background
-    && (!(isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0)
-      || (Math.abs(contourTargetWidthMm - effectiveCardWidthMm) < 0.1
-        && Math.abs(contourTargetHeightMm - effectiveCardHeightMm) < 0.1))
-
-  // Contour offset bounds: the contour must stay fully inside the background.
-  // An uploaded contour PDF (or a resized preset shape) is anchored bottom-left,
-  // so its slack is (card − contour) and offsets run 0→max. A card-sized preset
-  // shape is drawn as its tight box — a circle only spans min(w, h) — centred
-  // inside a full-card page, so the page leaves no slack; instead the room to
-  // nudge is the margin on each side, and offsets run symmetrically −max→max.
-  // This is what lets a circle on a non-square card move along its longer axis.
-  const contourShapeBox = contourShapeFullCard
-    ? contourBoxMm(shapeKind, effectiveCardWidthMm, effectiveCardHeightMm, shapeInsetMm)
+  // Available interior space for a preset shape: the card minus the interior
+  // margin on EACH side, PER AXIS. The interior margin is a minimum *clearance*,
+  // not a constant inset baked into the shape — it only caps the contour size.
+  const contourAvailWidthMm = Math.max(0, effectiveCardWidthMm - 2 * shapeInsetMm)
+  const contourAvailHeightMm = Math.max(0, effectiveCardHeightMm - 2 * shapeInsetMm)
+  // Requested contour frame = the user's target (default = fill available),
+  // clamped to the available space so it only shrinks when it no longer fits.
+  const contourReqWidthMm = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
+    ? Math.min(contourTargetWidthMm, contourAvailWidthMm) : contourAvailWidthMm
+  const contourReqHeightMm = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
+    ? Math.min(contourTargetHeightMm, contourAvailHeightMm) : contourAvailHeightMm
+  // Effective contour size = the shape's tight box at the requested frame, so a
+  // circle stays a square of min(side) and can still travel along the card's
+  // longer axis. The preset shape is generated true at exactly this size (inset
+  // 0); uploads keep their target/native size.
+  // Gated on `background` (the card), not `contourBackground`, so the effective
+  // size is known before the shape PDF is generated (the generator needs it).
+  const contourShapeTightBox = contourSource === 'shape' && background
+    ? contourBoxMm(shapeKind, contourReqWidthMm, contourReqHeightMm, 0)
     : null
-  const contourOffsetMaxXMm = contourShapeBox
-    ? Math.max(0, (effectiveCardWidthMm - contourShapeBox.w) / 2)
-    : Math.max(0, effectiveCardWidthMm - effectiveContourWidthMm)
-  const contourOffsetMaxYMm = contourShapeBox
-    ? Math.max(0, (effectiveCardHeightMm - contourShapeBox.h) / 2)
-    : Math.max(0, effectiveCardHeightMm - effectiveContourHeightMm)
-  // A centred shape can move either way; a corner-anchored upload only forward.
-  const contourOffsetMinXMm = contourShapeBox ? -contourOffsetMaxXMm : 0
-  const contourOffsetMinYMm = contourShapeBox ? -contourOffsetMaxYMm : 0
+  const effectiveContourWidthMm = contourShapeTightBox
+    ? contourShapeTightBox.w
+    : (contourBackground && isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
+        ? contourTargetWidthMm
+        : (contourBackground ? contourBackground.widthPt / MM : 0))
+  const effectiveContourHeightMm = contourShapeTightBox
+    ? contourShapeTightBox.h
+    : (contourBackground && isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
+        ? contourTargetHeightMm
+        : (contourBackground ? contourBackground.heightPt / MM : 0))
+
+  // Contour offset bounds: the contour stays inside the card; corner-anchored with
+  // slack (card − contour), centered by the fraction-preservation effect below.
+  const contourOffsetMaxXMm = Math.max(0, effectiveCardWidthMm - effectiveContourWidthMm)
+  const contourOffsetMaxYMm = Math.max(0, effectiveCardHeightMm - effectiveContourHeightMm)
+  const contourOffsetMinXMm = 0
+  const contourOffsetMinYMm = 0
   // Re-clamp at point-of-use so a later contour/size change can't leave a stale
   // out-of-range value reaching the preview or the generator.
   const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
@@ -516,38 +517,35 @@ export default function App() {
     const cur = { minX: contourOffsetMinXMm, maxX: contourOffsetMaxXMm, minY: contourOffsetMinYMm, maxY: contourOffsetMaxYMm }
     const prev = prevContourBoundsRef.current
     prevContourBoundsRef.current = cur
-    if (!prev) return
+    if (!prev) {
+      // First appearance of this contour: center it (offsets are corner-anchored).
+      setContourOffsetXMm((cur.minX + cur.maxX) / 2)
+      setContourOffsetYMm((cur.minY + cur.maxY) / 2)
+      return
+    }
     const fx = prev.maxX > prev.minX ? (contourOffsetXMm - prev.minX) / (prev.maxX - prev.minX) : 0.5
     const fy = prev.maxY > prev.minY ? (contourOffsetYMm - prev.minY) / (prev.maxY - prev.minY) : 0.5
     const nx = cur.minX + fx * (cur.maxX - cur.minX)
     const ny = cur.minY + fy * (cur.maxY - cur.minY)
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (Math.abs(nx - contourOffsetXMm) > 1e-6) setContourOffsetXMm(nx)
     if (Math.abs(ny - contourOffsetYMm) > 1e-6) setContourOffsetYMm(ny)
   }, [contourSource, contourBackground, contourOffsetXMm, contourOffsetYMm, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
 
-  // Cut region for the preview's "dim exterior" overlay. A preset shape is always
-  // generated at its native (card) size, so derive its tight box there and pass
-  // it as fractions of that native size (PDF y-up); an uploaded contour has no
-  // fillable region, so leave it null and let CardCanvas dim outside its bbox.
+  // Cut region for the preview's "dim exterior" overlay. The preset shape now
+  // fills its own (effective-size) frame, so the cut fills the contour rect: the
+  // mask path is the shape spanning the whole rect (frac = full). `rotation` lets
+  // CardCanvas rotate the mask to match the rendered contour image. An uploaded
+  // contour has no fillable region → null (CardCanvas dims outside its bbox).
   const contourCutShape: ContourCutShape | null =
-    contourSource === 'shape' && contourBackground && effectiveCardWidthMm > 0 && effectiveCardHeightMm > 0
-      ? (() => {
-          // The shape is drawn at the (unrotated) card size, then rendered rotated.
-          // Build the box from the unrotated dims and pass `rotation` so CardCanvas
-          // rotates the mask to match the rendered contour image.
-          const uW = effectiveCardWidthMm
-          const uH = effectiveCardHeightMm
-          const b = contourBoxMm(shapeKind, uW, uH, shapeInsetMm)
-          return {
-            kind: shapeKind,
-            orientation: shapeCornerOrientation,
-            rotation: contourRotation,
-            frac: { x: b.x / uW, y: b.y / uH, w: b.w / uW, h: b.h / uH },
-            rxFrac: shapeCornerRadiusMm / uW,
-            ryFrac: shapeCornerRadiusMm / uH,
-          }
-        })()
+    contourSource === 'shape' && contourBackground && effectiveContourWidthMm > 0 && effectiveContourHeightMm > 0
+      ? {
+          kind: shapeKind,
+          orientation: shapeCornerOrientation,
+          rotation: contourRotation,
+          frac: { x: 0, y: 0, w: 1, h: 1 },
+          rxFrac: shapeCornerRadiusMm / effectiveContourWidthMm,
+          ryFrac: shapeCornerRadiusMm / effectiveContourHeightMm,
+        }
       : null
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
@@ -1364,32 +1362,35 @@ export default function App() {
     prevCardDimsRef.current = w > 0 && h > 0 ? { w, h } : null
   }, [effectiveCardWidthMm, effectiveCardHeightMm, contourSource, shapeKind, shapeInsetMm])
 
-  // Whether a preset shape's target box is still auto-tracking the card (so it
-  // stays full-card as the background is resized) vs. explicitly resized by the
-  // user (then it's preserved). A ref so flipping it doesn't re-run the shape
-  // effect; the effect reads it at run time.
+  // Whether a preset shape still fills the available space (auto-tracks the card
+  // as the background is resized) vs. an explicit/frozen size (then preserved).
   const contourShapeTargetAutoRef = useRef(true)
+  // Live mirror of the interior margin so the card-resize auto-track can read it
+  // without firing on a margin change (margin changes are handled separately).
+  const shapeInsetRef = useRef(shapeInsetMm)
+  shapeInsetRef.current = shapeInsetMm
+  // Previous interior margin, to detect margin changes and freeze+clamp the size.
+  const prevShapeInsetRef = useRef(shapeInsetMm)
 
-  // Generate a preset-shape contour PDF whenever the shape source is active
-  // and the shape/inset/corner-radius/card size changes, feeding it through
-  // the same `contourBackgroundFile` pipeline as an uploaded contour PDF.
+  // Generate a preset-shape contour PDF at its EFFECTIVE (clamped, true) size with
+  // no baked inset — the interior margin is a clearance clamp on the size, not
+  // geometry. The shape is generated unrotated (dims swapped for 90/270) and
+  // `renderPdfBackground` re-applies `contourRotation`, exactly as before.
   useEffect(() => {
     if (contourSource !== 'shape' || !background) return
+    const rot = (((contourRotation % 360) + 360) % 360)
+    const swapped = rot === 90 || rot === 270
+    const genW = swapped ? effectiveContourHeightMm : effectiveContourWidthMm
+    const genH = swapped ? effectiveContourWidthMm : effectiveContourHeightMm
+    if (!(genW > 0) || !(genH > 0)) return
     let cancelled = false
-    const cardWidthMm = effectiveCardWidthMm
-    const cardHeightMm = effectiveCardHeightMm
-    // Stroke the preset-shape contour in magenta (CMYK 0:1:0:0) — the
-    // conventional cut-line colour, and visible over most backgrounds.
     const strokeColor = '0:1:0:0'
     ensureWasmInit()
       .then(() => {
-        const bytes = generate_shape_pdf(cardWidthMm, cardHeightMm, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
+        const bytes = generate_shape_pdf(genW, genH, shapeKind, 0, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
-        // Render rotated so the preview matches the cut/overlay, which bake the
-        // same rotation — the generated shape is treated exactly like an uploaded
-        // contour PDF for resize/rotate.
         return renderPdfBackground(file, 1, contourRotation)
       })
       .then((bg) => {
@@ -1398,14 +1399,10 @@ export default function App() {
           setContourPageNumber(1)
           setContourPageCount(1)
           setShapeError(null)
-          // Prefill the target box to the shape's own (card) size the first time,
-          // so the resize controls show real numbers; a later user resize/rotate
-          // (non-NaN) is preserved across shape/inset/card tweaks. The shape is
-          // always generated at the card size; the target only scales it. While
-          // auto-tracking, the synchronous effect below keeps the target equal to
-          // the card as it's resized (this async path would lag a card change).
-          setContourTargetWidthMm((v) => (isFinite(v) && v > 0 ? v : cardWidthMm))
-          setContourTargetHeightMm((v) => (isFinite(v) && v > 0 ? v : cardHeightMm))
+          // Default the contour size to fill the available space the first time;
+          // a later user resize / margin clamp is preserved.
+          setContourTargetWidthMm((v) => (isFinite(v) && v > 0 ? v : contourAvailWidthMm))
+          setContourTargetHeightMm((v) => (isFinite(v) && v > 0 ? v : contourAvailHeightMm))
         }
       })
       .catch((err) => {
@@ -1414,17 +1411,37 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeInsetMm, shapeCornerRadiusMm, shapeCornerOrientation, contourRotation, background, backgroundSource, simpleBgColor, effectiveCardWidthMm, effectiveCardHeightMm])
+  }, [contourSource, shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, contourRotation, background, backgroundSource, simpleBgColor, effectiveContourWidthMm, effectiveContourHeightMm, contourAvailWidthMm, contourAvailHeightMm])
 
-  // Keep an auto-tracking preset shape's target box equal to the card as the
-  // background is resized — synchronously, so the contour offset never references
-  // the previous card size while the async shape rebuild above is in flight. Once
-  // the user resizes the contour (ref flips off) this stops and their size sticks.
+  // Auto-track: while a shape fills the available space, keep its target equal to
+  // `card − 2·margin` as the BACKGROUND is resized (not on margin changes — those
+  // are handled below, so the margin is read from a ref to stay out of the deps).
   useEffect(() => {
     if (contourSource !== 'shape' || !background || !contourShapeTargetAutoRef.current) return
-    setContourTargetWidthMm(effectiveCardWidthMm)
-    setContourTargetHeightMm(effectiveCardHeightMm)
+    const m = shapeInsetRef.current
+    setContourTargetWidthMm(Math.max(0, effectiveCardWidthMm - 2 * m))
+    setContourTargetHeightMm(Math.max(0, effectiveCardHeightMm - 2 * m))
   }, [contourSource, background, effectiveCardWidthMm, effectiveCardHeightMm])
+
+  // Interior margin = per-axis minimum clearance. On a margin change, the contour
+  // keeps its current size and only shrinks to fit the new available space when it
+  // no longer fits (never grows) — so it freezes (auto off) and clamps per axis.
+  useEffect(() => {
+    if (contourSource !== 'shape' || !contourBackground) { prevShapeInsetRef.current = shapeInsetMm; return }
+    const prevM = prevShapeInsetRef.current
+    prevShapeInsetRef.current = shapeInsetMm
+    if (prevM === shapeInsetMm) return
+    // Size under the previous margin (default = previous available when unset).
+    const prevAvailW = Math.max(0, effectiveCardWidthMm - 2 * prevM)
+    const prevAvailH = Math.max(0, effectiveCardHeightMm - 2 * prevM)
+    const curW = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : prevAvailW
+    const curH = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : prevAvailH
+    const availW = Math.max(0, effectiveCardWidthMm - 2 * shapeInsetMm)
+    const availH = Math.max(0, effectiveCardHeightMm - 2 * shapeInsetMm)
+    contourShapeTargetAutoRef.current = false
+    setContourTargetWidthMm(Math.min(curW, availW))
+    setContourTargetHeightMm(Math.min(curH, availH))
+  }, [shapeInsetMm, contourSource, contourBackground, effectiveCardWidthMm, effectiveCardHeightMm, contourTargetWidthMm, contourTargetHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -1550,8 +1567,11 @@ export default function App() {
       // standalone cut the contour PDF *is* the background, so these feed
       // cardWidth/Height + backgroundRotation; for the combine overlay they ride
       // the dedicated contour* options so `build_overlay` applies the same transform.
-      const contourWidthOverride = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : null
-      const contourHeightOverride = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : null
+      // The contour PDF is generated at the effective (margin-clamped, true) size
+      // for shapes, so the override = that size → scale 1; uploads still scale to
+      // their target. Either way the override is the effective contour size.
+      const contourWidthOverride = effectiveContourWidthMm > 0 ? effectiveContourWidthMm : null
+      const contourHeightOverride = effectiveContourHeightMm > 0 ? effectiveContourHeightMm : null
       // "Combină paginile" (combine) overlays the contour onto the print pages as
       // a view-only (non-printing) layer. It works in both decupare (grid) and
       // no-cut mode. Require a loaded contour: the overlay needs the contour bytes
@@ -1661,8 +1681,11 @@ export default function App() {
       const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
       const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
       const sampleCombine = contourBackgroundFile != null
-      const contourWidthOverride = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : null
-      const contourHeightOverride = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : null
+      // The contour PDF is generated at the effective (margin-clamped, true) size
+      // for shapes, so the override = that size → scale 1; uploads still scale to
+      // their target. Either way the override is the effective contour size.
+      const contourWidthOverride = effectiveContourWidthMm > 0 ? effectiveContourWidthMm : null
+      const contourHeightOverride = effectiveContourHeightMm > 0 ? effectiveContourHeightMm : null
       // Force a single isolated card (no-cut) with the contour overlaid.
       const samplePageOptions = { ...pageOptions, noCut: true, combine: sampleCombine }
       const printOptions = buildJsOptions(
