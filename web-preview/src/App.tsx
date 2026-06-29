@@ -1565,7 +1565,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead.
