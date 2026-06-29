@@ -7,11 +7,16 @@ export function NumberField({
   value,
   onChange,
   step = 'any',
+  min,
+  max,
 }: {
   label: string
   value: number
   onChange: (value: number) => void
   step?: string | number
+  /** When set, the emitted value is clamped to [min, max] (and the spinner is bounded). */
+  min?: number
+  max?: number
 }) {
   // Display rounded, human-friendly numbers (computed values otherwise show long
   // binary-float tails like 12.3456789). This is display-only: the parent state
@@ -21,17 +26,26 @@ export function NumberField({
   const [editing, setEditing] = useState<string | null>(null)
   const rounded = (v: number) => (Number.isNaN(v) ? '' : String(Math.round(v * 1000) / 1000))
   const display = editing ?? rounded(value)
+  const clamp = (v: number) => {
+    if (Number.isNaN(v)) return v
+    let r = v
+    if (min !== undefined) r = Math.max(min, r)
+    if (max !== undefined) r = Math.min(max, r)
+    return r
+  }
   return (
     <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="number"
         step={step}
+        min={min}
+        max={max}
         value={display}
         onFocus={() => setEditing(rounded(value))}
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           setEditing(e.target.value)
-          onChange(parseFloat(e.target.value))
+          onChange(clamp(parseFloat(e.target.value)))
         }}
         onBlur={() => setEditing(null)}
         className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400"

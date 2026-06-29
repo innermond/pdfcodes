@@ -2119,7 +2119,7 @@ export default function App() {
                     </div>
                   </>
                 )}
-                <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} />
+                <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} step={0.1} min={0} max={1} />
                 <SelectField
                   label="Mod combinare contur"
                   value={contourBlendMode}
@@ -2292,7 +2292,10 @@ export default function App() {
                 <NumberField
                   label="Opacitate (0-1)"
                   value={selected.opacity}
-                  onChange={(v) => updateWord(selectedIndex, { opacity: Math.min(Math.max(0, v), 1) })}
+                  onChange={(v) => updateWord(selectedIndex, { opacity: v })}
+                  step={0.1}
+                  min={0}
+                  max={1}
                 />
                 <SelectField
                   label="Mod îmbinare text"
@@ -2316,7 +2319,7 @@ export default function App() {
                       value={selected.backgroundWidthMm ?? NaN}
                       onChange={(v) => updateWord(selectedIndex, { backgroundWidthMm: Number.isNaN(v) ? null : v })}
                     />
-                    <NumberField label="Transparență fundal (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} />
+                    <NumberField label="Transparență fundal (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} step={0.1} min={0} max={1} />
                     <SelectField
                       label="Mod îmbinare fundal"
                       value={selected.backgroundBlendMode}
