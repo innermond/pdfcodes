@@ -484,7 +484,7 @@ export function ColorField({
               </div>
             )}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
             {CMYK_CHANNELS.map(({ key, label: ch }) => (
               <label key={key} className="flex items-center gap-1">
                 <span className="w-4 font-medium">{ch}</span>
