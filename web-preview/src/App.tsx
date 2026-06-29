@@ -15,6 +15,7 @@ import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, 
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
+import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
 import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
@@ -259,6 +260,10 @@ export default function App() {
   // Preview-only: dim everything outside the cut region so the user can see what
   // the contour keeps from the background. Does not affect the generated PDFs.
   const [dimContourExterior, setDimContourExterior] = useState(false)
+  // Traced vector "keep" path for the dim-exterior preview of an uploaded contour
+  // (preset shapes use the precise `contourCutShape` instead). Recomputed from
+  // the rendered outline below; null falls back to the bounding box.
+  const [contourInteriorMaskPath, setContourInteriorMaskPath] = useState<string | null>(null)
   const [contourSource, setContourSource] = useState<ContourSource>('upload')
   const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
   const [shapeCornerRadiusMm, setShapeCornerRadiusMm] = useState(3)
@@ -545,6 +550,32 @@ export default function App() {
           ryFrac: shapeCornerRadiusMm / effectiveContourHeightMm,
         }
       : null
+
+  // Derive the dim-exterior "keep" path for an uploaded contour by tracing its
+  // rendered outline (preset shapes use `contourCutShape`). The result is a vector
+  // path, so it stays crisp at any preview zoom. Recomputes when the rendered
+  // contour changes (upload, page pick, rotation); a null result (open outline)
+  // leaves CardCanvas to dim the bounding box instead.
+  //
+  // The trace source is rendered well above the on-screen scale-2 so curved
+  // outlines (e.g. a small circle) are finely sampled — at scale 2 the tracer only
+  // sees a chunky low-res circle and simplifies it to a faceted polygon. Small
+  // contours get the full scale; large ones are capped (~2400 px/side) to bound
+  // the flood-fill cost.
+  useEffect(() => {
+    if (contourSource !== 'upload' || !contourBackgroundFile || !contourBackground) {
+      setContourInteriorMaskPath(null)
+      return
+    }
+    let cancelled = false
+    const maxSidePt = Math.max(contourBackground.widthPt, contourBackground.heightPt)
+    const traceScale = maxSidePt > 0 ? Math.max(2, Math.min(8, 2400 / maxSidePt)) : 4
+    renderPdfBackground(contourBackgroundFile, contourPageNumber, contourRotation, traceScale)
+      .then((hires) => computeContourInteriorMaskPath(hires.imageUrl))
+      .then((d) => { if (!cancelled) setContourInteriorMaskPath(d) })
+      .catch(() => { if (!cancelled) setContourInteriorMaskPath(null) })
+    return () => { cancelled = true }
+  }, [contourSource, contourBackgroundFile, contourBackground, contourPageNumber, contourRotation])
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -2669,6 +2700,7 @@ export default function App() {
                       contourBlendMode={contourBlendMode}
                       dimExterior={dimContourExterior}
                       contourCutShape={contourCutShape}
+                      contourInteriorMaskPath={contourInteriorMaskPath}
                       words={words}
                       fonts={fonts}
                       safeMarginMm={safeMarginMm}

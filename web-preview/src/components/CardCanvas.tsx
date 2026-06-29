@@ -32,6 +32,7 @@ export function CardCanvas({
   contourBlendMode,
   dimExterior = false,
   contourCutShape = null,
+  contourInteriorMaskPath = null,
   words,
   fonts,
   safeMarginMm,
@@ -54,6 +55,11 @@ export function CardCanvas({
   // Dim everything outside the cut region so the user sees what the cut keeps.
   dimExterior?: boolean
   contourCutShape?: ContourCutShape | null
+  // Vector "keep" path for an uploaded contour, traced from its outline in
+  // fractional contour-box coordinates (0..1, y-down, even-odd fill). Used as the
+  // dim knockout when there's no precise `contourCutShape`; null falls back to the
+  // contour's bounding box.
+  contourInteriorMaskPath?: string | null
   words: WordStyle[]
   fonts: (LoadedFont | null)[]
   safeMarginMm: number
@@ -92,7 +98,19 @@ export function CardCanvas({
       )
       return <path d={d} fill="black" transform={rot ? `rotate(${rot} ${cx} ${cy})` : undefined} />
     }
-    // Uploaded contour: no fillable region, so dim outside its bounding box.
+    // Uploaded contour: prefer the traced vector path (fractional coords scaled to
+    // the same rect as the contour image, so it lines up and stays crisp at any
+    // zoom). Without it (open outline, or still computing), dim outside the bbox.
+    if (contourInteriorMaskPath) {
+      return (
+        <path
+          d={contourInteriorMaskPath}
+          fillRule="evenodd"
+          fill="black"
+          transform={`translate(${ix} ${iy}) scale(${iw} ${ih})`}
+        />
+      )
+    }
     return <rect x={ix} y={iy} width={iw} height={ih} fill="black" />
   })() : null
 

@@ -42,7 +42,11 @@ export function solidColorBackground(
 // 1-based and clamped to the valid range; the generator must be told the same
 // page number (see `background_page_number` in src/options.rs) so the print
 // output matches this preview.
-export async function renderPdfBackground(file: File, pageNumber = 1, rotation = 0): Promise<PdfBackground> {
+// `renderScale` controls the rasterization resolution (device px per PDF point).
+// The default of 2 suits the on-screen preview; callers that trace the raster into
+// a vector (the dim-exterior contour mask) pass a higher value so curved outlines
+// are finely sampled. The reported `widthPt`/`heightPt` are scale-independent.
+export async function renderPdfBackground(file: File, pageNumber = 1, rotation = 0, renderScale = 2): Promise<PdfBackground> {
   const data = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data }).promise
   const pageCount = pdf.numPages
@@ -55,7 +59,6 @@ export async function renderPdfBackground(file: File, pageNumber = 1, rotation =
   const totalRotation = (((page.rotate + rotation) % 360) + 360) % 360
   const baseViewport = page.getViewport({ scale: 1, rotation: totalRotation })
 
-  const renderScale = 2
   const renderViewport = page.getViewport({ scale: renderScale, rotation: totalRotation })
   const canvas = document.createElement('canvas')
   canvas.width = renderViewport.width
