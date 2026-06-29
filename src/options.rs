@@ -145,6 +145,14 @@ pub struct Options {
     pub contour_target_width_mm: Option<f32>,
     pub contour_target_height_mm: Option<f32>,
     pub contour_rotation: i64,
+    // "Minimal" mode: crop the generated print page (and each card cell) down to the
+    // contour's bounding box instead of the background's size, so the output is a
+    // smaller page tightly bounding the contour. `minimal_width_mm`/`minimal_height_mm`
+    // are the contour box (mm); the crop origin within the background frame reuses
+    // `contour_offset_x_mm`/`contour_offset_y_mm`. `None`/0 disables (full background).
+    pub minimal: bool,
+    pub minimal_width_mm: Option<f32>,
+    pub minimal_height_mm: Option<f32>,
 }
 
 impl Options {
@@ -205,6 +213,9 @@ impl Default for Options {
             contour_target_width_mm: None,
             contour_target_height_mm: None,
             contour_rotation: 0,
+            minimal: false,
+            minimal_width_mm: None,
+            minimal_height_mm: None,
         }
     }
 }

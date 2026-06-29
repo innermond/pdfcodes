@@ -1,6 +1,7 @@
 mod cards;
 mod contour;
 pub mod image_bg;
+mod ocg;
 mod overlay;
 pub mod shapes;
 
@@ -266,9 +267,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         let page_id = if opts.contour_as_grid {
             let stroke = extract_stroke_color(&bg_content_bytes)
                 .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
-            contour::build_grid_contour_page(&mut doc, pages_id, &layout, stroke, offset_x, offset_y)?
+            contour::build_grid_contour_page(&mut doc, pages_id, catalog_id, &layout, stroke, offset_x, offset_y)?
         } else {
-            contour::build_contour_page(&mut doc, pages_id, bg_form_id, &layout, offset_x, offset_y)?
+            contour::build_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, offset_x, offset_y)?
         };
 
         let pages_obj = doc.get_object(pages_id)?;
@@ -313,25 +314,61 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let csv_data = csv_data.ok_or("csv data is required unless contour is set")?;
     let (card_ids, text_overflow) = cards::build_card_xobjects(&mut doc, csv_data, opts, &embedded_fonts, &layout, bg_form_id)?;
 
+    // "Minimal" mode: tile the host page with contour-box cells and crop each card's
+    // full-size content down to the contour window, so the page shrinks to the contour
+    // instead of the background. The card XObjects (built above with the full-background
+    // `layout`) keep their text positions; only the tiling layout and a per-card
+    // clip+shift change. The crop origin within the background frame is the contour
+    // offset. `None` keeps the current full-background tiling (no behavior change).
+    let minimal_box = match (opts.minimal, opts.minimal_width_mm, opts.minimal_height_mm) {
+        (true, Some(mw), Some(mh)) if mw > 0.0 && mh > 0.0 => {
+            Some((mw * crate::geometry::MM, mh * crate::geometry::MM))
+        }
+        _ => None,
+    };
+    // "Minimal" bleed: extend the cropped background by 0.5·Decalaj per axis (the page
+    // gutter, clamped ≥0), keeping the contour the same size and centred — a contour on a
+    // slightly larger background. The tiling gutter is halved so the contour pitch (and
+    // thus print/cut alignment) is preserved; `bleed = 0` reproduces the tight crop.
+    let bleed_x = 0.5 * opts.offset_x_mm.max(0.0) * crate::geometry::MM;
+    let bleed_y = 0.5 * opts.offset_y_mm.max(0.0) * crate::geometry::MM;
+    let minimal_layout = minimal_box.map(|(mw, mh)| {
+        let tile_opts = Options {
+            offset_x_mm: 0.5 * opts.offset_x_mm.max(0.0),
+            offset_y_mm: 0.5 * opts.offset_y_mm.max(0.0),
+            ..opts.clone()
+        };
+        CardLayout::compute(mw + bleed_x, mh + bleed_y, &tile_opts)
+    });
+    let tile_layout: &CardLayout = minimal_layout.as_ref().unwrap_or(&layout);
+    let crop_off_x = opts.contour_offset_x_mm * crate::geometry::MM;
+    let crop_off_y = opts.contour_offset_y_mm * crate::geometry::MM;
+
     // If requested, build a non-printable overlay layer showing the contour
     // grid (background tiles + registration circles) at the same positions
     // as the print grid, so print/contour alignment can be checked visually.
     let overlay = if opts.combine {
         let contour_bytes = contour_background_bytes.ok_or("--combineb requires a contour background PDF")?;
-        let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
-        let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, &layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm)?)
+        // In minimal mode the page is cropped to the contour window and the contour is
+        // centred in the (bleed-)enlarged cell, so the overlay contour sits at bleed/2 —
+        // not at the in-background offset (and at the cell origin when there's no bleed).
+        let (offset_x, offset_y) = if minimal_box.is_some() {
+            (bleed_x / 2.0, bleed_y / 2.0)
+        } else {
+            (opts.contour_offset_x_mm * crate::geometry::MM, opts.contour_offset_y_mm * crate::geometry::MM)
+        };
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm)?)
     } else {
         None
     };
 
     // Lay out card XObjects on host pages.
-    for chunk in card_ids.chunks(layout.cards_per_page) {
+    for chunk in card_ids.chunks(tile_layout.cards_per_page) {
         let mut operations = Vec::new();
         let mut xobjects = Dictionary::new();
 
         for (i, card_id) in chunk.iter().enumerate() {
-            let (x, y) = layout.position(i);
+            let (x, y) = tile_layout.position(i);
 
             let name = format!("C{}", i);
             operations.push(Operation::new("q", vec![]));
@@ -340,13 +377,27 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
                 Object::Real(0.0), Object::Real(1.0),
                 Object::Real(x), Object::Real(y),
             ]));
+            if let Some((mw, mh)) = minimal_box {
+                // Clip to the (bleed-)enlarged cell, then shift the full-size card so its
+                // contour window lands centred (bleed/2 of background on each side).
+                operations.push(Operation::new("re", vec![
+                    Object::Real(0.0), Object::Real(0.0), Object::Real(mw + bleed_x), Object::Real(mh + bleed_y),
+                ]));
+                operations.push(Operation::new("W", vec![]));
+                operations.push(Operation::new("n", vec![]));
+                operations.push(Operation::new("cm", vec![
+                    Object::Real(1.0), Object::Real(0.0),
+                    Object::Real(0.0), Object::Real(1.0),
+                    Object::Real(bleed_x / 2.0 - crop_off_x), Object::Real(bleed_y / 2.0 - crop_off_y),
+                ]));
+            }
             operations.push(Operation::new("Do", vec![Object::Name(name.clone().into_bytes())]));
             operations.push(Operation::new("Q", vec![]));
 
             xobjects.set(name, Object::Reference(*card_id));
         }
 
-        operations.extend(layout.registration_circles());
+        operations.extend(tile_layout.registration_circles());
 
         let mut properties = Dictionary::new();
         if let Some((overlay_id, ocg_id)) = overlay {
@@ -368,7 +419,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         let mut page_dict = Dictionary::new();
         page_dict.set("Type", Object::Name(b"Page".to_vec()));
         page_dict.set("Parent", Object::Reference(pages_id));
-        page_dict.set("MediaBox", Object::Array(layout.host_box.clone()));
+        page_dict.set("MediaBox", Object::Array(tile_layout.host_box.clone()));
         page_dict.set("Contents", Object::Reference(content_id));
         page_dict.set("Resources", Object::Dictionary({
             let mut res = Dictionary::new();
@@ -401,7 +452,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // the print sheet, so the print branch never reports them.
     Ok(GenerateOutput {
         pdf,
-        cards_per_page: layout.cards_per_page,
+        cards_per_page: tile_layout.cards_per_page,
         path_length_per_card_mm: None,
         path_length_total_mm: None,
         node_count_per_card: None,
@@ -623,6 +674,218 @@ mod tests {
 
         assert!(out.pdf.starts_with(b"%PDF"));
         assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn contour_pdf_marks_registration_circles_nonprintable() {
+        // The cut PDF's registration circles are positioning/print marks, not cut
+        // lines, so they live in an Optional Content Group flagged non-printable.
+        let opts = Options { contour: true, ..Options::default() };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("contour generation should succeed");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+
+        // Catalog OCProperties → first OCG → Usage/Print/PrintState == OFF.
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let ocp = doc.get_object(catalog_id).unwrap().as_dict().unwrap()
+            .get(b"OCProperties").expect("contour PDF should declare OCProperties").as_dict().unwrap();
+        let ocg_ref = ocp.get(b"OCGs").unwrap().as_array().unwrap()[0].as_reference().unwrap();
+        let ocg = doc.get_object(ocg_ref).unwrap().as_dict().unwrap();
+        let print_state = ocg.get(b"Usage").unwrap().as_dict().unwrap()
+            .get(b"Print").unwrap().as_dict().unwrap()
+            .get(b"PrintState").unwrap().as_name().unwrap();
+        assert_eq!(print_state, b"OFF", "registration circles must be non-printable");
+
+        // The page wires that OCG into its Resources /Properties (so /OC … BDC resolves).
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        let props = doc.get_object(page_id).unwrap().as_dict().unwrap()
+            .get(b"Resources").unwrap().as_dict().unwrap()
+            .get(b"Properties").expect("contour page should map the OCG").as_dict().unwrap();
+        assert_eq!(props.get(b"OC0").unwrap().as_reference().unwrap(), ocg_ref);
+    }
+
+    #[test]
+    fn grid_contour_doubles_lines_with_gutter() {
+        use crate::geometry::MM;
+        // A rectangle contour with a gutter (Decalaj) must draw two cut lines a
+        // gutter apart at each interior boundary, not one shared line.
+        let opts = Options {
+            contour: true,
+            contour_as_grid: true,
+            offset_x_mm: 5.0,          // 5 mm gutter between columns
+            host_width_mm: 100.0,
+            host_height_mm: 100.0,
+            circle_diameter_mm: 0.0,   // no registration circles → simpler content
+            ..Options::default()
+        };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("grid contour generation should succeed");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        let parsed = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap();
+        let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+
+        // Collect the x of each vertical stroke (its `m` and `l` share the same x).
+        let mut last_m: Option<(f32, f32)> = None;
+        let mut vxs: Vec<f32> = Vec::new();
+        for op in &parsed.operations {
+            match op.operator.as_str() {
+                "m" => last_m = Some((n(&op.operands[0]), n(&op.operands[1]))),
+                "l" => {
+                    if let Some((mx, _)) = last_m {
+                        if (n(&op.operands[0]) - mx).abs() < 1e-3 {
+                            vxs.push(mx);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        vxs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        vxs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+
+        // At least two columns of cards, each contributing a left and a right edge.
+        assert!(vxs.len() >= 4, "expected doubled vertical lines, got {vxs:?}");
+        // Some interior boundary holds two lines exactly a gutter (5 mm) apart.
+        let gutter = 5.0 * MM;
+        let has_gutter_pair = vxs.windows(2).any(|w| (w[1] - w[0] - gutter).abs() < 0.5);
+        assert!(has_gutter_pair, "expected two lines a gutter apart, xs (pt) = {vxs:?}");
+    }
+
+    #[test]
+    fn minimal_crops_print_page_to_contour_box() {
+        use crate::geometry::MM;
+        // "Minimal" shrinks the no-cut print page from the background size down to the
+        // contour's bounding box (cropping, not scaling, the background).
+        let page_media_box = |pdf: &[u8]| -> (f32, f32) {
+            let doc = Document::load_mem(pdf).unwrap();
+            let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+            let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap().clone();
+            let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => panic!() };
+            (n(&mb[2]) - n(&mb[0]), n(&mb[3]) - n(&mb[1]))
+        };
+
+        // Baseline: a no-cut page is the full background size.
+        let base = Options { no_cut: true, ..Options::default() };
+        let base_out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &base).expect("print gen should succeed");
+        let (bw, bh) = page_media_box(&base_out.pdf);
+
+        // Minimal: the page equals the contour box (8 x 6 mm), smaller than the card.
+        let opts = Options {
+            no_cut: true,
+            minimal: true,
+            minimal_width_mm: Some(8.0),
+            minimal_height_mm: Some(6.0),
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts).expect("print gen should succeed");
+        let (w, h) = page_media_box(&out.pdf);
+        assert!((w - 8.0 * MM).abs() < 0.5, "minimal page width should equal the contour box");
+        assert!((h - 6.0 * MM).abs() < 0.5, "minimal page height should equal the contour box");
+        assert!(w < bw && h < bh, "minimal page should be smaller than the full background");
+        assert_eq!(out.cards_per_page, 1);
+    }
+
+    #[test]
+    fn minimal_combine_overlay_sits_at_cell_origin_not_offset() {
+        // Regression: with both "Combină paginile" (combine) and "Minimal" on, the
+        // page is cropped to the contour window (the card is shifted by -offset), so
+        // the overlay contour must sit at the cell origin — not pushed by the contour
+        // offset, which previously placed it off to the side.
+        let contour = multi_page_pdf(&[(72.0, 72.0)]);
+        let opts = Options {
+            no_cut: true,
+            combine: true,
+            minimal: true,
+            minimal_width_mm: Some(25.4),
+            minimal_height_mm: Some(25.4),
+            contour_offset_x_mm: 5.0,
+            contour_offset_y_mm: 3.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(&contour), &opts)
+            .expect("minimal + combine should generate");
+
+        // Pull the overlay XObject (page Resources/XObject/OV) and find the `cm`
+        // immediately before `Do BGC` (the contour placement).
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        let page = doc.get_object(page_id).unwrap().as_dict().unwrap();
+        let ov_ref = page.get(b"Resources").unwrap().as_dict().unwrap()
+            .get(b"XObject").unwrap().as_dict().unwrap()
+            .get(b"OV").unwrap().as_reference().unwrap();
+        let ov = doc.get_object(ov_ref).unwrap().as_stream().unwrap();
+        let content = ov.decompressed_content().unwrap_or_else(|_| ov.content.clone());
+        let parsed = Content::decode(&content).unwrap();
+
+        let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        let mut last_cm: Option<(f32, f32)> = None;
+        let mut placement: Option<(f32, f32)> = None;
+        for op in &parsed.operations {
+            if op.operator == "cm" {
+                last_cm = Some((n(&op.operands[4]), n(&op.operands[5])));
+            } else if op.operator == "Do"
+                && matches!(op.operands.first(), Some(Object::Name(name)) if name == b"BGC")
+            {
+                placement = last_cm;
+                break;
+            }
+        }
+        let (tx, ty) = placement.expect("overlay should place the BGC contour");
+        assert!(tx.abs() < 0.5 && ty.abs() < 0.5, "overlay contour should sit at the cell origin, got ({tx}, {ty})");
+    }
+
+    #[test]
+    fn minimal_bleed_extends_background_and_centers_contour() {
+        use crate::geometry::MM;
+        // With Minimal + a page gutter (Decalaj), the cropped background grows by
+        // 0.5·Decalaj per axis while the contour stays the same size and is centred
+        // (bleed/2 of background on each side).
+        let contour = multi_page_pdf(&[(72.0, 72.0)]);
+        let opts = Options {
+            no_cut: true,
+            combine: true,
+            minimal: true,
+            minimal_width_mm: Some(25.4),
+            minimal_height_mm: Some(25.4),
+            offset_x_mm: 10.0, // bleed_x total = 5mm
+            offset_y_mm: 6.0,  // bleed_y total = 3mm
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(&contour), &opts)
+            .expect("minimal + bleed should generate");
+
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        let page = doc.get_object(page_id).unwrap().as_dict().unwrap();
+        let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+
+        // Page = contour box + 0.5·Decalaj per axis.
+        let mb = page.get(b"MediaBox").unwrap().as_array().unwrap();
+        let (pw, ph) = (n(&mb[2]) - n(&mb[0]), n(&mb[3]) - n(&mb[1]));
+        assert!((pw - (25.4 + 5.0) * MM).abs() < 0.5, "page width should be contour + 0.5·Decalaj X, got {pw}");
+        assert!((ph - (25.4 + 3.0) * MM).abs() < 0.5, "page height should be contour + 0.5·Decalaj Y, got {ph}");
+
+        // Overlay contour is centred: placed at (bleed/2) = (2.5mm, 1.5mm).
+        let ov_ref = page.get(b"Resources").unwrap().as_dict().unwrap()
+            .get(b"XObject").unwrap().as_dict().unwrap()
+            .get(b"OV").unwrap().as_reference().unwrap();
+        let ov = doc.get_object(ov_ref).unwrap().as_stream().unwrap();
+        let content = ov.decompressed_content().unwrap_or_else(|_| ov.content.clone());
+        let parsed = Content::decode(&content).unwrap();
+        let mut last_cm: Option<(f32, f32)> = None;
+        let mut placement: Option<(f32, f32)> = None;
+        for op in &parsed.operations {
+            if op.operator == "cm" {
+                last_cm = Some((n(&op.operands[4]), n(&op.operands[5])));
+            } else if op.operator == "Do"
+                && matches!(op.operands.first(), Some(Object::Name(name)) if name == b"BGC")
+            {
+                placement = last_cm;
+                break;
+            }
+        }
+        let (tx, ty) = placement.expect("overlay should place the BGC contour");
+        assert!((tx - 2.5 * MM).abs() < 0.5, "overlay X should be bleed/2 (2.5mm), got {tx}");
+        assert!((ty - 1.5 * MM).abs() < 0.5, "overlay Y should be bleed/2 (1.5mm), got {ty}");
     }
 
     #[test]

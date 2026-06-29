@@ -197,6 +197,10 @@ export interface PageOptions {
   // "Non-decupare" (no-cut): one card per page, page sized to the card, no
   // imposition grid and no registration circles.
   noCut: boolean
+  // "Minimal": crop the generated page (and each card cell) down to the contour's
+  // bounding box instead of the background size, so the output is a smaller page
+  // tightly bounding the contour. Only has an effect once a contour is loaded.
+  minimal: boolean
 }
 
 // Defaults mirror `Options::default()` in src/options.rs.
@@ -214,6 +218,7 @@ export const defaultPageOptions: PageOptions = {
   preparationTimeS: 60,
   travelSpeedMmS: 16,
   noCut: false,
+  minimal: false,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s
@@ -251,6 +256,11 @@ export function buildJsOptions(
   contourTargetWidthMm?: number | null,
   contourTargetHeightMm?: number | null,
   contourRotation?: number | null,
+  // "Minimal" crop window = the contour's bounding box (card-mm). When `page.minimal`
+  // is set and these are > 0, the print page/cells shrink to this box, cropping the
+  // background to the contour window (origin = the contour offset above).
+  minimalWidthMm?: number | null,
+  minimalHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -278,6 +288,7 @@ export function buildJsOptions(
     combine: page.combine,
     debug: page.debug,
     noCut: page.noCut,
+    minimal: page.minimal,
     safeMarginMm,
     textColors: words.map((w) => w.color),
     // Text fill opacity, one per word (always sent — text always renders).
@@ -314,5 +325,7 @@ export function buildJsOptions(
     ...(contourTargetWidthMm != null && contourTargetWidthMm > 0 ? { contourTargetWidthMm } : {}),
     ...(contourTargetHeightMm != null && contourTargetHeightMm > 0 ? { contourTargetHeightMm } : {}),
     ...(contourRotation != null && contourRotation !== 0 ? { contourRotation } : {}),
+    ...(minimalWidthMm != null && minimalWidthMm > 0 ? { minimalWidthMm } : {}),
+    ...(minimalHeightMm != null && minimalHeightMm > 0 ? { minimalHeightMm } : {}),
   }
 }

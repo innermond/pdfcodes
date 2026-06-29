@@ -222,6 +222,9 @@ pub fn generate(
         contour_target_width_mm: None,
         contour_target_height_mm: None,
         contour_rotation: 0,
+        minimal: false,
+        minimal_width_mm: None,
+        minimal_height_mm: None,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -297,6 +300,9 @@ struct JsOptions {
     contour_target_width_mm: Option<f32>,
     contour_target_height_mm: Option<f32>,
     contour_rotation: i64,
+    minimal: bool,
+    minimal_width_mm: Option<f32>,
+    minimal_height_mm: Option<f32>,
 }
 
 impl Default for JsOptions {
@@ -351,6 +357,9 @@ impl Default for JsOptions {
             contour_target_width_mm: None,
             contour_target_height_mm: None,
             contour_rotation: 0,
+            minimal: false,
+            minimal_width_mm: None,
+            minimal_height_mm: None,
         }
     }
 }
@@ -500,6 +509,9 @@ pub fn generate_with_options(
         contour_target_width_mm: js_opts.contour_target_width_mm,
         contour_target_height_mm: js_opts.contour_target_height_mm,
         contour_rotation: js_opts.contour_rotation,
+        minimal: js_opts.minimal,
+        minimal_width_mm: js_opts.minimal_width_mm,
+        minimal_height_mm: js_opts.minimal_height_mm,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

@@ -10,6 +10,7 @@ use crate::geometry::{CardLayout, MM};
 pub(crate) fn build_contour_page(
     doc: &mut Document,
     pages_id: ObjectId,
+    catalog_id: ObjectId,
     bg_form_id: ObjectId,
     layout: &CardLayout,
     // Translate the contour outline by (offset_x, offset_y) PDF points relative
@@ -32,7 +33,9 @@ pub(crate) fn build_contour_page(
         operations.push(Operation::new("Q", vec![]));
     }
 
-    operations.extend(layout.registration_circles());
+    // The registration circles are positioning/print marks, not cut lines, so the
+    // cut PDF marks them non-printable (an Optional Content Group, view-only).
+    let circle_ocg = wrap_registration_circles(doc, catalog_id, &mut operations, layout)?;
 
     let content = Content { operations };
     let content_stream = Stream::new(Dictionary::new(), content.encode()?);
@@ -50,19 +53,53 @@ pub(crate) fn build_contour_page(
             xobjs.set("BG", Object::Reference(bg_form_id));
             xobjs
         }));
+        if let Some(ocg_id) = circle_ocg {
+            res.set("Properties", circle_properties(ocg_id));
+        }
         res
     }));
 
     Ok(doc.add_object(Object::Dictionary(page_dict)))
 }
 
+// Append the layout's registration circles to `operations`, wrapped in an
+// `/OC /OC0 BDC … EMC` marked-content sequence tied to a fresh non-printable OCG.
+// Returns the OCG id (for the page's Resources /Properties), or `None` when the
+// layout draws no circles (e.g. no-cut), in which case nothing is appended.
+fn wrap_registration_circles(
+    doc: &mut Document,
+    catalog_id: ObjectId,
+    operations: &mut Vec<Operation>,
+    layout: &CardLayout,
+) -> Result<Option<ObjectId>, Box<dyn std::error::Error>> {
+    let circles = layout.registration_circles();
+    if circles.is_empty() {
+        return Ok(None);
+    }
+    let ocg_id = super::ocg::add_nonprintable_ocg(doc, catalog_id, b"Registration circles (non-printable)")?;
+    operations.push(Operation::new("BDC", vec![Object::Name(b"OC".to_vec()), Object::Name(b"OC0".to_vec())]));
+    operations.extend(circles);
+    operations.push(Operation::new("EMC", vec![]));
+    Ok(Some(ocg_id))
+}
+
+// Resources /Properties dict mapping the `/OC0` marked-content tag to `ocg_id`.
+fn circle_properties(ocg_id: ObjectId) -> Object {
+    let mut props = Dictionary::new();
+    props.set("OC0", Object::Reference(ocg_id));
+    Object::Dictionary(props)
+}
+
 // Build a contour page that draws a single grid of spanning lines instead of
 // tiling individual card rectangles. Used when the contour shape is a plain
-// rectangle at zero inset — replacing (cols * rows) overlapping rectangles with
-// (cols + 1) vertical + (rows + 1) horizontal hairlines that share no edges.
+// rectangle — replacing (cols * rows) overlapping rectangles with spanning
+// hairlines that share no edges. With no gutter the card edges coincide into a
+// (cols + 1) × (rows + 1) grid; with a gutter (Decalaj) each card keeps its own
+// edges, so adjacent cards get two lines a gutter apart.
 pub(crate) fn build_grid_contour_page(
     doc: &mut Document,
     pages_id: ObjectId,
+    catalog_id: ObjectId,
     layout: &CardLayout,
     stroke: TextColor,
     // Translate the whole grid by (offset_x, offset_y) PDF points. In practice
@@ -100,28 +137,37 @@ pub(crate) fn build_grid_contour_page(
         stroke_op,
     ];
 
-    // Helper: x position of the col-th vertical line.
-    let col_x = |col: usize| -> f32 {
-        if col < cols { x0 + col as f32 * (layout.card_w + layout.gutter_x) } else { x1 }
-    };
+    // Distinct vertical/horizontal line positions = each card's two edges per axis.
+    // With a gutter (Decalaj) > 0 the left/right (and bottom/top) edges of adjacent
+    // cards are distinct, so every interior boundary yields TWO lines a gutter apart;
+    // with no gutter the shared edges coincide and dedupe back to the contiguous
+    // (cols + 1)/(rows + 1) grid, so no edge is double-stroked.
+    let mut xs: Vec<f32> = Vec::with_capacity(2 * cols);
+    for c in 0..cols {
+        let left = x0 + c as f32 * (layout.card_w + layout.gutter_x);
+        xs.push(left);
+        xs.push(left + layout.card_w);
+    }
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
 
-    // Helper: y position of the row-th horizontal line.
-    let row_y = |row: usize| -> f32 {
-        if row < rows { y0 + row as f32 * (layout.card_h + layout.gutter_y) } else { y1 }
-    };
+    let mut ys: Vec<f32> = Vec::with_capacity(2 * rows);
+    for r in 0..rows {
+        let bottom = y0 + r as f32 * (layout.card_h + layout.gutter_y);
+        ys.push(bottom);
+        ys.push(bottom + layout.card_h);
+    }
+    ys.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
 
     // --- Vertical lines in serpentine order ---
-    // Col 0: bottom → top (ly0 → ly1)
-    // Col 1: top → bottom (ly1 → ly0)
-    // Col n: alternates — even index starts at bottom, odd at top.
+    // Line 0: bottom → top (ly0 → ly1); each subsequent line alternates direction
+    // (even index starts at the bottom, odd at the top).
     //
     // Each line is stroked on its own (m … l … S) so it stays a separate path:
     // a downstream cutter treats every line as a distinct cuttable path rather
     // than one continuous toolpath. Serpentine ordering is kept only to minimize
     // plotter travel between successive cuts.
-    for col in 0..=cols {
-        let x = col_x(col);
-        let (from_y, to_y) = if col % 2 == 0 { (ly0, ly1) } else { (ly1, ly0) };
+    for (i, &x) in xs.iter().enumerate() {
+        let (from_y, to_y) = if i % 2 == 0 { (ly0, ly1) } else { (ly1, ly0) };
         operations.push(Operation::new("m", vec![Object::Real(x), Object::Real(from_y)]));
         operations.push(Operation::new("l", vec![Object::Real(x), Object::Real(to_y)]));
         operations.push(Operation::new("S", vec![]));
@@ -130,25 +176,24 @@ pub(crate) fn build_grid_contour_page(
     // --- Horizontal lines in serpentine order, picking up from where the last
     //     vertical line ended ---
     //
-    // The last vertical line has index `cols`. It ends at ly1 when cols is even
-    // (bottom→top), or ly0 when cols is odd (top→bottom). We are also at x1
-    // (rightmost column boundary), so the first horizontal begins at lx1 and
-    // goes left. Rows are visited starting from the end nearest to where we
+    // The last vertical line ends at the top when its index is even (bottom→top).
+    // It's also the rightmost (xs is ascending), so the first horizontal begins at
+    // lx1 and goes left. Rows are visited starting from the end nearest to where we
     // just stopped (top-first when the last vertical ended at the top).
-    let last_vertical_at_top = cols % 2 == 0;
-    for i in 0..=rows {
+    let last_vertical_at_top = xs.len() % 2 == 1;
+    for j in 0..ys.len() {
         // Walk rows from the end where the last vertical finished.
-        let row = if last_vertical_at_top { rows - i } else { i };
-        let y = row_y(row);
-        // i=0: first horizontal, goes right → left (we came from x1).
-        let (from_x, to_x) = if i % 2 == 0 { (lx1, lx0) } else { (lx0, lx1) };
+        let y = if last_vertical_at_top { ys[ys.len() - 1 - j] } else { ys[j] };
+        // j=0: first horizontal, goes right → left (we came from x1).
+        let (from_x, to_x) = if j % 2 == 0 { (lx1, lx0) } else { (lx0, lx1) };
         operations.push(Operation::new("m", vec![Object::Real(from_x), Object::Real(y)]));
         operations.push(Operation::new("l", vec![Object::Real(to_x), Object::Real(y)]));
         operations.push(Operation::new("S", vec![]));
     }
 
-    // Each line was stroked individually above; now draw registration circles.
-    operations.extend(layout.registration_circles());
+    // Each line was stroked individually above; now draw the registration circles
+    // as a non-printable layer (positioning/print marks, not cut lines).
+    let circle_ocg = wrap_registration_circles(doc, catalog_id, &mut operations, layout)?;
 
     let content = Content { operations };
     let content_stream = Stream::new(Dictionary::new(), content.encode()?);
@@ -159,7 +204,13 @@ pub(crate) fn build_grid_contour_page(
     page_dict.set("Parent", Object::Reference(pages_id));
     page_dict.set("MediaBox", Object::Array(layout.host_box.clone()));
     page_dict.set("Contents", Object::Reference(content_id));
-    page_dict.set("Resources", Object::Dictionary(Dictionary::new()));
+    page_dict.set("Resources", Object::Dictionary({
+        let mut res = Dictionary::new();
+        if let Some(ocg_id) = circle_ocg {
+            res.set("Properties", circle_properties(ocg_id));
+        }
+        res
+    }));
 
     Ok(doc.add_object(Object::Dictionary(page_dict)))
 }

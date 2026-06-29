@@ -13,14 +13,27 @@ export function NumberField({
   onChange: (value: number) => void
   step?: string | number
 }) {
+  // Display rounded, human-friendly numbers (computed values otherwise show long
+  // binary-float tails like 12.3456789). This is display-only: the parent state
+  // keeps full precision and is never overwritten with the rounded value, so
+  // generation is unaffected. While the field is focused we show the raw keystrokes
+  // (`editing`) so typing is never reformatted mid-entry.
+  const [editing, setEditing] = useState<string | null>(null)
+  const rounded = (v: number) => (Number.isNaN(v) ? '' : String(Math.round(v * 1000) / 1000))
+  const display = editing ?? rounded(value)
   return (
     <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="number"
         step={step}
-        value={Number.isNaN(value) ? '' : value}
-        onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(parseFloat(e.target.value))}
+        value={display}
+        onFocus={() => setEditing(rounded(value))}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => {
+          setEditing(e.target.value)
+          onChange(parseFloat(e.target.value))
+        }}
+        onBlur={() => setEditing(null)}
         className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400"
       />
     </label>
