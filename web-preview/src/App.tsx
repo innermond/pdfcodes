@@ -16,6 +16,8 @@ import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFiel
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
+import { computeContourVectorMaskPath } from './lib/contourVectorMask'
+import { renderContourVectorImage } from './lib/contourVectorImage'
 import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
@@ -551,27 +553,32 @@ export default function App() {
         }
       : null
 
-  // Derive the dim-exterior "keep" path for an uploaded contour by tracing its
-  // rendered outline (preset shapes use `contourCutShape`). The result is a vector
-  // path, so it stays crisp at any preview zoom. Recomputes when the rendered
-  // contour changes (upload, page pick, rotation); a null result (open outline)
-  // leaves CardCanvas to dim the bounding box instead.
+  // Derive the dim-exterior "keep" path for an uploaded contour (preset shapes use
+  // `contourCutShape`). The result is a vector path, so it stays crisp at any preview
+  // zoom. Recomputes when the contour changes (upload, page pick, rotation); a null
+  // result leaves CardCanvas to dim the bounding box instead.
   //
-  // The trace source is rendered well above the on-screen scale-2 so curved
-  // outlines (e.g. a small circle) are finely sampled — at scale 2 the tracer only
-  // sees a chunky low-res circle and simplifies it to a faceted polygon. Small
-  // contours get the full scale; large ones are capped (~2400 px/side) to bound
-  // the flood-fill cost.
+  // Primary path: translate the PDF's own drawing operators to SVG via PDF.js
+  // (`computeContourVectorMaskPath`) — true Béziers, exact corners, no rasterization.
+  // Fallback: if the operator walk finds no usable closed geometry (open outline,
+  // clip-only or image-based contour), trace the rasterized outline instead. The trace
+  // source is rendered well above the on-screen scale-2 so curved outlines are finely
+  // sampled; small contours get the full scale, large ones are capped (~2400 px/side)
+  // to bound the flood-fill cost.
   useEffect(() => {
     if (contourSource !== 'upload' || !contourBackgroundFile || !contourBackground) {
       setContourInteriorMaskPath(null)
       return
     }
     let cancelled = false
-    const maxSidePt = Math.max(contourBackground.widthPt, contourBackground.heightPt)
-    const traceScale = maxSidePt > 0 ? Math.max(2, Math.min(8, 2400 / maxSidePt)) : 4
-    renderPdfBackground(contourBackgroundFile, contourPageNumber, contourRotation, traceScale)
-      .then((hires) => computeContourInteriorMaskPath(hires.imageUrl))
+    const traceFallback = () => {
+      const maxSidePt = Math.max(contourBackground.widthPt, contourBackground.heightPt)
+      const traceScale = maxSidePt > 0 ? Math.max(2, Math.min(8, 2400 / maxSidePt)) : 4
+      return renderPdfBackground(contourBackgroundFile, contourPageNumber, contourRotation, traceScale)
+        .then((hires) => computeContourInteriorMaskPath(hires.imageUrl))
+    }
+    computeContourVectorMaskPath(contourBackgroundFile, contourPageNumber, contourRotation)
+      .then((d) => d ?? traceFallback())
       .then((d) => { if (!cancelled) setContourInteriorMaskPath(d) })
       .catch(() => { if (!cancelled) setContourInteriorMaskPath(null) })
     return () => { cancelled = true }
@@ -949,7 +956,7 @@ export default function App() {
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
           setContourBackgroundFile(contourFile)
           setContourPageNumber(savedContourPage)
-          renderPdfBackground(contourFile, savedContourPage)
+          renderContourPreview(contourFile, savedContourPage)
             .then((bg) => {
               setContourBackground(bg)
               setContourPageCount(bg.pageCount)
@@ -1249,6 +1256,16 @@ export default function App() {
     setWords((prev) => (prev.every((w) => w.color === target) ? prev : prev.map((w) => ({ ...w, color: target }))))
   }, [backgroundSource, autoTextColor, simpleBgColor, words.length])
 
+  // Render the contour preview as a crisp vector SVG image (so enlarging it doesn't
+  // pixelate); fall back to the raster renderer for contours with no painted vector
+  // geometry (image/text-only PDFs). Both return the same PdfBackground shape, so every
+  // contour render site can share this.
+  function renderContourPreview(file: File, pageNumber = 1, rotation = 0): Promise<PdfBackground> {
+    return renderContourVectorImage(file, pageNumber, rotation)
+      .then((vec) => vec ?? renderPdfBackground(file, pageNumber, rotation))
+      .catch(() => renderPdfBackground(file, pageNumber, rotation))
+  }
+
   function handleContourBackgroundFileChange(file: File | null) {
     setContourBackground(null)
     setContourBackgroundError(null)
@@ -1268,7 +1285,7 @@ export default function App() {
       setContourTargetWidthMm(bg.widthPt / MM)
       setContourTargetHeightMm(bg.heightPt / MM)
     }
-    renderPdfBackground(file)
+    renderContourPreview(file)
       .then((bg) => {
         setContourPageCount(bg.pageCount)
         // Pick a page other than the background's: prefer the next page, fall back
@@ -1277,7 +1294,7 @@ export default function App() {
         const contourPage = sameAsBackground ? pickDistinctPage(backgroundPageNumber, bg.pageCount) : 1
         if (sameAsBackground && contourPage !== 1) {
           setContourPageNumber(contourPage)
-          return renderPdfBackground(file, contourPage).then(prefill)
+          return renderContourPreview(file, contourPage).then(prefill)
         }
         prefill(bg)
       })
@@ -1292,7 +1309,7 @@ export default function App() {
     const page = Math.min(Math.max(1, Math.round(pageNumber)), contourPageCount)
     setContourPageNumber(page)
     setContourBackgroundError(null)
-    renderPdfBackground(contourBackgroundFile, page, contourRotation)
+    renderContourPreview(contourBackgroundFile, page, contourRotation)
       .then((bg) => {
         setContourBackground(bg)
         setContourTargetWidthMm(bg.widthPt / MM)
@@ -1315,7 +1332,7 @@ export default function App() {
     // A preset shape's generation effect depends on contourRotation and re-renders
     // the rotated outline itself; only the uploaded file needs a manual re-render.
     if (contourSource === 'upload') {
-      renderPdfBackground(contourBackgroundFile, contourPageNumber, next)
+      renderContourPreview(contourBackgroundFile, contourPageNumber, next)
         .then(setContourBackground)
         .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
     }
