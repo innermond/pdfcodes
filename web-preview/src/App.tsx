@@ -2219,9 +2219,47 @@ export default function App() {
             </div>
 
             {selected && selectedIndex !== null && (
-              <div className="flex flex-wrap gap-3 border-t border-gray-200 pt-3 dark:border-gray-700 [&>*]:min-w-40 [&>*]:flex-1">
+              <div className="flex flex-col gap-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+              <Section title="Tipografie" collapsible>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
+                </div>
+                <div className="w-full">
+                  <RadioGroupField<FontSource>
+                    label="Font pentru acest cuvânt"
+                    value={fontSources[selectedIndex]}
+                    onChange={(v) => handleWordFontSourceChange(selectedIndex, v)}
+                    options={[
+                      { value: 'google', label: 'Google Font' },
+                      { value: 'custom', label: 'Fișier propriu (.ttf/.otf)' },
+                    ]}
+                  />
+                  <div className="mt-2">
+                    {fontSources[selectedIndex] === 'google' ? (
+                      <GoogleFontPicker
+                        key={selectedIndex}
+                        value={googleFontSelections[selectedIndex]}
+                        onChange={(selection, font) => handleWordGoogleFontChange(selectedIndex, selection, font)}
+                      />
+                    ) : (
+                      <>
+                        <FileField
+                          key={selectedIndex}
+                          label="Font pentru acest cuvânt (opțional)"
+                          accept=".ttf,.otf,font/ttf,font/otf"
+                          onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
+                        />
+                        {fonts[selectedIndex] && (
+                          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              </Section>
+              <Section title="Poziție" collapsible>
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                 <SelectField<Align | 'custom'>
                   label="Aliniere orizontală"
                   warning={selected.xMm !== null ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
@@ -2281,6 +2319,9 @@ export default function App() {
                   value={selected.xMm ?? NaN}
                   onChange={(v) => updateWord(selectedIndex, { xMm: Number.isNaN(v) ? null : v })}
                 />
+                </div>
+              </Section>
+              <Section title="Stil" collapsible defaultCollapsed>
                 <ColorField
                   label="Culoare text"
                   value={selected.color}
@@ -2289,6 +2330,7 @@ export default function App() {
                     updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
                   }}
                 />
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField
                   label="Opacitate (0-1)"
                   value={selected.opacity}
@@ -2306,6 +2348,9 @@ export default function App() {
                 <NumberField label="Rotație (grade)" value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
                 <CheckboxField label="Oglindire X" checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
                 <CheckboxField label="Oglindire Y" checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />
+                </div>
+              </Section>
+              <Section title="Fundal text" collapsible defaultCollapsed>
                 <ColorField
                   label="Fundal text"
                   value={selected.background}
@@ -2313,7 +2358,7 @@ export default function App() {
                   onChange={(v) => updateWord(selectedIndex, { background: v })}
                 />
                 {selected.background !== null && (
-                  <>
+                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                     <NumberField
                       label="Lățime fundal (mm, gol = automat)"
                       value={selected.backgroundWidthMm ?? NaN}
@@ -2326,8 +2371,10 @@ export default function App() {
                       options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                       onChange={(v) => updateWord(selectedIndex, { backgroundBlendMode: v })}
                     />
-                  </>
+                  </div>
                 )}
+              </Section>
+              <Section title="Contur text" collapsible defaultCollapsed>
                 <ColorField
                   label="Contur text"
                   value={selected.contourColor}
@@ -2336,7 +2383,7 @@ export default function App() {
                   onChange={(v) => updateWord(selectedIndex, { contourColor: v })}
                 />
                 {selected.contourColor !== null && (
-                  <>
+                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                     <NumberField label="Lățime contur (mm)" value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
                     <SelectField
                       label="Mod îmbinare contur"
@@ -2344,40 +2391,9 @@ export default function App() {
                       options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                       onChange={(v) => updateWord(selectedIndex, { contourBlendMode: v })}
                     />
-                  </>
-                )}
-                <div className="w-full">
-                  <RadioGroupField<FontSource>
-                    label="Font pentru acest cuvânt"
-                    value={fontSources[selectedIndex]}
-                    onChange={(v) => handleWordFontSourceChange(selectedIndex, v)}
-                    options={[
-                      { value: 'google', label: 'Google Font' },
-                      { value: 'custom', label: 'Fișier propriu (.ttf/.otf)' },
-                    ]}
-                  />
-                  <div className="mt-2">
-                    {fontSources[selectedIndex] === 'google' ? (
-                      <GoogleFontPicker
-                        key={selectedIndex}
-                        value={googleFontSelections[selectedIndex]}
-                        onChange={(selection, font) => handleWordGoogleFontChange(selectedIndex, selection, font)}
-                      />
-                    ) : (
-                      <>
-                        <FileField
-                          key={selectedIndex}
-                          label="Font pentru acest cuvânt (opțional)"
-                          accept=".ttf,.otf,font/ttf,font/otf"
-                          onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
-                        />
-                        {fonts[selectedIndex] && (
-                          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
-                        )}
-                      </>
-                    )}
                   </div>
-                </div>
+                )}
+              </Section>
               </div>
             )}
           </Section>
