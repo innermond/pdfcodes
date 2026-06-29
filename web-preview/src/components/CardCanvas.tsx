@@ -1,8 +1,9 @@
 import { useId, useRef } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
-import type { BlendMode, WordStyle } from '../lib/options'
+import { MM, type BlendMode, type WordStyle } from '../lib/options'
 import { contourMaskPathD } from '../lib/contourMask'
 import { WordOverlay } from './WordOverlay'
+import { ContourOverlay } from './ContourOverlay'
 
 // Describes the cut region for the "dim exterior" overlay. A preset shape carries
 // its kind + normalized box (fractions of the contour's own space, PDF y-up) so
@@ -33,6 +34,9 @@ export function CardCanvas({
   dimExterior = false,
   contourCutShape = null,
   contourInteriorMaskPath = null,
+  contourSelected = false,
+  onContourSelect,
+  onContourOffsetChange,
   words,
   fonts,
   safeMarginMm,
@@ -60,6 +64,12 @@ export function CardCanvas({
   // dim knockout when there's no precise `contourCutShape`; null falls back to the
   // contour's bounding box.
   contourInteriorMaskPath?: string | null
+  // The contour is "selected" for direct manipulation (drag / arrow-key nudge). Mutually
+  // exclusive with word selection — the parent clears one when the other is chosen.
+  contourSelected?: boolean
+  onContourSelect?: () => void
+  // Raw new contour offset in mm (X rightward, Y upward); the parent clamps it.
+  onContourOffsetChange?: (xMm: number, yMm: number) => void
   words: WordStyle[]
   fonts: (LoadedFont | null)[]
   safeMarginMm: number
@@ -71,13 +81,16 @@ export function CardCanvas({
   const svgRef = useRef<SVGSVGElement>(null)
   const maskId = useId()
 
+  // The contour image's rect in card (SVG) points. Shared by the dim-exterior knockout
+  // and the drag/selection overlay so they line up exactly with the drawn <image>.
+  const ix = contourOffsetXPt
+  const iw = contourWidthPt
+  const ih = contourHeightPt
+  const iy = cardHeightPt - contourHeightPt - contourOffsetYPt
+
   // The "dim exterior" knockout: the cut region to keep bright, positioned to
   // match exactly where the contour image is drawn below (lines for x/y/w/h).
   const dimKnockout = dimExterior && contourImageUrl ? (() => {
-    const ix = contourOffsetXPt
-    const iw = contourWidthPt
-    const ih = contourHeightPt
-    const iy = cardHeightPt - contourHeightPt - contourOffsetYPt
     if (contourCutShape) {
       const { frac, rxFrac, ryFrac, kind, orientation, rotation } = contourCutShape
       // The rendered contour image is the unrotated shape rotated `rot` clockwise
@@ -155,8 +168,24 @@ export function CardCanvas({
               {dimKnockout}
             </mask>
           </defs>
-          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="black" opacity={0.58} mask={`url(#${maskId})`} />
+          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="black" opacity={0.58} mask={`url(#${maskId})`} pointerEvents="none" />
         </>
+      )}
+      {contourImageUrl && onContourSelect && onContourOffsetChange && (
+        <ContourOverlay
+          svgRef={svgRef}
+          cardWidthPt={cardWidthPt}
+          cardHeightPt={cardHeightPt}
+          ix={ix}
+          iy={iy}
+          iw={iw}
+          ih={ih}
+          offsetXMm={contourOffsetXPt / MM}
+          offsetYMm={contourOffsetYPt / MM}
+          selected={contourSelected}
+          onSelect={onContourSelect}
+          onChange={onContourOffsetChange}
+        />
       )}
       {words.map((word, index) => (
         <WordOverlay
@@ -167,7 +196,7 @@ export function CardCanvas({
           safeMarginMm={safeMarginMm}
           backgroundPaddingMm={backgroundPaddingMm}
           fontFamily={fontFamilyForWord(fonts, index)}
-          selected={selectedIndex === index}
+          selected={selectedIndex === index && !contourSelected}
           svgRef={svgRef}
           onSelect={() => onSelect(index)}
           onChange={(next) => onChangeWord(index, next)}

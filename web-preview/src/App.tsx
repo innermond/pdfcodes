@@ -278,6 +278,10 @@ export default function App() {
   // the contour box stays fully inside the background — see contourOffsetMax*.
   const [contourOffsetXMm, setContourOffsetXMm] = useState(0)
   const [contourOffsetYMm, setContourOffsetYMm] = useState(0)
+  // Whether the contour is selected for direct manipulation (drag / arrow-key nudge in
+  // the preview). Mutually exclusive with word selection (a word is always selectedIndex,
+  // so we gate on this flag rather than nulling the index).
+  const [contourSelected, setContourSelected] = useState(false)
   // Last contour offset bounds, used to preserve the offset's *relative* position
   // (its fraction of the available slack) when the card or contour is resized —
   // so a centered contour stays centered and a nudged one stays proportional,
@@ -509,6 +513,13 @@ export default function App() {
   // out-of-range value reaching the preview or the generator.
   const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
   const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
+
+  // Drag / arrow-key nudge from the preview: clamp the raw offset into the in-card range
+  // (same clamp the offset sliders apply) before storing it.
+  function handleContourOffsetChange(xMm: number, yMm: number) {
+    setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, xMm), contourOffsetMaxXMm))
+    setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, yMm), contourOffsetMaxYMm))
+  }
 
   // Preserve the contour offset's relative position across any resize of the card
   // or the contour. We remember the previous bounds and re-express the offset at
@@ -1269,6 +1280,7 @@ export default function App() {
   function handleContourBackgroundFileChange(file: File | null) {
     setContourBackground(null)
     setContourBackgroundError(null)
+    setContourSelected(false)
     setContourBackgroundFile(file)
     setContourPageNumber(1)
     setContourPageCount(1)
@@ -1341,6 +1353,7 @@ export default function App() {
   function handleContourSourceChange(source: ContourSource) {
     setContourSource(source)
     setShapeError(null)
+    setContourSelected(false)
     // Reset the resize/rotate overrides on every switch so the new source starts
     // from its own detected/card size (upload re-detects on load; the preset
     // shape re-prefills to the card size in its generation effect).
@@ -2718,12 +2731,15 @@ export default function App() {
                       dimExterior={dimContourExterior}
                       contourCutShape={contourCutShape}
                       contourInteriorMaskPath={contourInteriorMaskPath}
+                      contourSelected={contourSelected && contourBackground != null}
+                      onContourSelect={() => setContourSelected(true)}
+                      onContourOffsetChange={handleContourOffsetChange}
                       words={words}
                       fonts={fonts}
                       safeMarginMm={safeMarginMm}
                       backgroundPaddingMm={backgroundPaddingMm}
                       selectedIndex={selectedIndex}
-                      onSelect={setSelectedIndex}
+                      onSelect={(i) => { setSelectedIndex(i); setContourSelected(false) }}
                       onChangeWord={updateWord}
                     />
                   </div>
