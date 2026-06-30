@@ -261,6 +261,9 @@ export function buildJsOptions(
   // background to the contour window (origin = the contour offset above).
   minimalWidthMm?: number | null,
   minimalHeightMm?: number | null,
+  // Trim an uploaded contour to the bounding box of its drawn path instead of its page
+  // MediaBox (see `contourTrimToPath` in App / `content_path_bbox` in Rust).
+  contourTrimToPath?: boolean,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -327,5 +330,6 @@ export function buildJsOptions(
     ...(contourRotation != null && contourRotation !== 0 ? { contourRotation } : {}),
     ...(minimalWidthMm != null && minimalWidthMm > 0 ? { minimalWidthMm } : {}),
     ...(minimalHeightMm != null && minimalHeightMm > 0 ? { minimalHeightMm } : {}),
+    ...(contourTrimToPath ? { contourTrimToPath: true } : {}),
   }
 }

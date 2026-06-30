@@ -71,6 +71,12 @@ export async function extractContourOps(
   file: File,
   pageNumber = 1,
   rotation = 0,
+  // Trim the result to the tight bounding box of the painted geometry instead of the
+  // full page: translate every device point so the artwork's box starts at (0,0) and
+  // report vw/vh (and widthPt/heightPt) as that box. Lets a contour sitting inside a
+  // whitespace-padded page be sized/placed by its artwork. Mirrors the backend's
+  // `content_path_bbox` trim so preview and output agree.
+  trim = false,
 ): Promise<ContourOps | null> {
   const data = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data }).promise
@@ -257,7 +263,98 @@ export async function extractContourOps(
     }
   }
 
+  if (trim) {
+    const bb = paintedBBox(paths)
+    if (bb) {
+      const [x0, y0, x1, y1] = bb
+      const tw = x1 - x0
+      const th = y1 - y0
+      if (tw > 0 && th > 0) {
+        // Shift every device point so the artwork's bounding box starts at (0,0); the
+        // viewBox (image) and 0..1 normalization (mask) then both span the artwork.
+        for (const path of paths) {
+          for (const sp of path.subpaths) {
+            for (const s of sp.segs) {
+              s.p[0] -= x0; s.p[1] -= y0
+              if (s.t === 'C') {
+                s.c1[0] -= x0; s.c1[1] -= y0
+                s.c2[0] -= x0; s.c2[1] -= y0
+              }
+            }
+          }
+        }
+        return { widthPt: tw, heightPt: th, pageCount, vw: tw, vh: th, paths }
+      }
+    }
+  }
+
   return { widthPt: vw, heightPt: vh, pageCount, vw, vh, paths }
+}
+
+// Tight bounding box (device space) of every painted (stroke or fill) subpath,
+// honoring true cubic-Bézier extents and growing stroked paths by half their width so
+// the stroke isn't clipped. Returns `[minX, minY, maxX, maxY]`, or null when nothing
+// paints. Matches the backend `content_path_bbox` so the trimmed size agrees.
+function paintedBBox(paths: PaintedPath[]): [number, number, number, number] | null {
+  const b = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  const accAxis = (axis: 0 | 1, v: number) => {
+    if (axis === 0) { if (v < b.minX) b.minX = v; if (v > b.maxX) b.maxX = v }
+    else { if (v < b.minY) b.minY = v; if (v > b.maxY) b.maxY = v }
+  }
+  let found = false
+  for (const path of paths) {
+    if (!path.stroke && !path.fill) continue
+    const grow = path.stroke ? path.strokeWidth / 2 : 0
+    let pathHadPoint = false
+    for (const sp of path.subpaths) {
+      let prev: Point | null = null
+      for (const s of sp.segs) {
+        if (s.t === 'C' && prev) {
+          accumulateCubicAxis(prev, s.c1, s.c2, s.p, accAxis)
+        } else {
+          accAxis(0, s.p[0]); accAxis(1, s.p[1])
+        }
+        prev = s.p
+        found = true
+        pathHadPoint = true
+      }
+    }
+    if (grow > 0 && pathHadPoint) {
+      b.minX -= grow; b.minY -= grow; b.maxX += grow; b.maxY += grow
+    }
+  }
+  return found ? [b.minX, b.minY, b.maxX, b.maxY] : null
+}
+
+// Feed the tight bounds of one cubic Bézier (p0→p3, controls c1,c2) into `accAxis`,
+// evaluating each axis at its derivative roots in (0,1) plus the endpoints.
+function accumulateCubicAxis(p0: Point, c1: Point, c2: Point, p3: Point, accAxis: (axis: 0 | 1, v: number) => void) {
+  for (let axis = 0 as 0 | 1; axis < 2; axis = (axis + 1) as 0 | 1) {
+    const a = p0[axis], bb = c1[axis], c = c2[axis], d = p3[axis]
+    accAxis(axis, a)
+    accAxis(axis, d)
+    // B'(t) = 0 → quadratic A t^2 + B t + C = 0 with these coefficients.
+    const A = -a + 3 * bb - 3 * c + d
+    const B = 2 * (a - 2 * bb + c)
+    const C = bb - a
+    for (const t of quadRoots(A, B, C)) {
+      if (t <= 0 || t >= 1) continue
+      const mt = 1 - t
+      const v = mt * mt * mt * a + 3 * mt * mt * t * bb + 3 * mt * t * t * c + t * t * t * d
+      accAxis(axis, v)
+    }
+  }
+}
+
+function quadRoots(a: number, b: number, c: number): number[] {
+  if (Math.abs(a) < 1e-12) {
+    if (Math.abs(b) < 1e-12) return []
+    return [-c / b]
+  }
+  const disc = b * b - 4 * a * c
+  if (disc < 0) return []
+  const s = Math.sqrt(disc)
+  return [(-b + s) / (2 * a), (-b - s) / (2 * a)]
 }
 
 // Serialize subpaths to an SVG path-data fragment. `map` converts a device-space point

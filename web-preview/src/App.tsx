@@ -59,6 +59,7 @@ interface Preset {
   googleFontSelections: (GoogleFontSelection | null)[]
   contourSource: ContourSource
   contourPageNumber: number
+  contourTrimToPath?: boolean
   shapeKind: ShapeKind
   shapeCornerRadiusMm: number
   shapeCornerOrientation: CornerOrientation
@@ -324,6 +325,15 @@ export default function App() {
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
   const [contourPageNumber, setContourPageNumber] = useState(1)
   const [contourPageCount, setContourPageCount] = useState(1)
+  // True when the app auto-selected the contour page (a page distinct from the
+  // background's) on load, rather than the user picking it. Drives an
+  // informational note and is cleared once the user changes the page manually.
+  const [contourPageAutoPicked, setContourPageAutoPicked] = useState(false)
+  // Size an uploaded contour by the bounding box of its drawn path instead of its
+  // page MediaBox. Off = page size (historical behavior); on = trim to the artwork so
+  // a cut line inside a whitespace-padded page is sized/placed by the shape. The user
+  // must then align the cut to the print carefully (the origin/extent change).
+  const [contourTrimToPath, setContourTrimToPath] = useState(false)
   // User-editable target size for an uploaded contour PDF (NaN = no override,
   // pre-filled with the detected MediaBox on load), plus a lock that keeps the
   // contour's aspect ratio and a rotation (0/90/180/270, clockwise) — the same
@@ -588,12 +598,12 @@ export default function App() {
       return renderPdfBackground(contourBackgroundFile, contourPageNumber, contourRotation, traceScale)
         .then((hires) => computeContourInteriorMaskPath(hires.imageUrl))
     }
-    computeContourVectorMaskPath(contourBackgroundFile, contourPageNumber, contourRotation)
+    computeContourVectorMaskPath(contourBackgroundFile, contourPageNumber, contourRotation, contourTrimToPath)
       .then((d) => d ?? traceFallback())
       .then((d) => { if (!cancelled) setContourInteriorMaskPath(d) })
       .catch(() => { if (!cancelled) setContourInteriorMaskPath(null) })
     return () => { cancelled = true }
-  }, [contourSource, contourBackgroundFile, contourBackground, contourPageNumber, contourRotation])
+  }, [contourSource, contourBackgroundFile, contourBackground, contourPageNumber, contourRotation, contourTrimToPath])
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -838,6 +848,7 @@ export default function App() {
       googleFontSelections,
       contourSource,
       contourPageNumber,
+      contourTrimToPath,
       shapeKind,
       shapeCornerRadiusMm,
       shapeCornerOrientation,
@@ -964,10 +975,12 @@ export default function App() {
             })
             .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
         }
+        const savedContourTrim = preset.contourTrimToPath === true
+        setContourTrimToPath(savedContourTrim)
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
           setContourBackgroundFile(contourFile)
           setContourPageNumber(savedContourPage)
-          renderContourPreview(contourFile, savedContourPage)
+          renderContourPreview(contourFile, savedContourPage, 0, savedContourTrim)
             .then((bg) => {
               setContourBackground(bg)
               setContourPageCount(bg.pageCount)
@@ -1271,8 +1284,11 @@ export default function App() {
   // pixelate); fall back to the raster renderer for contours with no painted vector
   // geometry (image/text-only PDFs). Both return the same PdfBackground shape, so every
   // contour render site can share this.
-  function renderContourPreview(file: File, pageNumber = 1, rotation = 0): Promise<PdfBackground> {
-    return renderContourVectorImage(file, pageNumber, rotation)
+  // `trim` (default = current toggle) trims the vector render to the artwork's box;
+  // the raster fallback can't trim, so an image/text-only contour stays page-sized
+  // (matching the backend, which also falls back to the page when nothing paints).
+  function renderContourPreview(file: File, pageNumber = 1, rotation = 0, trim = contourTrimToPath): Promise<PdfBackground> {
+    return renderContourVectorImage(file, pageNumber, rotation, trim)
       .then((vec) => vec ?? renderPdfBackground(file, pageNumber, rotation))
       .catch(() => renderPdfBackground(file, pageNumber, rotation))
   }
@@ -1284,6 +1300,7 @@ export default function App() {
     setContourBackgroundFile(file)
     setContourPageNumber(1)
     setContourPageCount(1)
+    setContourPageAutoPicked(false)
     setContourTargetWidthMm(NaN)
     setContourTargetHeightMm(NaN)
     setContourRotation(0)
@@ -1306,6 +1323,7 @@ export default function App() {
         const contourPage = sameAsBackground ? pickDistinctPage(backgroundPageNumber, bg.pageCount) : 1
         if (sameAsBackground && contourPage !== 1) {
           setContourPageNumber(contourPage)
+          setContourPageAutoPicked(true)
           return renderContourPreview(file, contourPage).then(prefill)
         }
         prefill(bg)
@@ -1320,8 +1338,25 @@ export default function App() {
     if (!contourBackgroundFile) return
     const page = Math.min(Math.max(1, Math.round(pageNumber)), contourPageCount)
     setContourPageNumber(page)
+    setContourPageAutoPicked(false)
     setContourBackgroundError(null)
     renderContourPreview(contourBackgroundFile, page, contourRotation)
+      .then((bg) => {
+        setContourBackground(bg)
+        setContourTargetWidthMm(bg.widthPt / MM)
+        setContourTargetHeightMm(bg.heightPt / MM)
+      })
+      .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Toggle "size by path vs. page": re-render the preview with the new trim and
+  // re-detect the contour size from the result (the box snaps to the artwork or back
+  // to the page). Resets any manual resize override, like a page change does.
+  function handleContourTrimChange(trim: boolean) {
+    setContourTrimToPath(trim)
+    if (!contourBackgroundFile) return
+    setContourBackgroundError(null)
+    renderContourPreview(contourBackgroundFile, contourPageNumber, contourRotation, trim)
       .then((bg) => {
         setContourBackground(bg)
         setContourTargetWidthMm(bg.widthPt / MM)
@@ -1626,7 +1661,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead.
@@ -1643,7 +1678,7 @@ export default function App() {
         // background slots: cardWidth/Height (7th/8th) and backgroundRotation
         // (15th). The 10th (contourPageNumber, only for the combine overlay) is
         // unused here — undefined so the offset/canvas args land in their slots.
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, contourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, contourRotation), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, contourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, contourRotation, undefined, undefined, undefined, undefined, undefined, contourTrimToPath), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
@@ -1746,6 +1781,7 @@ export default function App() {
         sampleCombine ? contourRotation : undefined,
         sampleMinimal ? effectiveContourWidthMm : undefined,
         sampleMinimal ? effectiveContourHeightMm : undefined,
+        contourTrimToPath,
       )
 
       await ensureWasmInit()
@@ -2097,11 +2133,33 @@ export default function App() {
                   onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
                 />
                 {contourPageCount > 1 && (
-                  <NumberField
-                    label={`Pagina contur (1–${contourPageCount})`}
-                    value={contourPageNumber}
-                    onChange={handleContourPageChange}
-                  />
+                  <>
+                    <NumberField
+                      label={`Pagina contur (1–${contourPageCount})`}
+                      value={contourPageNumber}
+                      onChange={handleContourPageChange}
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {contourPageAutoPicked
+                        ? `Aplicația folosește automat pagina ${contourPageNumber} din ${contourPageCount} (diferită de pagina fundalului).`
+                        : `Aplicația folosește pagina ${contourPageNumber} din ${contourPageCount}.`}
+                    </p>
+                  </>
+                )}
+                {contourBackgroundFile && (
+                  <>
+                    <CheckboxField
+                      label="Dimensiunea conturului (nu a paginii)"
+                      checked={contourTrimToPath}
+                      onChange={handleContourTrimChange}
+                    />
+                    {contourTrimToPath && (
+                      <p className="text-xs text-amber-600 dark:text-amber-500">
+                        Atenție: conturul este redus la conturul desenului, ignorând marginile
+                        goale ale paginii. Aliniați cu grijă decuparea la print.
+                      </p>
+                    )}
+                  </>
                 )}
               </>
             ) : (

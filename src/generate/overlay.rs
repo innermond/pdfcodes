@@ -26,6 +26,10 @@ pub(crate) fn build_overlay(
     rotation: i64,
     target_width_mm: Option<f32>,
     target_height_mm: Option<f32>,
+    // Trim the overlaid contour to the bounding box of its drawn path instead of its
+    // page MediaBox, matching the standalone cut (see `content_path_bbox`). Keeps the
+    // combine overlay aligned with the trimmed cut.
+    trim_to_path: bool,
 ) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
     let contour_doc = Document::load_mem(contour_background_bytes)?;
     let contour_pages = contour_doc.get_pages();
@@ -52,6 +56,27 @@ pub(crate) fn build_overlay(
         _ => layout.card_h,
     };
 
+    // With "trim to path" on, shrink the size to the artwork's bounding box and shift
+    // the content so that box sits at the origin — the same trim mod.rs applies to the
+    // standalone cut, applied here (before rotation/scale) so the combine overlay
+    // stays aligned with it. Falls back to the page size when nothing paints.
+    let raw_content = contour_doc.get_page_content(*contour_page_id)?;
+    let (raw_w, raw_h, raw_content) = if trim_to_path {
+        match crate::measure::content_path_bbox(&raw_content) {
+            Some((x0, y0, x1, y1)) if (x1 - x0) > 0.0 && (y1 - y0) > 0.0 => {
+                let shifted = [
+                    format!("q 1 0 0 1 {:.4} {:.4} cm\n", -x0, -y0).into_bytes(),
+                    raw_content,
+                    b"\nQ\n".to_vec(),
+                ].concat();
+                ((x1 - x0) as f32, (y1 - y0) as f32, shifted)
+            }
+            _ => (raw_w, raw_h, raw_content),
+        }
+    } else {
+        (raw_w, raw_h, raw_content)
+    };
+
     // Bake the page's /Rotate plus the user rotation into the form content, then
     // report the *displayed* size (swapped for 90/270) — exactly as the
     // background pipeline does in mod.rs, so overlay and standalone cut agree.
@@ -67,7 +92,6 @@ pub(crate) fn build_overlay(
         _ => (raw_w, raw_h, Vec::new()),
     };
 
-    let raw_content = contour_doc.get_page_content(*contour_page_id)?;
     let rotated_content = if rotate_prefix.is_empty() {
         raw_content
     } else {

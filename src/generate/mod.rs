@@ -145,6 +145,29 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         _ => 842.0,
     };
 
+    // Fetch the page's content once (reused below as the XObject body). For a contour
+    // job with "trim to path" on, shrink the reported size from the page MediaBox to
+    // the tight bounding box of the drawn artwork and shift the content so that box
+    // sits at the origin — so a cut line inside a whitespace-padded page is sized and
+    // placed by the artwork, not the page. Falls back to the page size when nothing
+    // paints (no vector geometry to bound).
+    let raw_page_content = doc.get_page_content(*bg_page_id)?;
+    let (raw_w, raw_h, raw_page_content) = if opts.contour && opts.contour_trim_to_path {
+        match crate::measure::content_path_bbox(&raw_page_content) {
+            Some((x0, y0, x1, y1)) if (x1 - x0) > 0.0 && (y1 - y0) > 0.0 => {
+                let shifted = [
+                    format!("q 1 0 0 1 {:.4} {:.4} cm\n", -x0, -y0).into_bytes(),
+                    raw_page_content,
+                    b"\nQ\n".to_vec(),
+                ].concat();
+                ((x1 - x0) as f32, (y1 - y0) as f32, shifted)
+            }
+            _ => (raw_w, raw_h, raw_page_content),
+        }
+    } else {
+        (raw_w, raw_h, raw_page_content)
+    };
+
     // Honor the page's /Rotate (clockwise, multiple of 90). A rotated page is
     // displayed with its dimensions swapped (for 90/270), so we bake the rotation
     // into the background XObject's content and report the *displayed* size — this
@@ -167,9 +190,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // Get background content bytes for XObject, with the page rotation baked in
     // (wrapped in q/Q so the transform doesn't leak into anything appended later).
     let bg_content_bytes_raw = if rotate_prefix.is_empty() {
-        doc.get_page_content(*bg_page_id)?
+        raw_page_content
     } else {
-        [b"q\n".to_vec(), rotate_prefix, doc.get_page_content(*bg_page_id)?, b"\nQ\n".to_vec()].concat()
+        [b"q\n".to_vec(), rotate_prefix, raw_page_content, b"\nQ\n".to_vec()].concat()
     };
 
     // Apply user-specified card dimensions via a PDF `cm` scale transform.
@@ -357,7 +380,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         } else {
             (opts.contour_offset_x_mm * crate::geometry::MM, opts.contour_offset_y_mm * crate::geometry::MM)
         };
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm)?)
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path)?)
     } else {
         None
     };
@@ -952,6 +975,71 @@ mod tests {
         let two_sheets_total = out_two_sheets.time_cutting_total_s.expect("total cutting time should be set");
 
         assert!((two_sheets_total - single_sheet_total * 2.0).abs() < 1e-2);
+    }
+
+    // A single-page contour PDF whose stroked rectangle path (60x40) sits at (50,30)
+    // inside a much larger 200x100 MediaBox — the "artwork with whitespace margins"
+    // case `contour_trim_to_path` exists for.
+    fn offset_path_contour_pdf() -> Vec<u8> {
+        use lopdf::content::Operation;
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let content = Content { operations: vec![
+            Operation::new("re", vec![Object::Real(50.0), Object::Real(30.0), Object::Real(60.0), Object::Real(40.0)]),
+            Operation::new("S", vec![]),
+        ]};
+        let content_id = doc.add_object(Stream::new(Dictionary::new(), content.encode().unwrap()));
+        let mut page = Dictionary::new();
+        page.set("Type", Object::Name(b"Page".to_vec()));
+        page.set("Parent", Object::Reference(pages_id));
+        page.set("Contents", Object::Reference(content_id));
+        page.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(200.0), Object::Real(100.0)]));
+        let page_id = doc.add_object(Object::Dictionary(page));
+        let mut pages = Dictionary::new();
+        pages.set("Type", Object::Name(b"Pages".to_vec()));
+        pages.set("Count", Object::Integer(1));
+        pages.set("Kids", Object::Array(vec![Object::Reference(page_id)]));
+        doc.objects.insert(pages_id, Object::Dictionary(pages));
+        let mut cat = Dictionary::new();
+        cat.set("Type", Object::Name(b"Catalog".to_vec()));
+        cat.set("Pages", Object::Reference(pages_id));
+        let cat_id = doc.add_object(Object::Dictionary(cat));
+        doc.trailer.set("Root", Object::Reference(cat_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    // Width of the contour cut page's `BG` Form XObject BBox in the generated PDF —
+    // the size the contour is tiled at, which trimming should shrink to the artwork.
+    fn cut_bg_form_box(pdf: &[u8]) -> (f32, f32) {
+        let doc = Document::load_mem(pdf).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let page = doc.get_object(page_id).unwrap().as_dict().unwrap();
+        let res = page.get(b"Resources").unwrap().as_dict().unwrap();
+        let xobjs = res.get(b"XObject").unwrap().as_dict().unwrap();
+        let bg_ref = xobjs.get(b"BG").unwrap().as_reference().unwrap();
+        let bbox = doc.get_object(bg_ref).unwrap().as_stream().unwrap().dict.get(b"BBox").unwrap().as_array().unwrap();
+        let n = |o: &Object| match o { Object::Integer(i) => *i as f32, Object::Real(r) => *r, _ => 0.0 };
+        (n(&bbox[2]), n(&bbox[3]))
+    }
+
+    #[test]
+    fn contour_trim_to_path_sizes_cut_by_artwork_not_page() {
+        let contour = offset_path_contour_pdf();
+
+        // Page size (default): the cut is tiled at the full 200x100 MediaBox.
+        let untrimmed = Options { contour: true, no_cut: true, ..Options::default() };
+        let out = generate_pdf(None, &contour, None, &untrimmed).expect("untrimmed contour should generate");
+        let (w, h) = cut_bg_form_box(&out.pdf);
+        assert!((w - 200.0).abs() < 0.01 && (h - 100.0).abs() < 0.01, "page size expected, got {w}x{h}");
+
+        // Trim to path: shrinks to the artwork box (60x40 grown by the default 1pt
+        // line width = 61x41), proving the content was both resized and re-originated.
+        let trimmed = Options { contour: true, no_cut: true, contour_trim_to_path: true, ..Options::default() };
+        let out = generate_pdf(None, &contour, None, &trimmed).expect("trimmed contour should generate");
+        let (w, h) = cut_bg_form_box(&out.pdf);
+        assert!((w - 61.0).abs() < 0.01 && (h - 41.0).abs() < 0.01, "trimmed artwork size expected, got {w}x{h}");
     }
 
     #[test]

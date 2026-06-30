@@ -145,6 +145,11 @@ pub struct Options {
     pub contour_target_width_mm: Option<f32>,
     pub contour_target_height_mm: Option<f32>,
     pub contour_rotation: i64,
+    // Trim an uploaded contour to the tight bounding box of its drawn path instead of
+    // its page MediaBox, so a cut line sitting inside a larger page (with whitespace
+    // margins) is sized/placed by the artwork, not the page. Default: false (use the
+    // page size, the historical behavior). See `measure::content_path_bbox`.
+    pub contour_trim_to_path: bool,
     // "Minimal" mode: crop the generated print page (and each card cell) down to the
     // contour's bounding box instead of the background's size, so the output is a
     // smaller page tightly bounding the contour. `minimal_width_mm`/`minimal_height_mm`
@@ -213,6 +218,7 @@ impl Default for Options {
             contour_target_width_mm: None,
             contour_target_height_mm: None,
             contour_rotation: 0,
+            contour_trim_to_path: false,
             minimal: false,
             minimal_width_mm: None,
             minimal_height_mm: None,

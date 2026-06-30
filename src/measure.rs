@@ -1,5 +1,5 @@
 use lopdf::content::Content;
-use kurbo::{Affine, BezPath, ParamCurveArclen, PathEl, PathSeg, Point, Vec2};
+use kurbo::{Affine, BezPath, ParamCurveArclen, PathEl, PathSeg, Point, Rect, Shape, Vec2};
 
 use crate::geometry::to_f64;
 
@@ -227,6 +227,137 @@ pub(crate) fn measure_stroked_paths(content_bytes: &[u8]) -> Result<PathMetrics,
     Ok(metrics)
 }
 
+// Tight bounding box of every *painted* (stroked or filled) subpath in a content
+// stream, in the stream's own user space (CTM applied, q/Q/cm honored — the same
+// space `[0,0,MediaBox_w,MediaBox_h]` lives in). Returns `(min_x, min_y, max_x,
+// max_y)`, or `None` when nothing paints (image/text/clip-only contours), so callers
+// can fall back to the page MediaBox. Stroked paints are expanded by half the
+// (CTM-scaled) line width so the stroke isn't clipped. Used to trim an uploaded
+// contour to its artwork instead of its page — see `contour_trim_to_path`.
+pub(crate) fn content_path_bbox(content_bytes: &[u8]) -> Option<(f64, f64, f64, f64)> {
+    let content = Content::decode(content_bytes).ok()?;
+    let mut ctm_stack: Vec<Affine> = vec![Affine::IDENTITY];
+    let mut current_point = Point::ZERO;
+    let mut subpath_start = Point::ZERO;
+    let mut subpaths: Vec<BezPath> = Vec::new();
+    let mut line_width: f64 = 1.0;
+    let mut bbox: Option<Rect> = None;
+
+    let pt = |op: &lopdf::content::Operation, i: usize| -> Point {
+        Point::new(to_f64(&op.operands[i]), to_f64(&op.operands[i + 1]))
+    };
+
+    // Uniform scale the CTM applies (sqrt of the linear part's determinant), used to
+    // map the user-space line width into the transformed bbox space.
+    let ctm_scale = |m: &Affine| -> f64 {
+        let c = m.as_coeffs();
+        (c[0] * c[3] - c[1] * c[2]).abs().sqrt()
+    };
+
+    for op in &content.operations {
+        let ctm = *ctm_stack.last().unwrap();
+        match op.operator.as_str() {
+            "q" => ctm_stack.push(ctm),
+            "Q" => {
+                if ctm_stack.len() > 1 {
+                    ctm_stack.pop();
+                }
+            }
+            "cm" => {
+                let m = Affine::new([
+                    to_f64(&op.operands[0]), to_f64(&op.operands[1]),
+                    to_f64(&op.operands[2]), to_f64(&op.operands[3]),
+                    to_f64(&op.operands[4]), to_f64(&op.operands[5]),
+                ]);
+                *ctm_stack.last_mut().unwrap() = ctm * m;
+            }
+            "w" => line_width = to_f64(&op.operands[0]),
+            "m" => {
+                let p = pt(op, 0);
+                current_point = p;
+                subpath_start = p;
+                let mut bp = BezPath::new();
+                bp.move_to(ctm * p);
+                subpaths.push(bp);
+            }
+            "l" => {
+                let p = pt(op, 0);
+                if let Some(sp) = subpaths.last_mut() {
+                    sp.line_to(ctm * p);
+                }
+                current_point = p;
+            }
+            "c" => {
+                let (p1, p2, p3) = (pt(op, 0), pt(op, 2), pt(op, 4));
+                if let Some(sp) = subpaths.last_mut() {
+                    sp.curve_to(ctm * p1, ctm * p2, ctm * p3);
+                }
+                current_point = p3;
+            }
+            "v" => {
+                let (p2, p3) = (pt(op, 0), pt(op, 2));
+                let p1 = current_point;
+                if let Some(sp) = subpaths.last_mut() {
+                    sp.curve_to(ctm * p1, ctm * p2, ctm * p3);
+                }
+                current_point = p3;
+            }
+            "y" => {
+                let (p1, p3) = (pt(op, 0), pt(op, 2));
+                if let Some(sp) = subpaths.last_mut() {
+                    sp.curve_to(ctm * p1, ctm * p3, ctm * p3);
+                }
+                current_point = p3;
+            }
+            "h" => {
+                if let Some(sp) = subpaths.last_mut() {
+                    sp.close_path();
+                }
+                current_point = subpath_start;
+            }
+            "re" => {
+                let x = to_f64(&op.operands[0]);
+                let y = to_f64(&op.operands[1]);
+                let w = to_f64(&op.operands[2]);
+                let h = to_f64(&op.operands[3]);
+                let mut bp = BezPath::new();
+                bp.move_to(ctm * Point::new(x, y));
+                bp.line_to(ctm * Point::new(x + w, y));
+                bp.line_to(ctm * Point::new(x + w, y + h));
+                bp.line_to(ctm * Point::new(x, y + h));
+                bp.close_path();
+                subpaths.push(bp);
+                current_point = Point::new(x, y);
+                subpath_start = Point::new(x, y);
+            }
+            // Any paint op (fill and/or stroke) contributes the pending path to the
+            // bbox; stroked paints grow it by half the CTM-scaled line width.
+            "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" => {
+                let strokes = matches!(op.operator.as_str(), "S" | "s" | "B" | "B*" | "b" | "b*");
+                let grow = if strokes { 0.5 * line_width * ctm_scale(&ctm) } else { 0.0 };
+                for sp in &subpaths {
+                    if sp.elements().is_empty() {
+                        continue;
+                    }
+                    let r = sp.bounding_box().inflate(grow, grow);
+                    bbox = Some(match bbox {
+                        Some(b) => b.union(r),
+                        None => r,
+                    });
+                }
+                subpaths.clear();
+            }
+            // No-paint terminators (clip, end-path) drop the pending path.
+            "n" | "W" | "W*" => {
+                subpaths.clear();
+            }
+            _ => {}
+        }
+    }
+
+    bbox.map(|r| (r.x0, r.y0, r.x1, r.y1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +417,47 @@ mod tests {
         assert_eq!(metrics.node_count, 0);
         assert_eq!(metrics.sharp_turn_count, 0);
         assert_eq!(metrics.length, 0.0);
+    }
+
+    #[test]
+    fn bbox_of_offset_stroked_rect_is_tight_to_the_path() {
+        // A 30x20 rect whose lower-left sits at (15, 5) — the artwork is offset
+        // inside a larger page, exactly the multiple-shapes.pdf page-3 case.
+        let bytes = encode(vec![
+            Operation::new("re", vec![Object::Real(15.0), Object::Real(5.0), Object::Real(30.0), Object::Real(20.0)]),
+            Operation::new("S", vec![]),
+        ]);
+        let (x0, y0, x1, y1) = content_path_bbox(&bytes).unwrap();
+        // Default line width 1.0 grows the box by 0.5 on every side.
+        assert!((x0 - 14.5).abs() < 1e-6, "x0={x0}");
+        assert!((y0 - 4.5).abs() < 1e-6, "y0={y0}");
+        assert!((x1 - 45.5).abs() < 1e-6, "x1={x1}");
+        assert!((y1 - 25.5).abs() < 1e-6, "y1={y1}");
+    }
+
+    #[test]
+    fn bbox_honors_ctm_and_includes_filled_paths() {
+        // Fill (not stroke) a unit rect translated by (10, 20): bbox must follow the
+        // CTM and have no stroke inflation.
+        let bytes = encode(vec![
+            Operation::new("cm", vec![
+                Object::Real(1.0), Object::Real(0.0), Object::Real(0.0), Object::Real(1.0),
+                Object::Real(10.0), Object::Real(20.0),
+            ]),
+            Operation::new("re", vec![Object::Real(0.0), Object::Real(0.0), Object::Real(4.0), Object::Real(6.0)]),
+            Operation::new("f", vec![]),
+        ]);
+        let (x0, y0, x1, y1) = content_path_bbox(&bytes).unwrap();
+        assert!((x0 - 10.0).abs() < 1e-6 && (y0 - 20.0).abs() < 1e-6, "{x0},{y0}");
+        assert!((x1 - 14.0).abs() < 1e-6 && (y1 - 26.0).abs() < 1e-6, "{x1},{y1}");
+    }
+
+    #[test]
+    fn bbox_is_none_when_nothing_paints() {
+        let bytes = encode(vec![
+            Operation::new("re", vec![Object::Real(0.0), Object::Real(0.0), Object::Real(10.0), Object::Real(10.0)]),
+            Operation::new("n", vec![]),
+        ]);
+        assert!(content_path_bbox(&bytes).is_none());
     }
 }

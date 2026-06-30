@@ -19,8 +19,9 @@ export async function renderContourVectorImage(
   file: File,
   pageNumber = 1,
   rotation = 0,
+  trim = false,
 ): Promise<PdfBackground | null> {
-  const ops = await extractContourOps(file, pageNumber, rotation)
+  const ops = await extractContourOps(file, pageNumber, rotation, trim)
   if (!ops) return null
   const { vw, vh, pageCount, paths } = ops
 
