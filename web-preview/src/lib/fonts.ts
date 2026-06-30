@@ -25,6 +25,21 @@ export function ensureDefaultFont(): Promise<void> {
   return defaultFontReady
 }
 
+let defaultFontBytes: Promise<ArrayBuffer> | null = null
+
+// Raw bytes of the bundled default font, fetched (and cached) once. Used to embed an
+// `@font-face` for `DEFAULT_FONT_FAMILY` when rasterizing the preview SVG to an image —
+// a serialized SVG can't see the document's JS-registered FontFaces, so the bytes have
+// to travel inline. See `lib/screenshot.ts`.
+export function getDefaultFontBytes(): Promise<ArrayBuffer> {
+  if (!defaultFontBytes) {
+    defaultFontBytes = fetch(montserratBoldUrl).then((res) => res.arrayBuffer())
+  }
+  // Hand out a fresh copy each call: a consumer may transfer/detach the buffer, which
+  // must not poison the cache.
+  return defaultFontBytes.then((buf) => buf.slice(0))
+}
+
 let counter = 0
 
 // Load font bytes into the document's font set, returning a unique

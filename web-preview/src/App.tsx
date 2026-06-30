@@ -8,7 +8,8 @@ import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
 import { fetchGoogleFont } from './lib/googleFonts'
-import { ensureDefaultFont, fontFamilyForWord, loadFontFile, type LoadedFont } from './lib/fonts'
+import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
+import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
@@ -1814,6 +1815,44 @@ export default function App() {
   const [previewZoom, setPreviewZoom] = useState(1)
   const zoomInPreview = () => setPreviewZoom((z) => Math.min(PREVIEW_ZOOM_MAX, Math.round(z * PREVIEW_ZOOM_STEP * 100) / 100))
   const zoomOutPreview = () => setPreviewZoom((z) => Math.max(PREVIEW_ZOOM_MIN, Math.round((z / PREVIEW_ZOOM_STEP) * 100) / 100))
+  // "Screenshot": rasterize the live preview SVG to a PNG and copy it to the clipboard,
+  // falling back to a download when the browser refuses clipboard image-writes. The
+  // transient status drives brief button feedback.
+  type ScreenshotStatus = 'idle' | 'busy' | 'copied' | 'downloaded' | 'error'
+  const [screenshotStatus, setScreenshotStatus] = useState<ScreenshotStatus>('idle')
+  async function handleScreenshot() {
+    const svg = previewRef.current?.querySelector('svg')
+    if (!svg) return
+    setScreenshotStatus('busy')
+    try {
+      // Gather bytes for every font family the preview actually uses: the default for
+      // words without a custom font, plus each uploaded font in play.
+      const families = new Map<string, ArrayBuffer>()
+      for (let i = 0; i < words.length; i++) {
+        const family = fontFamilyForWord(fonts, i)
+        if (families.has(family)) continue
+        if (family === DEFAULT_FONT_FAMILY) {
+          families.set(family, await getDefaultFontBytes())
+        } else {
+          const lf = fonts.find((f): f is LoadedFont => f !== null && f.family === family)
+          if (lf) families.set(family, await lf.file.arrayBuffer())
+        }
+      }
+      const css = buildFontFaceCss([...families].map(([family, bytes]) => ({ family, bytes })))
+      const blob = await rasterizePreview(svg as SVGSVGElement, css)
+      const copied = await copyBlobToClipboard(blob)
+      if (!copied) downloadBlob(blob, 'previzualizare.png')
+      setScreenshotStatus(copied ? 'copied' : 'downloaded')
+    } catch {
+      setScreenshotStatus('error')
+    }
+  }
+  // Clear the transient screenshot feedback after a moment.
+  useEffect(() => {
+    if (screenshotStatus === 'idle' || screenshotStatus === 'busy') return
+    const t = setTimeout(() => setScreenshotStatus('idle'), 2000)
+    return () => clearTimeout(t)
+  }, [screenshotStatus])
   // Drag-to-pan the zoomed preview by scrolling its viewport. Mouse-only — touch
   // and trackpad keep their native scrolling. Word drags stop propagation, so
   // this only fires for pointer-downs on the background (never hijacks a word).
@@ -2764,6 +2803,24 @@ export default function App() {
                   >
                     +
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleScreenshot}
+                    disabled={screenshotStatus === 'busy'}
+                    aria-label="Captură de ecran a previzualizării (copiază în clipboard)"
+                    title="Captură de ecran (copiază în clipboard)"
+                    className="ml-auto rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    📷 Captură
+                  </button>
+                  {screenshotStatus !== 'idle' && screenshotStatus !== 'busy' && (
+                    <span
+                      className={`text-xs ${screenshotStatus === 'error' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}
+                      role="status"
+                    >
+                      {screenshotStatus === 'copied' ? 'Copiat!' : screenshotStatus === 'downloaded' ? 'Descărcat' : 'Eroare'}
+                    </span>
+                  )}
                 </div>
                 <div
                   ref={previewScrollRef}
