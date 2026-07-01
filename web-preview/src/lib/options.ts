@@ -274,6 +274,10 @@ export function buildJsOptions(
   correctOverflow?: boolean,
   minFontSizePt?: number,
   overflowCorrectionByColumn?: boolean,
+  // Inward safety margin (mm) from the cut: codes are checked against the contour
+  // eroded by this much, so the fit/correction keeps them clear of the cut line.
+  // 0 (or no contour) ⇒ test against the true cut path. See `contour_inset_mm`.
+  contourInsetMm?: number,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -347,5 +351,6 @@ export function buildJsOptions(
     ...(correctOverflow
       ? { correctOverflow: true, minFontSizePt, overflowCorrectionByColumn: overflowCorrectionByColumn === true }
       : {}),
+    ...(contourInsetMm != null && contourInsetMm > 0 ? { contourInsetMm } : {}),
   }
 }

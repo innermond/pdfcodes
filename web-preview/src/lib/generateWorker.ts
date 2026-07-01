@@ -122,9 +122,10 @@ async function generatePrint(
   const first: { pdf: Uint8Array<ArrayBuffer> | null } = { pdf: null }
   let batch: string[] = []
 
-  // Text-overflow tally accumulated across batches (each batch reports its own
-  // count + its distinct offending codes). We keep the full deduped set so the UI
-  // can offer it as a downloadable CSV; `overflowSeen` bounds the dedup.
+  // Overflow tally accumulated across batches (each batch reports its own count +
+  // its distinct offending rows — the whole row, so it's locatable in the source).
+  // We keep the full deduped set so the UI can offer it as a CSV; `overflowSeen`
+  // bounds the dedup.
   let overflowCount = 0
   const overflowSamples: string[] = []
   const overflowSeen = new Set<string>()

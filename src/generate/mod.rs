@@ -721,6 +721,50 @@ mod tests {
     }
 
     #[test]
+    fn overflow_report_lists_the_whole_row_not_the_field() {
+        // A 1pt keep region: every field on the row overflows. The report should
+        // list the entire row once (fields joined by the separator), not each field.
+        let tiny = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
+        let opts = Options {
+            font_sizes: vec![9.0, 9.0],
+            text_y_mm: vec![10.0, 4.0],
+            contour_keep_polygons: tiny,
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("AB CD\n"), BACKGROUND_PDF, None, &opts).unwrap();
+        assert_eq!(out.text_overflow_count, 1, "one overflowing row, not two fields");
+        assert_eq!(out.text_overflow_samples, vec!["AB CD".to_string()], "reports the whole row");
+    }
+
+    #[test]
+    fn contour_inset_flags_codes_that_hug_the_cut() {
+        use crate::geometry::MM;
+        // A keep region covering the whole 15x15mm card and a short code that fits
+        // comfortably at the center.
+        let card = 15.0 * MM;
+        let keep = vec![vec![(0.0, 0.0), (card, 0.0), (card, card), (0.0, card)]];
+        let base = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![7.0],
+            contour_keep_polygons: keep,
+            ..Options::default()
+        };
+        // Fits against the true cut.
+        let out = generate_pdf(Some("AB\n"), BACKGROUND_PDF, None, &base).unwrap();
+        assert_eq!(out.text_overflow_count, 0, "code fits the true cut");
+
+        // A large inset erodes the cut so far that the code no longer clears it.
+        let inset = Options { contour_inset_mm: 6.0, ..base.clone() };
+        let out = generate_pdf(Some("AB\n"), BACKGROUND_PDF, None, &inset).unwrap();
+        assert!(out.text_overflow_count > 0, "code too close to the cut with a 6mm inset");
+
+        // With correction the code shrinks until it regains the clearance.
+        let corrected = Options { correct_overflow: true, min_font_size_pt: 2.0, ..inset };
+        let out = generate_pdf(Some("AB\n"), BACKGROUND_PDF, None, &corrected).unwrap();
+        assert_eq!(out.text_overflow_count, 0, "correction restores the inset clearance");
+    }
+
+    #[test]
     fn contour_keep_region_governs_overflow_warning() {
         // A keep region that covers the whole 15x15mm card (and then some) leaves
         // every code safely inside -> no overflow flagged.

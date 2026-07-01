@@ -92,12 +92,48 @@ pub(crate) fn segments_cross(
     ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
 }
 
-// True when every vertex of `outline` is inside `region` and no outline edge
-// crosses a region edge — i.e. the outline is fully contained by the cut.
-// `outline` is a set of closed contours (glyph subpaths) in card points.
+// Distance from point `p` to the segment `a`->`b`.
+pub(crate) fn point_to_segment_dist(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (abx, aby) = (b.0 - a.0, b.1 - a.1);
+    let len2 = abx * abx + aby * aby;
+    let t = if len2 <= f32::EPSILON {
+        0.0
+    } else {
+        (((p.0 - a.0) * abx + (p.1 - a.1) * aby) / len2).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (a.0 + t * abx, a.1 + t * aby);
+    ((p.0 - cx).powi(2) + (p.1 - cy).powi(2)).sqrt()
+}
+
+// Shortest distance from `p` to the region's boundary — the nearest edge across
+// every subpath (outer cut and any holes), so the clearance is honored on all sides.
+pub(crate) fn dist_to_boundary(region: &[Vec<(f32, f32)>], p: (f32, f32)) -> f32 {
+    let mut best = f32::INFINITY;
+    for poly in region {
+        let n = poly.len();
+        if n < 2 {
+            continue;
+        }
+        let mut j = n - 1;
+        for i in 0..n {
+            let d = point_to_segment_dist(p, poly[j], poly[i]);
+            if d < best {
+                best = d;
+            }
+            j = i;
+        }
+    }
+    best
+}
+
+// True when the `outline` fits inside the cut: every vertex is inside `region`, no
+// outline edge crosses a region edge, and — when `inset > 0` — every vertex clears
+// the boundary by at least `inset` (card points), i.e. the outline sits inside the
+// region eroded by `inset`. `outline` is a set of closed contours (glyph subpaths).
 pub(crate) fn region_contains_outline(
     region: &[Vec<(f32, f32)>],
     outline: &[Vec<(f32, f32)>],
+    inset: f32,
 ) -> bool {
     if region.is_empty() {
         return true;
@@ -105,6 +141,9 @@ pub(crate) fn region_contains_outline(
     for contour in outline {
         for &pt in contour {
             if !point_in_region(region, pt) {
+                return false;
+            }
+            if inset > 0.0 && dist_to_boundary(region, pt) < inset {
                 return false;
             }
         }
@@ -443,9 +482,21 @@ mod tests {
     fn region_contains_outline_inside_and_outside() {
         let region = vec![square(0.0, 0.0, 100.0, 100.0)];
         // Fully inside.
-        assert!(region_contains_outline(&region, &[square(20.0, 20.0, 40.0, 40.0)]));
+        assert!(region_contains_outline(&region, &[square(20.0, 20.0, 40.0, 40.0)], 0.0));
         // A vertex pokes outside the right edge.
-        assert!(!region_contains_outline(&region, &[square(90.0, 20.0, 120.0, 40.0)]));
+        assert!(!region_contains_outline(&region, &[square(90.0, 20.0, 120.0, 40.0)], 0.0));
+    }
+
+    #[test]
+    fn region_contains_outline_honors_the_inset_clearance() {
+        let region = vec![square(0.0, 0.0, 100.0, 100.0)];
+        // Sits 5 units from the left/bottom edges, well inside.
+        let outline = [square(5.0, 5.0, 50.0, 50.0)];
+        // With no inset it fits; with a 6-unit inset the near edges are too close.
+        assert!(region_contains_outline(&region, &outline, 0.0));
+        assert!(!region_contains_outline(&region, &outline, 6.0));
+        // A 4-unit inset still clears (nearest edge is 5 away).
+        assert!(region_contains_outline(&region, &outline, 4.0));
     }
 
     #[test]
@@ -461,7 +512,7 @@ mod tests {
         // Outline whose vertices are inside the left part but whose top/bottom
         // edges cross the notch walls.
         let outline = vec![square(20.0, 45.0, 80.0, 55.0)];
-        assert!(!region_contains_outline(&region, &outline));
+        assert!(!region_contains_outline(&region, &outline, 0.0));
     }
 
     #[test]

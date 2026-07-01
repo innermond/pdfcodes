@@ -14,9 +14,9 @@ export interface PrintArtifact {
   name: string
   /** Where a ZIP was assembled: in memory, or streamed to an OPFS temp file. */
   sink?: 'memory' | 'opfs'
-  /** How many text labels overflowed the card / cut area, across all rows. */
+  /** How many rows have a code that overflows the card / cut area. */
   overflowCount: number
-  /** Every distinct offending code (first-seen order), for the warning + CSV download. */
+  /** Every distinct offending row (whole row, first-seen order), for the warning + CSV. */
   overflowSamples: string[]
 }
 

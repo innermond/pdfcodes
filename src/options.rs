@@ -174,6 +174,11 @@ pub struct Options {
     pub correct_overflow: bool,
     pub min_font_size_pt: f32,
     pub overflow_correction_by_column: bool,
+    // Safety inset (mm) applied to the cut contour before the fit check: a code must
+    // clear the real cut by at least this distance (it is tested against the contour
+    // eroded inward by this much), so the corrector never parks a code right on the
+    // cut line. 0 = test against the true cut path. Only used when a contour exists.
+    pub contour_inset_mm: f32,
 }
 
 impl Options {
@@ -242,6 +247,7 @@ impl Default for Options {
             correct_overflow: false,
             min_font_size_pt: 6.0,
             overflow_correction_by_column: false,
+            contour_inset_mm: 0.0,
         }
     }
 }

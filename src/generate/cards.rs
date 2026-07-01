@@ -18,11 +18,12 @@ const DEFAULT_CHAR_SPACING_PT: f32 = 0.0;
 // rounding doesn't flag text that exactly fills the available width.
 const OVERFLOW_EPS_PT: f32 = 0.1;
 
-// How often, and by how much, generated text exceeds the card width / safe area
-// (or, with a cut contour, spills outside it) — surfaced to the caller so the web
-// app can warn and offer the offenders as a downloadable CSV. `count` is the
-// number of overflowing words across all rows; `samples` holds every *distinct*
-// offending code (the web app truncates the list for the inline warning).
+// Rows whose codes don't fit the card / cut area — surfaced so the web app can warn
+// and offer them as a downloadable CSV. Reported per *row* (not per field): a field
+// may be a merge/unmerge that's hard to locate in the source data, so `count` is the
+// number of overflowing rows and `samples` holds every *distinct* offending row (the
+// whole row, fields joined by the separator; the web app truncates it for the inline
+// warning).
 #[derive(Default)]
 pub(crate) struct OverflowReport {
     pub count: usize,
@@ -49,6 +50,9 @@ fn code_fits_contour(
     ascent: f32,
     descent: f32,
     keep: &[Vec<(f32, f32)>],
+    // Inward safety margin (card points): the code must clear the cut by at least
+    // this much, i.e. it's tested against the region eroded by `inset_pt`.
+    inset_pt: f32,
 ) -> bool {
     let scale = font_size / units_per_em as f32;
     // The same flip/rotate pivot the draw path uses (word center).
@@ -84,7 +88,7 @@ fn code_fits_contour(
                     }
                 }
             }
-            if !region_contains_outline(keep, &contours) {
+            if !region_contains_outline(keep, &contours, inset_pt) {
                 return false;
             }
         }
@@ -173,6 +177,7 @@ fn word_overflows(
     card_w: f32,
     safe_margin: f32,
     keep: &[Vec<(f32, f32)>],
+    inset_pt: f32,
 ) -> bool {
     let text_width = word_text_width(advance_per_pt, wf.char_spacing, num_chars, fs);
     let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, text_width);
@@ -181,7 +186,7 @@ fn word_overflows(
         let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * fs;
         !code_fits_contour(
             &ef.face, ef.units_per_em, fs, wf.char_spacing, text,
-            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep,
+            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep, inset_pt,
         )
     } else {
         let available_w = card_w - 2.0 * safe_margin;
@@ -205,10 +210,11 @@ fn max_fitting_fs(
     card_w: f32,
     safe_margin: f32,
     keep: &[Vec<(f32, f32)>],
+    inset_pt: f32,
 ) -> f32 {
     let floor = min_fs.min(configured);
     let mut fs = configured;
-    while fs > floor && word_overflows(ef, fs, advance_per_pt, wf, num_chars, text, card_w, safe_margin, keep) {
+    while fs > floor && word_overflows(ef, fs, advance_per_pt, wf, num_chars, text, card_w, safe_margin, keep, inset_pt) {
         fs = (fs - CORRECT_STEP_PT).max(floor);
     }
     fs
@@ -228,6 +234,7 @@ fn compute_uniform_fs(
 ) -> Vec<f32> {
     let n_pos = opts.font_sizes.len();
     let min_fs = opts.min_font_size_pt;
+    let inset_pt = opts.contour_inset_mm * MM;
     let mut uniform = opts.font_sizes.clone();
     for record in records {
         for (idx, text) in record.iter().enumerate() {
@@ -241,7 +248,7 @@ fn compute_uniform_fs(
             let num_chars = text.chars().count() as f32;
             let fit = max_fitting_fs(
                 ef, wf.configured_fs, min_fs, advance_per_pt, &wf, num_chars, text,
-                card_w, safe_margin, &opts.contour_keep_polygons,
+                card_w, safe_margin, &opts.contour_keep_polygons, inset_pt,
             );
             if fit < uniform[idx] {
                 uniform[idx] = fit;
@@ -281,6 +288,8 @@ pub(crate) fn build_card_xobjects(
 
     let y_positions: Vec<f32> = opts.text_y_mm.iter().map(|y| y * MM).collect();
     let safe_margin = opts.safe_margin_mm * MM;
+    // Inward safety margin from the cut (card points); 0 tests against the true cut.
+    let inset_pt = opts.contour_inset_mm * MM;
 
     // Collect the records so the "Corectare depășire" column pre-pass can scan
     // every code before rendering (harmless for the other paths).
@@ -402,6 +411,11 @@ pub(crate) fn build_card_xobjects(
         // Draw background XObject once per card, behind all words.
         operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
 
+        // Tracks whether any field on this row overflows: we report the *whole row*
+        // (not the offending field) so the user can find it in their source data —
+        // a field may be a merge/unmerge that doesn't appear verbatim there.
+        let mut row_overflows = false;
+
         for (idx, text) in texts.iter().enumerate() {
             let wf = resolve_word_fit(opts, &y_positions, idx);
             let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx };
@@ -425,7 +439,7 @@ pub(crate) fn build_card_xobjects(
             } else if opts.correct_overflow {
                 max_fitting_fs(
                     ef, wf.configured_fs, opts.min_font_size_pt, advance_per_pt, &wf,
-                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons,
+                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt,
                 )
             } else {
                 wf.configured_fs
@@ -444,14 +458,11 @@ pub(crate) fn build_card_xobjects(
             let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * font_size;
             let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * font_size;
 
-            // Flag codes that still don't fit at the (possibly corrected) size —
-            // the cut contour when supplied, else the card/safe-margin extent.
-            // Distinct offenders kept in first-seen order for the warning + CSV.
-            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons) {
-                overflow.count += 1;
-                if seen.insert(text.to_string()) {
-                    overflow.samples.push(text.to_string());
-                }
+            // Note if this field still doesn't fit at the (possibly corrected) size —
+            // the cut contour when supplied, else the card/safe-margin extent. The row
+            // is recorded once, after the loop.
+            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt) {
+                row_overflows = true;
             }
             let background = if opts.text_backgrounds.is_empty() {
                 None
@@ -626,6 +637,15 @@ pub(crate) fn build_card_xobjects(
             operations.push(Operation::new("Q", vec![])); // restore (rotation)
         }
 
+        // One overflowing row = one count + one CSV entry (the entire row), deduped
+        // so a code repeated across rows isn't listed twice.
+        if row_overflows {
+            overflow.count += 1;
+            if seen.insert(txt.clone()) {
+                overflow.samples.push(txt.clone());
+            }
+        }
+
         let content = Content { operations };
         let content_data = content.encode()?;
 
@@ -733,7 +753,7 @@ mod tests {
         let wf = centered_fit(12.0);
         let adv = advance_sum_per_pt(&ef.face, ef.units_per_em, "AB");
         // A very wide card: nothing needs shrinking.
-        let fs = max_fitting_fs(&ef, 12.0, 6.0, adv, &wf, 2.0, "AB", 1000.0, 0.0, &[]);
+        let fs = max_fitting_fs(&ef, 12.0, 6.0, adv, &wf, 2.0, "AB", 1000.0, 0.0, &[], 0.0);
         assert_eq!(fs, 12.0);
     }
 
@@ -746,12 +766,12 @@ mod tests {
         let num = text.chars().count() as f32;
         let card_w = 40.0 * MM; // narrow: 40pt text won't fit
 
-        let fs = max_fitting_fs(&ef, 40.0, 6.0, adv, &wf, num, text, card_w, 0.0, &[]);
+        let fs = max_fitting_fs(&ef, 40.0, 6.0, adv, &wf, num, text, card_w, 0.0, &[], 0.0);
         assert!(fs < 40.0 && fs >= 6.0, "should shrink into range, got {fs}");
-        assert!(!word_overflows(&ef, fs, adv, &wf, num, text, card_w, 0.0, &[]), "shrunk size must fit");
+        assert!(!word_overflows(&ef, fs, adv, &wf, num, text, card_w, 0.0, &[], 0.0), "shrunk size must fit");
 
         // A high floor prevents shrinking enough — it stops at the minimum.
-        let fs2 = max_fitting_fs(&ef, 40.0, 39.0, adv, &wf, num, text, card_w, 0.0, &[]);
+        let fs2 = max_fitting_fs(&ef, 40.0, 39.0, adv, &wf, num, text, card_w, 0.0, &[], 0.0);
         assert_eq!(fs2, 39.0);
     }
 
@@ -782,7 +802,7 @@ mod tests {
             let adv = advance_sum_per_pt(&ef[0].face, ef[0].units_per_em, text);
             let num = text.chars().count() as f32;
             assert!(
-                !word_overflows(&ef[0], uniform[0], adv, &wf, num, text, card_w, 0.0, &[]),
+                !word_overflows(&ef[0], uniform[0], adv, &wf, num, text, card_w, 0.0, &[], 0.0),
                 "uniform size must fit {text}",
             );
         }

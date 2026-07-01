@@ -232,6 +232,7 @@ pub fn generate(
         correct_overflow: false,
         min_font_size_pt: 6.0,
         overflow_correction_by_column: false,
+        contour_inset_mm: 0.0,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -322,6 +323,8 @@ struct JsOptions {
     correct_overflow: bool,
     min_font_size_pt: f32,
     overflow_correction_by_column: bool,
+    // Inward safety margin (mm) from the cut used by the fit check / corrector.
+    contour_inset_mm: f32,
 }
 
 impl Default for JsOptions {
@@ -385,6 +388,7 @@ impl Default for JsOptions {
             correct_overflow: base.correct_overflow,
             min_font_size_pt: base.min_font_size_pt,
             overflow_correction_by_column: base.overflow_correction_by_column,
+            contour_inset_mm: base.contour_inset_mm,
         }
     }
 }
@@ -568,6 +572,7 @@ pub fn generate_with_options(
         correct_overflow: js_opts.correct_overflow,
         min_font_size_pt: js_opts.min_font_size_pt,
         overflow_correction_by_column: js_opts.overflow_correction_by_column,
+        contour_inset_mm: js_opts.contour_inset_mm,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

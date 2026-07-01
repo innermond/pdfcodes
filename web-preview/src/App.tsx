@@ -49,6 +49,7 @@ interface Preset {
   correctOverflow?: boolean
   minFontSizePt?: number
   overflowCorrectionMode?: 'per-code' | 'column'
+  contourInsetMm?: number
   backgroundPaddingMm: number
   contourOpacity: number
   contourBlendMode: BlendMode
@@ -236,12 +237,13 @@ function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { e
   return { error: 'Setează un font pentru fiecare cuvânt, sau pentru un singur cuvânt (folosit pentru toate).' }
 }
 
-// Offer the codes that fall outside the cut/card as a one-column CSV. A UTF-8 BOM
-// keeps Excel happy with Romanian diacritics; values with commas/quotes/newlines
-// are quoted per RFC 4180.
-function downloadOverflowCsv(codes: string[]) {
+// Offer the whole rows whose codes fall outside the cut/card as a one-column CSV \u2014
+// the entire row (not the offending field) so it's locatable in the source data even
+// when fields were merged/unmerged. A UTF-8 BOM keeps Excel happy with Romanian
+// diacritics; values with commas/quotes/newlines are quoted per RFC 4180.
+function downloadOverflowCsv(rows: string[]) {
   const esc = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
-  const csv = '\ufeff' + ['cod', ...codes.map(esc)].join('\r\n') + '\r\n'
+  const csv = '\ufeff' + ['rand', ...rows.map(esc)].join('\r\n') + '\r\n'
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
   const a = document.createElement('a')
   a.href = url
@@ -325,6 +327,9 @@ export default function App() {
   const [correctOverflow, setCorrectOverflow] = useState(false)
   const [minFontSizePt, setMinFontSizePt] = useState(6)
   const [overflowCorrectionMode, setOverflowCorrectionMode] = useState<'per-code' | 'column'>('per-code')
+  // Safety inset (mm) from the cut: codes are checked against the contour eroded by
+  // this much, so the fit/correction never parks a code on the cut line.
+  const [contourInsetMm, setContourInsetMm] = useState(0)
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   // While true, code/text colors auto-track a contrasting color over a simple
@@ -894,6 +899,7 @@ export default function App() {
       correctOverflow,
       minFontSizePt,
       overflowCorrectionMode,
+      contourInsetMm,
       backgroundPaddingMm,
       contourOpacity,
       contourBlendMode,
@@ -998,6 +1004,7 @@ export default function App() {
         if (typeof preset.minFontSizePt === 'number') setMinFontSizePt(preset.minFontSizePt)
         if (preset.overflowCorrectionMode === 'per-code' || preset.overflowCorrectionMode === 'column')
           setOverflowCorrectionMode(preset.overflowCorrectionMode)
+        if (typeof preset.contourInsetMm === 'number') setContourInsetMm(preset.contourInsetMm)
         if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
         if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
@@ -1761,7 +1768,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column')
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead.
@@ -1890,6 +1897,7 @@ export default function App() {
         correctOverflow,
         minFontSizePt,
         overflowCorrectionMode === 'column',
+        contourInsetMm,
       )
 
       await ensureWasmInit()
@@ -2492,9 +2500,15 @@ export default function App() {
               onChange={(v) => handleSampleTextChange(v, codeSeparator)}
             />
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-              <NumberField label="Margine de siguranță (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
+              <NumberField label="Margine (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
+              <NumberField label="Distanțăre contur (mm)" value={contourInsetMm} onChange={setContourInsetMm} min={0} step={0.5} />
             </div>
+            <p className="text-sm text-gray-500 dark:text-gray-400">
+              „Distanțare contur” trage conturul de tăiere spre interior doar pentru verificare:
+              codurile trebuie să stea cel puțin atât de departe de tăietură ca să fie considerate „sigure”.
+              Se aplică doar când folosești un contur de tăiere.
+            </p>
             {fontsError && <p className="text-sm text-red-600 dark:text-red-400">{fontsError}</p>}
             {fontsNotice && <p className="text-sm text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
@@ -3070,9 +3084,12 @@ export default function App() {
                 <div className="mt-2 flex flex-col gap-1">
                   <p className="text-sm text-amber-600 dark:text-amber-400">
                     ⚠ {printArtifact.overflowCount}{' '}
-                    {printArtifact.overflowCount === 1 ? 'text depășește' : 'texte depășesc'} zona de tăiere sau spațiul cardului
+                    {printArtifact.overflowCount === 1
+                      ? 'rând conține un cod care depășește'
+                      : 'rânduri conțin coduri care depășesc'}{' '}
+                    zona de tăiere sau spațiul cardului
                     {printArtifact.overflowSamples.length > 0 &&
-                      ` (ex: ${printArtifact.overflowSamples.slice(0, 5).join(', ')}${printArtifact.overflowSamples.length > 5 ? '…' : ''})`}.
+                      ` (ex: ${printArtifact.overflowSamples.slice(0, 5).join(' | ')}${printArtifact.overflowSamples.length > 5 ? '…' : ''})`}.
                     {' '}Micșorați fontul, scurtați codul sau măriți cardul.
                   </p>
                   {printArtifact.overflowSamples.length > 0 && (
