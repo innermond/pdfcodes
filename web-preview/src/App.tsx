@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { CardCanvas, type ContourCutShape } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
@@ -10,6 +10,7 @@ import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleF
 import { fetchGoogleFont } from './lib/googleFonts'
 import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
+import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
@@ -155,7 +156,7 @@ function describeSeparator(sep: string): string {
 
 type FontSource = 'google' | 'custom'
 
-type BackgroundSource = 'upload' | 'simple' | 'generate'
+type BackgroundSource = 'upload' | 'simple' | 'generate' | 'clipboard'
 type ContourSource = 'upload' | 'shape'
 type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
 
@@ -476,8 +477,8 @@ export default function App() {
   // Both "upload" and "create" build a background PDF that's scaled to a target
   // card size: upload's target is `bgTarget*`, create's is `genBg*`. The simple
   // source has no separate target — its card is the rendered background itself.
-  const cardTargetWidthMm = backgroundSource === 'upload' ? bgTargetWidthMm : backgroundSource === 'generate' ? genBgWidthMm : NaN
-  const cardTargetHeightMm = backgroundSource === 'upload' ? bgTargetHeightMm : backgroundSource === 'generate' ? genBgHeightMm : NaN
+  const cardTargetWidthMm = backgroundSource === 'upload' ? bgTargetWidthMm : (backgroundSource === 'generate' || backgroundSource === 'clipboard') ? genBgWidthMm : NaN
+  const cardTargetHeightMm = backgroundSource === 'upload' ? bgTargetHeightMm : (backgroundSource === 'generate' || backgroundSource === 'clipboard') ? genBgHeightMm : NaN
   const effectiveCardWidthMm = background && isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0
     ? cardTargetWidthMm
     : (background ? background.widthPt / MM : 0)
@@ -1081,7 +1082,7 @@ export default function App() {
     if (!backgroundFile) return
     const next = (bgRotation + 90) % 360
     setBgRotation(next)
-    if (backgroundSource === 'generate') {
+    if (backgroundSource === 'generate' || backgroundSource === 'clipboard') {
       const w = genBgWidthMm
       setGenBgWidthMm(genBgHeightMm)
       setGenBgHeightMm(w)
@@ -1112,7 +1113,9 @@ export default function App() {
       setBackgroundPageNumber(1)
       setBackgroundPageCount(1)
     }
-    if (source !== 'generate') {
+    // `generate` and `clipboard` share the raster-image pipeline (`genBgImageFile`);
+    // keep the loaded image when switching between them, drop it otherwise.
+    if (source !== 'generate' && source !== 'clipboard') {
       setGenBgImageFile(null)
     }
   }
@@ -1214,13 +1217,45 @@ export default function App() {
     }
   }
 
+  // Turn a clipboard image blob into a PNG file and feed it through the shared raster
+  // pipeline (same as an uploaded image). `null` blob → friendly error, no state change.
+  async function loadClipboardImageBlob(blob: Blob | null) {
+    if (!blob) {
+      setBackgroundError('Clipboard-ul nu conține o imagine.')
+      return
+    }
+    setGenBgLoading(true)
+    setBackgroundError(null)
+    try {
+      handleGenBgImageChange(await blobToPngFile(blob))
+    } catch (err) {
+      setBackgroundError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGenBgLoading(false)
+    }
+  }
+
+  // "Lipește imaginea" button: read the clipboard via the async Clipboard API.
+  async function handlePasteBackgroundFromButton() {
+    await loadClipboardImageBlob(await readImageBlobFromClipboard())
+  }
+
+  // Ctrl/Cmd+V over the clipboard-source area: read the image from the paste event
+  // (works where the async Clipboard API is unavailable).
+  function handleBackgroundPaste(e: ReactClipboardEvent) {
+    const blob = imageBlobFromDataTransfer(e.clipboardData)
+    if (!blob) return // let non-image pastes fall through untouched
+    e.preventDefault()
+    void loadClipboardImageBlob(blob)
+  }
+
   // Build a print background PDF from a raster image (PNG/JPEG) whenever the
   // "create background" source is active and the image / dimensions change,
   // feeding it through the same `backgroundFile`/`background` pipeline as an
   // uploaded PDF. Unlike the simple source there's no shortcut swatch — the
   // produced PDF is rasterised via `renderPdfBackground` for the preview.
   useEffect(() => {
-    if (backgroundSource !== 'generate' || !genBgImageFile) return
+    if ((backgroundSource !== 'generate' && backgroundSource !== 'clipboard') || !genBgImageFile) return
     let cancelled = false
     setGenBgLoading(true)
     setBackgroundError(null)
@@ -1989,6 +2024,7 @@ export default function App() {
                 { value: 'upload', label: 'Încarcă PDF' },
                 { value: 'simple', label: 'Fundal simplu' },
                 { value: 'generate', label: 'Crează fundal' },
+                { value: 'clipboard', label: 'Clipboard' },
               ]}
             />
             {backgroundSource === 'upload' ? (
@@ -2028,7 +2064,7 @@ export default function App() {
                   noneLabel="fără culoare"
                 />
               </>
-            ) : (
+            ) : backgroundSource === 'generate' ? (
               <>
                 <RadioGroupField<'file' | 'url'>
                   label="Sursă imagine"
@@ -2072,6 +2108,28 @@ export default function App() {
                   <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
                 )}
               </>
+            ) : (
+              <div
+                onPaste={handleBackgroundPaste}
+                tabIndex={0}
+                className="flex flex-col gap-2 rounded border border-dashed border-gray-300 p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
+              >
+                <button
+                  type="button"
+                  onClick={handlePasteBackgroundFromButton}
+                  disabled={genBgLoading}
+                  className="self-start rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  📋 Lipește imaginea
+                </button>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG) din clipboard.
+                  Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
+                </p>
+                {genBgLoading && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
+                )}
+              </div>
             )}
             {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
             {backgroundSource === 'upload' && background && (
@@ -2116,7 +2174,7 @@ export default function App() {
                 </div>
               </>
             )}
-            {backgroundSource === 'generate' && background && (
+            {(backgroundSource === 'generate' || backgroundSource === 'clipboard') && background && (
               <>
                 <LinkedDimensions
                   widthLabel="Lățime țintă (mm)"
