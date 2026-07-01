@@ -1855,6 +1855,14 @@ export default function App() {
   // transient status drives brief button feedback.
   type ScreenshotStatus = 'idle' | 'busy' | 'copied' | 'downloaded' | 'error'
   const [screenshotStatus, setScreenshotStatus] = useState<ScreenshotStatus>('idle')
+  // "Conturat": capture only the print + codes cut to the contour shape, as a
+  // transparent PNG. A capture-time modifier, so it lives outside the Preset.
+  const [contourCutout, setContourCutout] = useState(false)
+  const hasContour = contourBackground != null
+  const captureCutout = contourCutout && hasContour
+  // "Descarcă": force the capture to download a file instead of copying to the
+  // clipboard. Also a capture-time modifier, so it stays out of the Preset.
+  const [captureDownload, setCaptureDownload] = useState(false)
   async function handleScreenshot() {
     const svg = previewRef.current?.querySelector('svg')
     if (!svg) return
@@ -1874,9 +1882,12 @@ export default function App() {
         }
       }
       const css = buildFontFaceCss([...families].map(([family, bytes]) => ({ family, bytes })))
-      const blob = await rasterizePreview(svg as SVGSVGElement, css)
-      const copied = await copyBlobToClipboard(blob)
-      if (!copied) downloadBlob(blob, 'previzualizare.png')
+      const blob = await rasterizePreview(svg as SVGSVGElement, css, undefined, captureCutout)
+      const filename = captureCutout ? 'previzualizare-contur.png' : 'previzualizare.png'
+      // "Descarcă" forces a download; otherwise copy to the clipboard and only fall
+      // back to a download when the browser can't.
+      const copied = captureDownload ? false : await copyBlobToClipboard(blob)
+      if (!copied) downloadBlob(blob, filename)
       setScreenshotStatus(copied ? 'copied' : 'downloaded')
     } catch {
       setScreenshotStatus('error')
@@ -2861,13 +2872,38 @@ export default function App() {
                   >
                     +
                   </button>
+                  <label
+                    className="ml-auto flex cursor-pointer items-center gap-1 text-sm text-gray-700 dark:text-gray-300"
+                    title="Captura descarcă un fișier în loc să copieze în clipboard"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={captureDownload}
+                      onChange={(e) => setCaptureDownload(e.target.checked)}
+                      className="h-4 w-4 cursor-pointer rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+                    />
+                    <span className="font-medium">Descarcă</span>
+                  </label>
+                  <label
+                    className={`flex items-center gap-1 text-sm ${hasContour ? 'cursor-pointer text-gray-700 dark:text-gray-300' : 'cursor-not-allowed text-gray-400 dark:text-gray-600'}`}
+                    title="Captura decupează doar imprimarea și codurile din interiorul conturului, ca PNG transparent"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={captureCutout}
+                      disabled={!hasContour}
+                      onChange={(e) => setContourCutout(e.target.checked)}
+                      className="h-4 w-4 cursor-pointer rounded border-gray-300 disabled:cursor-not-allowed dark:border-gray-600 dark:bg-gray-800"
+                    />
+                    <span className="font-medium">Conturat</span>
+                  </label>
                   <button
                     type="button"
                     onClick={handleScreenshot}
                     disabled={screenshotStatus === 'busy'}
                     aria-label="Captură de ecran a previzualizării (copiază în clipboard)"
                     title="Captură de ecran (copiază în clipboard)"
-                    className="ml-auto rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     📷 Captură
                   </button>

@@ -80,6 +80,7 @@ export function CardCanvas({
 }) {
   const svgRef = useRef<SVGSVGElement>(null)
   const maskId = useId()
+  const clipId = useId()
 
   // The contour image's rect in card (SVG) points. Shared by the dim-exterior knockout
   // and the drag/selection overlay so they line up exactly with the drawn <image>.
@@ -88,9 +89,11 @@ export function CardCanvas({
   const ih = contourHeightPt
   const iy = cardHeightPt - contourHeightPt - contourOffsetYPt
 
-  // The "dim exterior" knockout: the cut region to keep bright, positioned to
-  // match exactly where the contour image is drawn below (lines for x/y/w/h).
-  const dimKnockout = dimExterior && contourImageUrl ? (() => {
+  // The contour "keep" region: the cut interior, positioned to match exactly where
+  // the contour image is drawn below (lines for x/y/w/h). Built whenever a contour is
+  // present so it can serve both the "dim exterior" knockout (below, gated on
+  // `dimExterior`) and the capture clip-path (a <clipPath> def, always available).
+  const contourKeepShape = contourImageUrl ? (() => {
     if (contourCutShape) {
       const { frac, rxFrac, ryFrac, kind, orientation, rotation } = contourCutShape
       // The rendered contour image is the unrotated shape rotated `rot` clockwise
@@ -119,6 +122,7 @@ export function CardCanvas({
         <path
           d={contourInteriorMaskPath}
           fillRule="evenodd"
+          clipRule="evenodd"
           fill="black"
           transform={`translate(${ix} ${iy}) scale(${iw} ${ih})`}
         />
@@ -148,8 +152,16 @@ export function CardCanvas({
       {backgroundImageUrl && (
         <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
       )}
+      {contourKeepShape && (
+        <defs>
+          <clipPath id={clipId} data-capture-clip="true">
+            {contourKeepShape}
+          </clipPath>
+        </defs>
+      )}
       {contourImageUrl && (
         <image
+          data-contour-outline="true"
           href={contourImageUrl}
           x={contourOffsetXPt}
           y={cardHeightPt - contourHeightPt - contourOffsetYPt}
@@ -160,12 +172,12 @@ export function CardCanvas({
           style={{ mixBlendMode: contourBlendMode }}
         />
       )}
-      {dimKnockout && (
+      {dimExterior && contourKeepShape && (
         <>
           <defs>
             <mask id={maskId}>
               <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="white" />
-              {dimKnockout}
+              {contourKeepShape}
             </mask>
           </defs>
           <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="black" opacity={0.58} mask={`url(#${maskId})`} pointerEvents="none" />

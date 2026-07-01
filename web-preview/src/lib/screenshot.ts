@@ -36,7 +36,12 @@ export function buildFontFaceCss(families: { family: string; bytes: ArrayBuffer 
 // Clone the preview SVG into a standalone, self-contained document ready to rasterize:
 // drop the selection chrome, inline the fonts, keep blend-mode isolation, and pin an
 // explicit pixel size (viewBox × scale) since the live SVG sizes itself via CSS.
-export function prepareSvgForExport(svg: SVGSVGElement, fontFaceCss: string, scale = DEFAULT_SCALE): SVGSVGElement {
+export function prepareSvgForExport(
+  svg: SVGSVGElement,
+  fontFaceCss: string,
+  scale = DEFAULT_SCALE,
+  clipToContour = false,
+): SVGSVGElement {
   const clone = svg.cloneNode(true) as SVGSVGElement
 
   // Remove the animated "marching-ants" selection/hover outlines (word + contour):
@@ -49,6 +54,39 @@ export function prepareSvgForExport(svg: SVGSVGElement, fontFaceCss: string, sca
   })
   groups.forEach((g) => g.remove())
 
+  // Contour cut-out: drop the contour outline drawing (it's a cutting guide, not
+  // content) and clip everything else to the contour's "keep" region so the export
+  // shows only the print + codes inside the contour, transparent outside. CardCanvas
+  // renders a hidden <clipPath data-capture-clip> with that exact geometry, and tags
+  // the contour outline <image> whose x/y/width/height are the contour's footprint —
+  // we crop the export to that box so there's no meaningless transparent margin.
+  let cropBox: { x: number; y: number; w: number; h: number } | null = null
+  if (clipToContour) {
+    const outline = clone.querySelector('[data-contour-outline]')
+    if (outline) {
+      const x = parseFloat(outline.getAttribute('x') ?? '')
+      const y = parseFloat(outline.getAttribute('y') ?? '')
+      const w = parseFloat(outline.getAttribute('width') ?? '')
+      const h = parseFloat(outline.getAttribute('height') ?? '')
+      if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) cropBox = { x, y, w, h }
+      outline.remove()
+    }
+    const cp = clone.querySelector('clipPath[data-capture-clip]')
+    if (cp?.id) {
+      const g = document.createElementNS(SVG_NS, 'g')
+      g.setAttribute('clip-path', `url(#${cp.id})`)
+      // Move the renderable content into the clipped group, leaving the font <style>,
+      // the dim <defs>, and the clip def itself in place (the def is referenced by the
+      // group, not moved into it). Snapshot first so the live list isn't mutated mid-loop.
+      for (const child of [...clone.children]) {
+        const tag = child.tagName.toLowerCase()
+        if (tag === 'style' || tag === 'defs' || tag === 'clippath') continue
+        g.appendChild(child)
+      }
+      clone.appendChild(g)
+    }
+  }
+
   if (fontFaceCss) {
     const style = document.createElementNS(SVG_NS, 'style')
     style.textContent = fontFaceCss
@@ -59,31 +97,47 @@ export function prepareSvgForExport(svg: SVGSVGElement, fontFaceCss: string, sca
   // inline — otherwise multiply/darken/etc. composite against nothing.
   clone.style.isolation = 'isolate'
 
-  const { width, height } = svg.viewBox.baseVal
-  clone.setAttribute('width', String(width * scale))
-  clone.setAttribute('height', String(height * scale))
+  // Pin an explicit pixel size (view box × scale). For a cut-out, narrow the view box
+  // to the contour footprint so the raster is just the shape, not the whole card.
+  const vb = svg.viewBox.baseVal
+  const outW = cropBox ? cropBox.w : vb.width
+  const outH = cropBox ? cropBox.h : vb.height
+  if (cropBox) clone.setAttribute('viewBox', `${cropBox.x} ${cropBox.y} ${outW} ${outH}`)
+  clone.setAttribute('width', String(outW * scale))
+  clone.setAttribute('height', String(outH * scale))
   clone.setAttribute('xmlns', SVG_NS)
 
   return clone
 }
 
-// Render the prepared SVG onto a white canvas and resolve a PNG blob.
-export async function rasterizePreview(svg: SVGSVGElement, fontFaceCss: string, scale = DEFAULT_SCALE): Promise<Blob> {
-  const { width: vbWidth, height: vbHeight } = svg.viewBox.baseVal
-  const prepared = prepareSvgForExport(svg, fontFaceCss, scale)
+// Render the prepared SVG onto a canvas and resolve a PNG blob. Normally the canvas
+// gets a white backing; for a contour cut-out (`clipToContour`) it stays transparent
+// so the area outside the contour is see-through.
+export async function rasterizePreview(
+  svg: SVGSVGElement,
+  fontFaceCss: string,
+  scale = DEFAULT_SCALE,
+  clipToContour = false,
+): Promise<Blob> {
+  const prepared = prepareSvgForExport(svg, fontFaceCss, scale, clipToContour)
   const xml = new XMLSerializer().serializeToString(prepared)
   const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }))
 
   try {
     const img = await loadImage(url)
     const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(vbWidth * scale))
-    canvas.height = Math.max(1, Math.round(vbHeight * scale))
+    // The prepared SVG's width/height are already device pixels (view box × scale) and
+    // reflect any contour crop, so the canvas matches the raster exactly.
+    canvas.width = Math.max(1, Math.round(parseFloat(prepared.getAttribute('width') ?? '0')))
+    canvas.height = Math.max(1, Math.round(parseFloat(prepared.getAttribute('height') ?? '0')))
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Canvas 2D context unavailable')
-    // White backing so transparent areas don't turn black when pasted.
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // White backing so transparent areas don't turn black when pasted — but the
+    // contour cut-out wants the exterior to stay transparent, so skip it there.
+    if (!clipToContour) {
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
     return await canvasToBlob(canvas)
   } finally {
