@@ -161,7 +161,9 @@ function describeSeparator(sep: string): string {
 
 type FontSource = 'google' | 'custom'
 
-type BackgroundSource = 'upload' | 'simple' | 'generate' | 'clipboard'
+type BackgroundSource = 'upload' | 'simple' | 'generate'
+// Where the "Fundal imagine" (generate) source gets its raster image from.
+type GenBgImageSource = 'file' | 'url' | 'clipboard'
 type ContourSource = 'upload' | 'shape'
 type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
 
@@ -275,7 +277,7 @@ export default function App() {
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
   // The image can come from a local file picker or a remote URL (sub-toggle).
-  const [genBgImageSource, setGenBgImageSource] = useState<'file' | 'url'>('file')
+  const [genBgImageSource, setGenBgImageSource] = useState<GenBgImageSource>('file')
   const [genBgImageUrl, setGenBgImageUrl] = useState('')
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
@@ -506,8 +508,8 @@ export default function App() {
   // Both "upload" and "create" build a background PDF that's scaled to a target
   // card size: upload's target is `bgTarget*`, create's is `genBg*`. The simple
   // source has no separate target — its card is the rendered background itself.
-  const cardTargetWidthMm = backgroundSource === 'upload' ? bgTargetWidthMm : (backgroundSource === 'generate' || backgroundSource === 'clipboard') ? genBgWidthMm : NaN
-  const cardTargetHeightMm = backgroundSource === 'upload' ? bgTargetHeightMm : (backgroundSource === 'generate' || backgroundSource === 'clipboard') ? genBgHeightMm : NaN
+  const cardTargetWidthMm = backgroundSource === 'upload' ? bgTargetWidthMm : backgroundSource === 'generate' ? genBgWidthMm : NaN
+  const cardTargetHeightMm = backgroundSource === 'upload' ? bgTargetHeightMm : backgroundSource === 'generate' ? genBgHeightMm : NaN
   const effectiveCardWidthMm = background && isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0
     ? cardTargetWidthMm
     : (background ? background.widthPt / MM : 0)
@@ -1153,7 +1155,7 @@ export default function App() {
     if (!backgroundFile) return
     const next = (bgRotation + 90) % 360
     setBgRotation(next)
-    if (backgroundSource === 'generate' || backgroundSource === 'clipboard') {
+    if (backgroundSource === 'generate') {
       const w = genBgWidthMm
       setGenBgWidthMm(genBgHeightMm)
       setGenBgHeightMm(w)
@@ -1184,9 +1186,9 @@ export default function App() {
       setBackgroundPageNumber(1)
       setBackgroundPageCount(1)
     }
-    // `generate` and `clipboard` share the raster-image pipeline (`genBgImageFile`);
-    // keep the loaded image when switching between them, drop it otherwise.
-    if (source !== 'generate' && source !== 'clipboard') {
+    // The "Fundal imagine" (generate) source holds the raster image
+    // (`genBgImageFile`) — including the clipboard sub-source; drop it when leaving.
+    if (source !== 'generate') {
       setGenBgImageFile(null)
     }
   }
@@ -1326,7 +1328,7 @@ export default function App() {
   // uploaded PDF. Unlike the simple source there's no shortcut swatch — the
   // produced PDF is rasterised via `renderPdfBackground` for the preview.
   useEffect(() => {
-    if ((backgroundSource !== 'generate' && backgroundSource !== 'clipboard') || !genBgImageFile) return
+    if (backgroundSource !== 'generate' || !genBgImageFile) return
     let cancelled = false
     setGenBgLoading(true)
     setBackgroundError(null)
@@ -1704,6 +1706,42 @@ export default function App() {
 
   const needsPrintInput = mode === 'print' || mode === 'both'
   const needsContourInput = mode === 'contour' || mode === 'both'
+
+  // The cutter reserves a registration-circle band around the sheet, so it can only
+  // cut within the page minus one circle diameter on every edge (see
+  // `CardLayout::compute`: available = host − 2·circle_d). The contour must fit that
+  // "legit cutting size". Only meaningful in grid mode (no-cut sizes the page to the
+  // card, no circles) when a cut is produced and its size is known.
+  const cuttableWidthMm = pageOptions.hostWidthMm - 2 * pageOptions.circleDiameterMm
+  const cuttableHeightMm = pageOptions.hostHeightMm - 2 * pageOptions.circleDiameterMm
+  // Contour box in host orientation (a 90°/270° cut rotation swaps its sides).
+  const contourRotatedQuarter = ((contourRotation % 180) + 180) % 180 === 90
+  const contourFitWidthMm = contourRotatedQuarter ? effectiveContourHeightMm : effectiveContourWidthMm
+  const contourFitHeightMm = contourRotatedQuarter ? effectiveContourWidthMm : effectiveContourHeightMm
+  const cutExceedsSheet =
+    needsContourInput &&
+    !pageOptions.noCut &&
+    pageOptions.circleDiameterMm > 0 &&
+    effectiveContourWidthMm > 0 &&
+    effectiveContourHeightMm > 0 &&
+    (cuttableWidthMm <= 0 ||
+      cuttableHeightMm <= 0 ||
+      contourFitWidthMm > cuttableWidthMm + 1e-6 ||
+      contourFitHeightMm > cuttableHeightMm + 1e-6)
+
+  // The page fields are the media (sheet) size. The print background is one card
+  // tiled onto that sheet, so a single card must fit within the media. (Printing can
+  // use the whole sheet — only cutting reserves the circle band, handled above. In
+  // no-cut mode the page is sized to the card, and in minimal the page is cropped to
+  // the contour, so neither constrains the card against a fixed media.)
+  const bgExceedsSheet =
+    needsPrintInput &&
+    !pageOptions.noCut &&
+    !pageOptions.minimal &&
+    effectiveCardWidthMm > 0 &&
+    effectiveCardHeightMm > 0 &&
+    (effectiveCardWidthMm > pageOptions.hostWidthMm + 1e-6 ||
+      effectiveCardHeightMm > pageOptions.hostHeightMm + 1e-6)
 
   async function handleGenerate() {
     if (needsPrintInput && !backgroundFile) {
@@ -2114,8 +2152,7 @@ export default function App() {
               options={[
                 { value: 'upload', label: 'Încarcă PDF' },
                 { value: 'simple', label: 'Fundal simplu' },
-                { value: 'generate', label: 'Crează fundal' },
-                { value: 'clipboard', label: 'Clipboard' },
+                { value: 'generate', label: 'Fundal imagine' },
               ]}
             />
             {backgroundSource === 'upload' ? (
@@ -2155,15 +2192,16 @@ export default function App() {
                   noneLabel="fără culoare"
                 />
               </>
-            ) : backgroundSource === 'generate' ? (
+            ) : (
               <>
-                <RadioGroupField<'file' | 'url'>
+                <RadioGroupField<GenBgImageSource>
                   label="Sursă imagine"
                   value={genBgImageSource}
                   onChange={setGenBgImageSource}
                   options={[
                     { value: 'file', label: 'Fișier local' },
                     { value: 'url', label: 'URL' },
+                    { value: 'clipboard', label: 'Clipboard' },
                   ]}
                 />
                 {genBgImageSource === 'file' ? (
@@ -2172,7 +2210,7 @@ export default function App() {
                     accept="image/png,image/jpeg"
                     onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                   />
-                ) : (
+                ) : genBgImageSource === 'url' ? (
                   <div className="flex items-end gap-2">
                     <div className="min-w-0 flex-1">
                       <TextField
@@ -2191,36 +2229,34 @@ export default function App() {
                       Încarcă
                     </button>
                   </div>
+                ) : (
+                  <div
+                    onPaste={handleBackgroundPaste}
+                    tabIndex={0}
+                    className="flex flex-col gap-2 rounded border border-dashed border-gray-300 p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
+                  >
+                    <button
+                      type="button"
+                      onClick={handlePasteBackgroundFromButton}
+                      disabled={genBgLoading}
+                      className="self-start rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      📋 Lipește imaginea
+                    </button>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG) din clipboard.
+                    </p>
+                  </div>
                 )}
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
-                </p>
+                {background && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
+                  </p>
+                )}
                 {genBgLoading && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
                 )}
               </>
-            ) : (
-              <div
-                onPaste={handleBackgroundPaste}
-                tabIndex={0}
-                className="flex flex-col gap-2 rounded border border-dashed border-gray-300 p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
-              >
-                <button
-                  type="button"
-                  onClick={handlePasteBackgroundFromButton}
-                  disabled={genBgLoading}
-                  className="self-start rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-                >
-                  📋 Lipește imaginea
-                </button>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG) din clipboard.
-                  Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
-                </p>
-                {genBgLoading && (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
-                )}
-              </div>
             )}
             {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
             {backgroundSource === 'upload' && background && (
@@ -2265,7 +2301,7 @@ export default function App() {
                 </div>
               </>
             )}
-            {(backgroundSource === 'generate' || backgroundSource === 'clipboard') && background && (
+            {backgroundSource === 'generate' && background && (
               <>
                 <LinkedDimensions
                   widthLabel="Lățime țintă (mm)"
@@ -2426,20 +2462,6 @@ export default function App() {
                     </div>
                   </>
                 )}
-                <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} step={0.1} min={0} max={1} />
-                <SelectField
-                  label="Mod combinare contur"
-                  value={contourBlendMode}
-                  options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
-                  onChange={setContourBlendMode}
-                />
-                {/* Preview-only aid: dims the background outside the cut so the
-                    user sees what the contour keeps. Doesn't change the output. */}
-                <CheckboxField
-                  label="Întunecă exteriorul conturului (doar previzualizare)"
-                  checked={dimContourExterior}
-                  onChange={setDimContourExterior}
-                />
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
                   <>
                     <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
@@ -2486,6 +2508,23 @@ export default function App() {
                     Conturul ocupă tot fundalul — nu există spațiu pentru decalaj. Folosește un contur mai mic decât fundalul.
                   </p>
                 )}
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} step={0.1} min={0} max={1} />
+                  <SelectField
+                    label="Mod combinare contur"
+                    value={contourBlendMode}
+                    options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                    onChange={setContourBlendMode}
+                  />
+                </div>
+                {/* Preview-only aid: dims the background outside the cut so the
+                    user sees what the contour keeps. Doesn't change the output. */}
+                <CheckboxField
+                  label="Întunecă exteriorul conturului (doar previzualizare)"
+                  checked={dimContourExterior}
+                  onChange={setDimContourExterior}
+                />
+
               </>
             )}
           </Section>
@@ -2847,6 +2886,22 @@ export default function App() {
             {pageOptions.noCut && (
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
+              </p>
+            )}
+
+            {bgExceedsSheet && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                ⚠ Fundalul ({effectiveCardWidthMm.toFixed(1)} × {effectiveCardHeightMm.toFixed(1)} mm) nu încape în
+                pagina ({pageOptions.hostWidthMm.toFixed(1)} × {pageOptions.hostHeightMm.toFixed(1)} mm). Mărește pagina
+                sau micșorează cardul.
+              </p>
+            )}
+
+            {cutExceedsSheet && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                ⚠ Conturul ({contourFitWidthMm.toFixed(1)} × {contourFitHeightMm.toFixed(1)} mm) nu încape în zona de
+                tăiere a paginii ({Math.max(0, cuttableWidthMm).toFixed(1)} × {Math.max(0, cuttableHeightMm).toFixed(1)}{' '}
+                mm = pagina minus cercurile de reglaj). Mărește pagina, micșorează diametrul cercurilor sau conturul.
               </p>
             )}
 
