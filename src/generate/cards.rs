@@ -6,7 +6,7 @@ use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::TextColor;
 use crate::fonts::{EmbeddedFont, encode_text_gids};
-use crate::geometry::{CardLayout, MM};
+use crate::geometry::{apply_matrix, region_contains_outline, word_transform, CardLayout, GlyphOutline, MM};
 use crate::options::Options;
 
 // Default character spacing (PDF `Tc`, in points) when `text_char_spacing_pt`
@@ -17,17 +17,81 @@ const DEFAULT_CHAR_SPACING_PT: f32 = 0.0;
 // Tolerance (in PDF points, ~0.035 mm) for the text-overflow check, so float
 // rounding doesn't flag text that exactly fills the available width.
 const OVERFLOW_EPS_PT: f32 = 0.1;
-// Cap on how many distinct offending codes we collect as examples for the UI.
-const MAX_OVERFLOW_SAMPLES: usize = 5;
 
-// How often, and by how much, generated text exceeds the card width or the
-// configured "safe" area — surfaced to the caller so the web app can warn that
-// some codes won't fit. `count` is the number of overflowing words across all
-// rows; `samples` holds up to `MAX_OVERFLOW_SAMPLES` distinct offending codes.
+// How often, and by how much, generated text exceeds the card width / safe area
+// (or, with a cut contour, spills outside it) — surfaced to the caller so the web
+// app can warn and offer the offenders as a downloadable CSV. `count` is the
+// number of overflowing words across all rows; `samples` holds every *distinct*
+// offending code (the web app truncates the list for the inline warning).
 #[derive(Default)]
 pub(crate) struct OverflowReport {
     pub count: usize,
     pub samples: Vec<String>,
+}
+
+// Does a code's rendered glyph outline lie fully inside the cut contour's keep
+// region? Builds each glyph's outline exactly as it is drawn — same ttf-parser
+// face, same per-glyph advances + `Tc` spacing, same baseline (x, y) and the same
+// rotation/flip `cm` transform (see `word_transform`) — then tests containment in
+// card coordinates. Returns true when the whole code is safely inside the cut.
+#[allow(clippy::too_many_arguments)]
+fn code_fits_contour(
+    face: &ttf_parser::Face,
+    units_per_em: i32,
+    font_size: f32,
+    char_spacing: f32,
+    text: &str,
+    x: f32,
+    y: f32,
+    rotation_deg: f32,
+    flip_x: bool,
+    flip_y: bool,
+    ascent: f32,
+    descent: f32,
+    keep: &[Vec<(f32, f32)>],
+) -> bool {
+    let scale = font_size / units_per_em as f32;
+    // The same flip/rotate pivot the draw path uses (word center).
+    let text_width_for_center = {
+        let mut w = 0.0f32;
+        for ch in text.chars() {
+            let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+            let adv = face.glyph_hor_advance(gid).unwrap_or(0);
+            w += (adv as f32 / units_per_em as f32) * font_size;
+        }
+        let n = text.chars().count() as f32;
+        w + char_spacing * (n - 1.0).max(0.0)
+    };
+    let cx = x + text_width_for_center / 2.0;
+    let cy = y + (ascent + descent) / 2.0;
+    let matrix = word_transform(rotation_deg, flip_x, flip_y, cx, cy);
+
+    // Pen advances glyph-by-glyph from the baseline origin, matching the width
+    // calc and the PDF text layout.
+    let mut pen_x = x;
+    for ch in text.chars() {
+        let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+        let mut builder = GlyphOutline::new(scale, pen_x);
+        // Outline coords are in font units; the builder scales/offsets them to
+        // the baseline origin (y=0). Shift onto the actual baseline `y` after.
+        if face.outline_glyph(gid, &mut builder).is_some() {
+            let mut contours = builder.into_contours();
+            for contour in contours.iter_mut() {
+                for p in contour.iter_mut() {
+                    p.1 += y;
+                    if let Some(m) = &matrix {
+                        *p = apply_matrix(m, *p);
+                    }
+                }
+            }
+            if !region_contains_outline(keep, &contours) {
+                return false;
+            }
+        }
+        let adv = face.glyph_hor_advance(gid).unwrap_or(0);
+        pen_x += (adv as f32 / units_per_em as f32) * font_size + char_spacing;
+    }
+    true
 }
 
 // Build a Form XObject (background + label text) for each CSV row, returning
@@ -43,6 +107,7 @@ pub(crate) fn build_card_xobjects(
     let card_w = layout.card_w;
     let card_box = layout.card_box.clone();
     let mut overflow = OverflowReport::default();
+    let mut seen = std::collections::HashSet::new();
 
     // Rows are \n-separated; fields within a row are separated by split_chars
     // (any character, not necessarily the CSV standard comma).
@@ -211,22 +276,6 @@ pub(crate) fn build_card_xobjects(
             };
             let y = y_positions[idx];
 
-            // Flag text that won't fit: either wider than the safe area, or
-            // positioned so it spills past a safe edge. Counted per word and a
-            // few distinct offenders kept as examples, so the web app can warn
-            // (rotation is ignored here — checked against the horizontal extent).
-            let available_w = card_w - 2.0 * safe_margin;
-            let overflows = text_width > available_w + OVERFLOW_EPS_PT
-                || x < safe_margin - OVERFLOW_EPS_PT
-                || x + text_width > card_w - safe_margin + OVERFLOW_EPS_PT;
-            if overflows {
-                overflow.count += 1;
-                let code = text.to_string();
-                if overflow.samples.len() < MAX_OVERFLOW_SAMPLES && !overflow.samples.contains(&code) {
-                    overflow.samples.push(code);
-                }
-            }
-
             let color = if opts.text_colors.is_empty() {
                 TextColor::Rgb(0.0, 0.0, 0.0)
             } else {
@@ -255,6 +304,35 @@ pub(crate) fn build_card_xobjects(
                 let flip_idx = if opts.text_flip_y.len() == 1 { 0 } else { idx };
                 opts.text_flip_y[flip_idx]
             };
+
+            // Flag text that won't fit. With a cut contour supplied
+            // (`contour_keep_polygons`), the real constraint is the cut, not the
+            // page: a code is flagged unless its exact glyph outlines lie fully
+            // inside the keep region. Without a contour, fall back to the legacy
+            // card/safe-margin extent check. Counted per word, with a few distinct
+            // offenders kept as examples so the web app can warn.
+            let overflows = if !opts.contour_keep_polygons.is_empty() {
+                !code_fits_contour(
+                    &ef.face, ef.units_per_em, font_size, char_spacing, text,
+                    x, y, rotation_deg, flip_x, flip_y, ascent, descent,
+                    &opts.contour_keep_polygons,
+                )
+            } else {
+                // Legacy: wider than the safe area, or spilling past a safe edge
+                // (rotation ignored — checked against the horizontal extent).
+                let available_w = card_w - 2.0 * safe_margin;
+                text_width > available_w + OVERFLOW_EPS_PT
+                    || x < safe_margin - OVERFLOW_EPS_PT
+                    || x + text_width > card_w - safe_margin + OVERFLOW_EPS_PT
+            };
+            if overflows {
+                overflow.count += 1;
+                // Keep every distinct offender (in first-seen order) so the web app
+                // can offer the full set as a CSV; `seen` bounds the dedup to O(1).
+                if seen.insert(text.to_string()) {
+                    overflow.samples.push(text.to_string());
+                }
+            }
             let background = if opts.text_backgrounds.is_empty() {
                 None
             } else {

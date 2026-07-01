@@ -264,6 +264,10 @@ export function buildJsOptions(
   // Trim an uploaded contour to the bounding box of its drawn path instead of its page
   // MediaBox (see `contourTrimToPath` in App / `content_path_bbox` in Rust).
   contourTrimToPath?: boolean,
+  // The cut contour's "keep" region (closed polygons, card points, y-up), used by
+  // the generator to flag codes the cut would slice instead of testing against the
+  // page/safe margin. Null ⇒ legacy card-confinement check. See `contourKeepRegion.ts`.
+  contourKeepRegion?: { coords: Float32Array; lens: Uint32Array } | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -331,5 +335,8 @@ export function buildJsOptions(
     ...(minimalWidthMm != null && minimalWidthMm > 0 ? { minimalWidthMm } : {}),
     ...(minimalHeightMm != null && minimalHeightMm > 0 ? { minimalHeightMm } : {}),
     ...(contourTrimToPath ? { contourTrimToPath: true } : {}),
+    ...(contourKeepRegion && contourKeepRegion.lens.length > 0
+      ? { contourKeepRegion: contourKeepRegion.coords, contourKeepSubpathLens: contourKeepRegion.lens }
+      : {}),
   }
 }

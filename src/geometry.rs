@@ -35,6 +35,237 @@ pub(crate) fn circle_ops(cx: f32, cy: f32, r: f32) -> Vec<Operation> {
     ]
 }
 
+// ---------------------------------------------------------------------------
+// Contour hit-testing: is a code's glyph outline fully inside the cut region?
+//
+// The cut "keep" region is one or more closed polygons (card points, y-up) with
+// even-odd fill, supplied by the web app (`Options::contour_keep_polygons`). A
+// code is "cut off" unless every point of its flattened glyph outline lies inside
+// the region *and* no glyph edge crosses a region edge (the latter catches a
+// stroke bulging past the cut between two inside vertices).
+// ---------------------------------------------------------------------------
+
+// Even-odd point-in-region test: cast a ray to +x and count edge crossings across
+// every subpath; an odd total means inside (so a hole in a ring subtracts out).
+pub(crate) fn point_in_region(region: &[Vec<(f32, f32)>], p: (f32, f32)) -> bool {
+    let (px, py) = p;
+    let mut inside = false;
+    for poly in region {
+        let n = poly.len();
+        if n < 3 {
+            continue;
+        }
+        let mut j = n - 1;
+        for i in 0..n {
+            let (xi, yi) = poly[i];
+            let (xj, yj) = poly[j];
+            // Does the horizontal ray at `py` cross edge (j -> i)?
+            if (yi > py) != (yj > py) {
+                let t = (py - yi) / (yj - yi);
+                let x_cross = xi + t * (xj - xi);
+                if px < x_cross {
+                    inside = !inside;
+                }
+            }
+            j = i;
+        }
+    }
+    inside
+}
+
+// Do open segments a0->a1 and b0->b1 properly cross? Uses orientation signs;
+// collinear/touch-only cases return false (a glyph vertex resting exactly on the
+// cut edge isn't treated as a crossing — the vertex-inside test governs those).
+pub(crate) fn segments_cross(
+    a0: (f32, f32),
+    a1: (f32, f32),
+    b0: (f32, f32),
+    b1: (f32, f32),
+) -> bool {
+    fn cross(o: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    }
+    let d1 = cross(a0, a1, b0);
+    let d2 = cross(a0, a1, b1);
+    let d3 = cross(b0, b1, a0);
+    let d4 = cross(b0, b1, a1);
+    ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0))
+}
+
+// True when every vertex of `outline` is inside `region` and no outline edge
+// crosses a region edge — i.e. the outline is fully contained by the cut.
+// `outline` is a set of closed contours (glyph subpaths) in card points.
+pub(crate) fn region_contains_outline(
+    region: &[Vec<(f32, f32)>],
+    outline: &[Vec<(f32, f32)>],
+) -> bool {
+    if region.is_empty() {
+        return true;
+    }
+    for contour in outline {
+        for &pt in contour {
+            if !point_in_region(region, pt) {
+                return false;
+            }
+        }
+    }
+    // No vertex escaped; make sure no edge slips across the boundary between two
+    // inside vertices (e.g. a thin protrusion poking out of a concave cut).
+    for contour in outline {
+        let n = contour.len();
+        if n < 2 {
+            continue;
+        }
+        for i in 0..n {
+            let a0 = contour[i];
+            let a1 = contour[(i + 1) % n];
+            for poly in region {
+                let m = poly.len();
+                if m < 2 {
+                    continue;
+                }
+                let mut j = m - 1;
+                for k in 0..m {
+                    if segments_cross(a0, a1, poly[k], poly[j]) {
+                        return false;
+                    }
+                    j = k;
+                }
+            }
+        }
+    }
+    true
+}
+
+// Collects a glyph's outline into flattened, closed polylines. Implements
+// `ttf_parser::OutlineBuilder`: coordinates arrive in font units, which
+// `scale` converts to points (font_size / units_per_em); `dx` shifts each glyph
+// to its pen origin. Quadratic/cubic segments are subdivided into `STEPS` line
+// segments — dense enough that testing vertices approximates the true curve.
+pub(crate) struct GlyphOutline {
+    pub contours: Vec<Vec<(f32, f32)>>,
+    scale: f32,
+    dx: f32,
+    current: Vec<(f32, f32)>,
+    start: (f32, f32),
+    last: (f32, f32),
+}
+
+impl GlyphOutline {
+    const STEPS: usize = 8;
+
+    pub fn new(scale: f32, dx: f32) -> Self {
+        GlyphOutline {
+            contours: Vec::new(),
+            scale,
+            dx,
+            current: Vec::new(),
+            start: (0.0, 0.0),
+            last: (0.0, 0.0),
+        }
+    }
+
+    fn map(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.dx + x * self.scale, y * self.scale)
+    }
+
+    fn finish_contour(&mut self) {
+        if self.current.len() >= 2 {
+            self.contours.push(std::mem::take(&mut self.current));
+        } else {
+            self.current.clear();
+        }
+    }
+}
+
+impl ttf_parser::OutlineBuilder for GlyphOutline {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.finish_contour();
+        let p = self.map(x, y);
+        self.start = p;
+        self.last = p;
+        self.current.push(p);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        let p = self.map(x, y);
+        self.last = p;
+        self.current.push(p);
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let p0 = self.last;
+        let c = self.map(x1, y1);
+        let p = self.map(x, y);
+        for s in 1..=Self::STEPS {
+            let t = s as f32 / Self::STEPS as f32;
+            let mt = 1.0 - t;
+            let px = mt * mt * p0.0 + 2.0 * mt * t * c.0 + t * t * p.0;
+            let py = mt * mt * p0.1 + 2.0 * mt * t * c.1 + t * t * p.1;
+            self.current.push((px, py));
+        }
+        self.last = p;
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let p0 = self.last;
+        let c1 = self.map(x1, y1);
+        let c2 = self.map(x2, y2);
+        let p = self.map(x, y);
+        for s in 1..=Self::STEPS {
+            let t = s as f32 / Self::STEPS as f32;
+            let mt = 1.0 - t;
+            let px = mt * mt * mt * p0.0 + 3.0 * mt * mt * t * c1.0 + 3.0 * mt * t * t * c2.0 + t * t * t * p.0;
+            let py = mt * mt * mt * p0.1 + 3.0 * mt * mt * t * c1.1 + 3.0 * mt * t * t * c2.1 + t * t * t * p.1;
+            self.current.push((px, py));
+        }
+        self.last = p;
+    }
+
+    fn close(&mut self) {
+        self.finish_contour();
+    }
+}
+
+impl GlyphOutline {
+    // Call after `outline_glyph` to flush any trailing (unclosed) contour.
+    pub fn into_contours(mut self) -> Vec<Vec<(f32, f32)>> {
+        self.finish_contour();
+        self.contours
+    }
+}
+
+// Affine transform matrix [a, b, c, d, e, f] mapping (x, y) ->
+// (a*x + c*y + e, b*x + d*y + f), matching the PDF `cm` operator built in
+// cards.rs. `None` when no rotation/flip is needed (identity).
+pub(crate) fn word_transform(
+    rotation_deg: f32,
+    flip_x: bool,
+    flip_y: bool,
+    cx: f32,
+    cy: f32,
+) -> Option<[f32; 6]> {
+    if rotation_deg == 0.0 && !flip_x && !flip_y {
+        return None;
+    }
+    let theta = rotation_deg.to_radians();
+    let (sin, cos) = theta.sin_cos();
+    let sx = if flip_x { -1.0 } else { 1.0 };
+    let sy = if flip_y { -1.0 } else { 1.0 };
+    let a = cos * sx;
+    let b = sin * sx;
+    let c = -sin * sy;
+    let d = cos * sy;
+    let e = cx - (a * cx + c * cy);
+    let f = cy - (b * cx + d * cy);
+    Some([a, b, c, d, e, f])
+}
+
+// Apply a `word_transform` matrix to a point.
+pub(crate) fn apply_matrix(m: &[f32; 6], p: (f32, f32)) -> (f32, f32) {
+    (m[0] * p.0 + m[2] * p.1 + m[4], m[1] * p.0 + m[3] * p.1 + m[5])
+}
+
 pub(crate) fn to_f64(obj: &Object) -> f64 {
     match obj {
         Object::Real(v) => *v as f64,
@@ -192,6 +423,55 @@ mod tests {
         let layout = CardLayout::compute(86.0 * MM, 54.0 * MM, &opts);
         assert_eq!(layout.cols, 2);
         assert_eq!(layout.cards_per_page, 12);
+    }
+
+    fn square(x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<(f32, f32)> {
+        vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    }
+
+    #[test]
+    fn point_in_region_even_odd_ring() {
+        // A 100x100 outer square with a 40x40 inner hole (even-odd => the hole is
+        // outside the region).
+        let region = vec![square(0.0, 0.0, 100.0, 100.0), square(30.0, 30.0, 70.0, 70.0)];
+        assert!(point_in_region(&region, (10.0, 10.0))); // in the ring
+        assert!(!point_in_region(&region, (50.0, 50.0))); // in the hole
+        assert!(!point_in_region(&region, (150.0, 50.0))); // outside entirely
+    }
+
+    #[test]
+    fn region_contains_outline_inside_and_outside() {
+        let region = vec![square(0.0, 0.0, 100.0, 100.0)];
+        // Fully inside.
+        assert!(region_contains_outline(&region, &[square(20.0, 20.0, 40.0, 40.0)]));
+        // A vertex pokes outside the right edge.
+        assert!(!region_contains_outline(&region, &[square(90.0, 20.0, 120.0, 40.0)]));
+    }
+
+    #[test]
+    fn region_contains_outline_catches_edge_crossing() {
+        // A concave (C-shaped) region: the outline's vertices could sit inside
+        // while an edge slips through the notch. Verify the edge test catches it.
+        // Region: 100x100 square with a rectangular notch cut from the right edge.
+        let region = vec![vec![
+            (0.0, 0.0), (100.0, 0.0), (100.0, 40.0),
+            (50.0, 40.0), (50.0, 60.0), (100.0, 60.0),
+            (100.0, 100.0), (0.0, 100.0),
+        ]];
+        // Outline whose vertices are inside the left part but whose top/bottom
+        // edges cross the notch walls.
+        let outline = vec![square(20.0, 45.0, 80.0, 55.0)];
+        assert!(!region_contains_outline(&region, &outline));
+    }
+
+    #[test]
+    fn word_transform_identity_and_rotation() {
+        assert!(word_transform(0.0, false, false, 5.0, 5.0).is_none());
+        // 90° rotation about the origin maps (1,0) -> (0,1).
+        let m = word_transform(90.0, false, false, 0.0, 0.0).unwrap();
+        let p = apply_matrix(&m, (1.0, 0.0));
+        assert!((p.0).abs() < 1e-5, "x≈0, got {}", p.0);
+        assert!((p.1 - 1.0).abs() < 1e-5, "y≈1, got {}", p.1);
     }
 
     #[test]

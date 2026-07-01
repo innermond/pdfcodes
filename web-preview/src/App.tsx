@@ -14,6 +14,7 @@ import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } 
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
+import { computeContourKeepRegion } from './lib/contourKeepRegion'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
 import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
@@ -230,6 +231,20 @@ function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { e
   if (set.length === 1) return { files: [set[0].file] }
   if (set.length === fonts.length) return { files: fonts.map((f) => f!.file) }
   return { error: 'Setează un font pentru fiecare cuvânt, sau pentru un singur cuvânt (folosit pentru toate).' }
+}
+
+// Offer the codes that fall outside the cut/card as a one-column CSV. A UTF-8 BOM
+// keeps Excel happy with Romanian diacritics; values with commas/quotes/newlines
+// are quoted per RFC 4180.
+function downloadOverflowCsv(codes: string[]) {
+  const esc = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
+  const csv = '\ufeff' + ['cod', ...codes.map(esc)].join('\r\n') + '\r\n'
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'depasiri.csv'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 export default function App() {
@@ -564,17 +579,50 @@ export default function App() {
   // mask path is the shape spanning the whole rect (frac = full). `rotation` lets
   // CardCanvas rotate the mask to match the rendered contour image. An uploaded
   // contour has no fillable region → null (CardCanvas dims outside its bbox).
-  const contourCutShape: ContourCutShape | null =
-    contourSource === 'shape' && contourBackground && effectiveContourWidthMm > 0 && effectiveContourHeightMm > 0
-      ? {
-          kind: shapeKind,
-          orientation: shapeCornerOrientation,
-          rotation: contourRotation,
-          frac: { x: 0, y: 0, w: 1, h: 1 },
-          rxFrac: shapeCornerRadiusMm / effectiveContourWidthMm,
-          ryFrac: shapeCornerRadiusMm / effectiveContourHeightMm,
-        }
-      : null
+  const contourCutShape: ContourCutShape | null = useMemo(
+    () =>
+      contourSource === 'shape' && contourBackground && effectiveContourWidthMm > 0 && effectiveContourHeightMm > 0
+        ? {
+            kind: shapeKind,
+            orientation: shapeCornerOrientation,
+            rotation: contourRotation,
+            frac: { x: 0, y: 0, w: 1, h: 1 },
+            rxFrac: shapeCornerRadiusMm / effectiveContourWidthMm,
+            ryFrac: shapeCornerRadiusMm / effectiveContourHeightMm,
+          }
+        : null,
+    [
+      contourSource, contourBackground, effectiveContourWidthMm, effectiveContourHeightMm,
+      shapeKind, shapeCornerOrientation, contourRotation, shapeCornerRadiusMm,
+    ],
+  )
+
+  // The cut's "keep" region in card coordinates (PDF points, y-up), handed to the
+  // generator so Step 5's overflow warning flags codes the cut would slice instead
+  // of testing against the page. Present whenever a contour is loaded; null (no
+  // contour) leaves the legacy card/safe-margin check in force. Mirrors the placement
+  // of `contourCutShape` / `contourInteriorMaskPath` in CardCanvas.
+  const contourKeepRegion = useMemo(
+    () =>
+      contourBackground
+        ? computeContourKeepRegion({
+            cardWidthMm: effectiveCardWidthMm,
+            cardHeightMm: effectiveCardHeightMm,
+            contourWidthMm: effectiveContourWidthMm,
+            contourHeightMm: effectiveContourHeightMm,
+            offsetXMm: clampedContourOffsetXMm,
+            offsetYMm: clampedContourOffsetYMm,
+            cutShape: contourCutShape,
+            interiorMaskPath: contourInteriorMaskPath,
+          })
+        : null,
+    [
+      contourBackground, effectiveCardWidthMm, effectiveCardHeightMm,
+      effectiveContourWidthMm, effectiveContourHeightMm,
+      clampedContourOffsetXMm, clampedContourOffsetYMm,
+      contourCutShape, contourInteriorMaskPath,
+    ],
+  )
 
   // Derive the dim-exterior "keep" path for an uploaded contour (preset shapes use
   // `contourCutShape`). The result is a vector path, so it stays crisp at any preview
@@ -1697,7 +1745,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath, contourKeepRegion)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead.
@@ -1818,6 +1866,7 @@ export default function App() {
         sampleMinimal ? effectiveContourWidthMm : undefined,
         sampleMinimal ? effectiveContourHeightMm : undefined,
         contourTrimToPath,
+        contourKeepRegion,
       )
 
       await ensureWasmInit()
@@ -2989,12 +3038,24 @@ export default function App() {
                 />
               )}
               {printArtifact && printArtifact.overflowCount > 0 && (
-                <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">
-                  ⚠ {printArtifact.overflowCount}{' '}
-                  {printArtifact.overflowCount === 1 ? 'text depășește' : 'texte depășesc'} lățimea cardului sau spațiul sigur
-                  {printArtifact.overflowSamples.length > 0 && ` (ex: ${printArtifact.overflowSamples.join(', ')})`}.
-                  {' '}Micșorați fontul, scurtați codul sau măriți cardul.
-                </p>
+                <div className="mt-2 flex flex-col gap-1">
+                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                    ⚠ {printArtifact.overflowCount}{' '}
+                    {printArtifact.overflowCount === 1 ? 'text depășește' : 'texte depășesc'} zona de tăiere sau spațiul cardului
+                    {printArtifact.overflowSamples.length > 0 &&
+                      ` (ex: ${printArtifact.overflowSamples.slice(0, 5).join(', ')}${printArtifact.overflowSamples.length > 5 ? '…' : ''})`}.
+                    {' '}Micșorați fontul, scurtați codul sau măriți cardul.
+                  </p>
+                  {printArtifact.overflowSamples.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => downloadOverflowCsv(printArtifact.overflowSamples)}
+                      className="self-start text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      Descarcă depășirile ({printArtifact.overflowSamples.length}, .csv)
+                    </button>
+                  )}
+                </div>
               )}
               {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
               {mode === 'both' && printArtifact && contourResult && (

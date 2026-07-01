@@ -123,10 +123,11 @@ async function generatePrint(
   let batch: string[] = []
 
   // Text-overflow tally accumulated across batches (each batch reports its own
-  // count + a few sample codes); samples are deduped and capped for the UI.
+  // count + its distinct offending codes). We keep the full deduped set so the UI
+  // can offer it as a downloadable CSV; `overflowSeen` bounds the dedup.
   let overflowCount = 0
   const overflowSamples: string[] = []
-  const MAX_OVERFLOW_SAMPLES = 5
+  const overflowSeen = new Set<string>()
 
   const addEntry = (pdf: Uint8Array, index: number) => {
     addNamedEntry(pdf, `cards-${String(index).padStart(4, '0')}.pdf`)
@@ -157,11 +158,12 @@ async function generatePrint(
   const flush = async () => {
     const out = generate_with_options(batch.join('\n'), bg, contourArg, fonts, d.printOptions)
     const pdf = new Uint8Array(out.pdf)
-    // Read overflow before freeing: count is cumulative, samples deduped/capped.
+    // Read overflow before freeing: count is cumulative, samples deduped in full.
     overflowCount += out.text_overflow_count
-    if (overflowSamples.length < MAX_OVERFLOW_SAMPLES && out.text_overflow_samples) {
+    if (out.text_overflow_samples) {
       for (const s of out.text_overflow_samples.split('\n')) {
-        if (s && overflowSamples.length < MAX_OVERFLOW_SAMPLES && !overflowSamples.includes(s)) {
+        if (s && !overflowSeen.has(s)) {
+          overflowSeen.add(s)
           overflowSamples.push(s)
         }
       }

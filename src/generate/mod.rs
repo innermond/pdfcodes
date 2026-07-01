@@ -700,6 +700,26 @@ mod tests {
     }
 
     #[test]
+    fn contour_keep_region_governs_overflow_warning() {
+        // A keep region that covers the whole 15x15mm card (and then some) leaves
+        // every code safely inside -> no overflow flagged.
+        let big = vec![vec![(-100.0, -100.0), (200.0, -100.0), (200.0, 200.0), (-100.0, 200.0)]];
+        let opts = Options { contour_keep_polygons: big, ..Options::default() };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("print generation should succeed");
+        assert_eq!(out.text_overflow_count, 0, "codes inside the cut must not be flagged");
+
+        // A tiny 1pt keep region in the corner can't contain the glyphs -> flagged,
+        // even though the codes sit comfortably within the page.
+        let tiny = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
+        let opts = Options { contour_keep_polygons: tiny, ..Options::default() };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &opts)
+            .expect("print generation should succeed");
+        assert!(out.text_overflow_count > 0, "codes the cut would slice must be flagged");
+        assert!(!out.text_overflow_samples.is_empty(), "offending codes should be sampled");
+    }
+
+    #[test]
     fn contour_pdf_marks_registration_circles_nonprintable() {
         // The cut PDF's registration circles are positioning/print marks, not cut
         // lines, so they live in an Optional Content Group flagged non-printable.

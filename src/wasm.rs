@@ -226,6 +226,8 @@ pub fn generate(
         minimal: false,
         minimal_width_mm: None,
         minimal_height_mm: None,
+        // The positional entry point has no contour geometry to test against.
+        contour_keep_polygons: Vec::new(),
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -305,6 +307,11 @@ struct JsOptions {
     minimal: bool,
     minimal_width_mm: Option<f32>,
     minimal_height_mm: Option<f32>,
+    // Cut "keep" region for the overflow check: flat [x0,y0,x1,y1,...] card
+    // points (y-up) with `contour_keep_subpath_lens` giving the vertex count of
+    // each closed subpath (even-odd). Empty ⇒ legacy card/safe-margin check.
+    contour_keep_region: Vec<f32>,
+    contour_keep_subpath_lens: Vec<u32>,
 }
 
 impl Default for JsOptions {
@@ -363,8 +370,33 @@ impl Default for JsOptions {
             minimal: false,
             minimal_width_mm: None,
             minimal_height_mm: None,
+            contour_keep_region: Vec::new(),
+            contour_keep_subpath_lens: Vec::new(),
         }
     }
+}
+
+// Rebuild the cut keep region from its flat wire form (a coordinate buffer plus a
+// per-subpath vertex count) into closed polygons. Malformed input (lengths that
+// overrun the buffer) yields an empty region, which safely disables the check.
+fn rebuild_keep_polygons(coords: &[f32], lens: &[u32]) -> Vec<Vec<(f32, f32)>> {
+    let mut polygons = Vec::with_capacity(lens.len());
+    let mut i = 0usize;
+    for &len in lens {
+        let n = len as usize;
+        let mut poly = Vec::with_capacity(n);
+        for _ in 0..n {
+            if i + 1 >= coords.len() {
+                return Vec::new();
+            }
+            poly.push((coords[i], coords[i + 1]));
+            i += 2;
+        }
+        if poly.len() >= 3 {
+            polygons.push(poly);
+        }
+    }
+    polygons
 }
 
 // Number of cards that fit on one host page for the given background page
@@ -516,6 +548,10 @@ pub fn generate_with_options(
         minimal: js_opts.minimal,
         minimal_width_mm: js_opts.minimal_width_mm,
         minimal_height_mm: js_opts.minimal_height_mm,
+        contour_keep_polygons: rebuild_keep_polygons(
+            &js_opts.contour_keep_region,
+            &js_opts.contour_keep_subpath_lens,
+        ),
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

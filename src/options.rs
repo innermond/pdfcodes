@@ -158,6 +158,14 @@ pub struct Options {
     pub minimal: bool,
     pub minimal_width_mm: Option<f32>,
     pub minimal_height_mm: Option<f32>,
+    // The cut contour's "keep" region, as one or more closed polygons in card
+    // coordinates (PDF points, y-up), even-odd fill. When non-empty, the
+    // text-overflow check flags a code whose glyph outlines are not fully inside
+    // this region (i.e. the cut would slice it), instead of testing against the
+    // card width / safe margin. Empty keeps the legacy card-confinement check.
+    // The web app derives it from the actual contour path / preset shape and its
+    // placement within the card; see `contourKeepRegion.ts`.
+    pub contour_keep_polygons: Vec<Vec<(f32, f32)>>,
 }
 
 impl Options {
@@ -222,6 +230,7 @@ impl Default for Options {
             minimal: false,
             minimal_width_mm: None,
             minimal_height_mm: None,
+            contour_keep_polygons: Vec::new(),
         }
     }
 }
