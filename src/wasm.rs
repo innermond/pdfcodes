@@ -228,6 +228,10 @@ pub fn generate(
         minimal_height_mm: None,
         // The positional entry point has no contour geometry to test against.
         contour_keep_polygons: Vec::new(),
+        // The positional entry point keeps the previous no-correction behavior.
+        correct_overflow: false,
+        min_font_size_pt: 6.0,
+        overflow_correction_by_column: false,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -312,6 +316,12 @@ struct JsOptions {
     // each closed subpath (even-odd). Empty ⇒ legacy card/safe-margin check.
     contour_keep_region: Vec<f32>,
     contour_keep_subpath_lens: Vec<u32>,
+    // "Corectare depășire": auto-shrink overflowing codes down to
+    // `min_font_size_pt`. `overflow_correction_by_column` picks the scope
+    // (false = per code, true = uniform per word position).
+    correct_overflow: bool,
+    min_font_size_pt: f32,
+    overflow_correction_by_column: bool,
 }
 
 impl Default for JsOptions {
@@ -372,6 +382,9 @@ impl Default for JsOptions {
             minimal_height_mm: None,
             contour_keep_region: Vec::new(),
             contour_keep_subpath_lens: Vec::new(),
+            correct_overflow: base.correct_overflow,
+            min_font_size_pt: base.min_font_size_pt,
+            overflow_correction_by_column: base.overflow_correction_by_column,
         }
     }
 }
@@ -552,6 +565,9 @@ pub fn generate_with_options(
             &js_opts.contour_keep_region,
             &js_opts.contour_keep_subpath_lens,
         ),
+        correct_overflow: js_opts.correct_overflow,
+        min_font_size_pt: js_opts.min_font_size_pt,
+        overflow_correction_by_column: js_opts.overflow_correction_by_column,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

@@ -700,6 +700,27 @@ mod tests {
     }
 
     #[test]
+    fn overflow_correction_shrinks_codes_to_fit() {
+        // A long code at 14pt overflows the 15x15mm card width.
+        let base = Options { font_sizes: vec![14.0], text_y_mm: vec![7.0], ..Options::default() };
+        let uncorrected = generate_pdf(Some("LONGCODE123\n"), BACKGROUND_PDF, None, &base)
+            .expect("print generation should succeed");
+        assert!(uncorrected.text_overflow_count > 0, "long code should overflow at 14pt");
+
+        // With correction and a low minimum, it shrinks until it fits -> no warning.
+        let corrected = Options { correct_overflow: true, min_font_size_pt: 3.0, ..base.clone() };
+        let out = generate_pdf(Some("LONGCODE123\n"), BACKGROUND_PDF, None, &corrected)
+            .expect("print generation should succeed");
+        assert_eq!(out.text_overflow_count, 0, "correction should make the code fit");
+
+        // A minimum too high to fit leaves it flagged (still can't shrink enough).
+        let floored = Options { correct_overflow: true, min_font_size_pt: 14.0, ..base };
+        let out = generate_pdf(Some("LONGCODE123\n"), BACKGROUND_PDF, None, &floored)
+            .expect("print generation should succeed");
+        assert!(out.text_overflow_count > 0, "can't shrink below the minimum -> still flagged");
+    }
+
+    #[test]
     fn contour_keep_region_governs_overflow_warning() {
         // A keep region that covers the whole 15x15mm card (and then some) leaves
         // every code safely inside -> no overflow flagged.

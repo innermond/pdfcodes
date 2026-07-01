@@ -94,6 +94,163 @@ fn code_fits_contour(
     true
 }
 
+// Step size (points) the overflow corrector lowers the font by when hunting for a
+// size that fits. Small enough to look tight, coarse enough to bound the loop.
+const CORRECT_STEP_PT: f32 = 0.5;
+
+// Per-position layout inputs that don't depend on the font size, resolved once so
+// the correction pre-pass and the render loop agree (each field falls back to a
+// single shared entry, matching the per-word `len == 1 ? 0 : idx` rule elsewhere).
+struct WordFit {
+    align: TextAlign,
+    char_spacing: f32,
+    rotation_deg: f32,
+    flip_x: bool,
+    flip_y: bool,
+    y: f32,
+    configured_fs: f32,
+    text_x_mm: Option<f32>,
+}
+
+fn resolve_word_fit(opts: &Options, y_positions: &[f32], idx: usize) -> WordFit {
+    let pick = |len: usize| if len == 1 { 0 } else { idx };
+    WordFit {
+        align: opts.align[pick(opts.align.len())],
+        char_spacing: if opts.text_char_spacing_pt.is_empty() {
+            DEFAULT_CHAR_SPACING_PT
+        } else {
+            opts.text_char_spacing_pt[pick(opts.text_char_spacing_pt.len())]
+        },
+        rotation_deg: if opts.text_rotations.is_empty() {
+            0.0
+        } else {
+            opts.text_rotations[pick(opts.text_rotations.len())]
+        },
+        flip_x: !opts.text_flip_x.is_empty() && opts.text_flip_x[pick(opts.text_flip_x.len())],
+        flip_y: !opts.text_flip_y.is_empty() && opts.text_flip_y[pick(opts.text_flip_y.len())],
+        y: y_positions[idx],
+        configured_fs: opts.font_sizes[idx],
+        text_x_mm: if opts.text_x_mm.is_empty() { None } else { Some(opts.text_x_mm[idx]) },
+    }
+}
+
+// Σ (glyph advance / units_per_em) over the code's chars — the glyph run's width
+// per point of font size (multiply by the font size to get the run width).
+fn advance_sum_per_pt(face: &ttf_parser::Face, units_per_em: i32, text: &str) -> f32 {
+    text.chars()
+        .map(|ch| {
+            let gid = face.glyph_index(ch).unwrap_or(GlyphId(0));
+            face.glyph_hor_advance(gid).unwrap_or(0) as f32 / units_per_em as f32
+        })
+        .sum()
+}
+
+fn word_text_width(advance_per_pt: f32, char_spacing: f32, num_chars: f32, fs: f32) -> f32 {
+    advance_per_pt * fs + char_spacing * (num_chars - 1.0).max(0.0)
+}
+
+fn resolve_x(align: TextAlign, text_x_mm: Option<f32>, card_w: f32, safe_margin: f32, text_width: f32) -> f32 {
+    match text_x_mm {
+        Some(x_mm) => x_mm * MM,
+        None => match align {
+            TextAlign::Left => safe_margin,
+            TextAlign::Center => (card_w - text_width) / 2.0,
+            TextAlign::Right => card_w - text_width - safe_margin,
+        },
+    }
+}
+
+// Would this code overflow at font size `fs`? Same predicate as the render loop:
+// contour containment when a cut is supplied, else the card/safe-margin extent.
+#[allow(clippy::too_many_arguments)]
+fn word_overflows(
+    ef: &EmbeddedFont,
+    fs: f32,
+    advance_per_pt: f32,
+    wf: &WordFit,
+    num_chars: f32,
+    text: &str,
+    card_w: f32,
+    safe_margin: f32,
+    keep: &[Vec<(f32, f32)>],
+) -> bool {
+    let text_width = word_text_width(advance_per_pt, wf.char_spacing, num_chars, fs);
+    let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, text_width);
+    if !keep.is_empty() {
+        let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * fs;
+        let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * fs;
+        !code_fits_contour(
+            &ef.face, ef.units_per_em, fs, wf.char_spacing, text,
+            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep,
+        )
+    } else {
+        let available_w = card_w - 2.0 * safe_margin;
+        text_width > available_w + OVERFLOW_EPS_PT
+            || x < safe_margin - OVERFLOW_EPS_PT
+            || x + text_width > card_w - safe_margin + OVERFLOW_EPS_PT
+    }
+}
+
+// Largest font size in [min_fs, configured] (stepping down by CORRECT_STEP_PT)
+// at which the code fits; returns `min_fs` when even that overflows.
+#[allow(clippy::too_many_arguments)]
+fn max_fitting_fs(
+    ef: &EmbeddedFont,
+    configured: f32,
+    min_fs: f32,
+    advance_per_pt: f32,
+    wf: &WordFit,
+    num_chars: f32,
+    text: &str,
+    card_w: f32,
+    safe_margin: f32,
+    keep: &[Vec<(f32, f32)>],
+) -> f32 {
+    let floor = min_fs.min(configured);
+    let mut fs = configured;
+    while fs > floor && word_overflows(ef, fs, advance_per_pt, wf, num_chars, text, card_w, safe_margin, keep) {
+        fs = (fs - CORRECT_STEP_PT).max(floor);
+    }
+    fs
+}
+
+// "Pe coloană" pre-pass: for each word position, the largest size at which *every*
+// code in that position fits (clamped to [min, configured]). Codes that can't fit
+// even at the minimum pull the column no lower than the minimum (they stay flagged
+// at render). Positions beyond a record's word count are skipped.
+fn compute_uniform_fs(
+    records: &[csv::StringRecord],
+    opts: &Options,
+    embedded_fonts: &[EmbeddedFont],
+    y_positions: &[f32],
+    card_w: f32,
+    safe_margin: f32,
+) -> Vec<f32> {
+    let n_pos = opts.font_sizes.len();
+    let min_fs = opts.min_font_size_pt;
+    let mut uniform = opts.font_sizes.clone();
+    for record in records {
+        for (idx, text) in record.iter().enumerate() {
+            if idx >= n_pos || text.is_empty() {
+                continue;
+            }
+            let wf = resolve_word_fit(opts, y_positions, idx);
+            let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx.min(embedded_fonts.len() - 1) };
+            let ef = &embedded_fonts[font_idx];
+            let advance_per_pt = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
+            let num_chars = text.chars().count() as f32;
+            let fit = max_fitting_fs(
+                ef, wf.configured_fs, min_fs, advance_per_pt, &wf, num_chars, text,
+                card_w, safe_margin, &opts.contour_keep_polygons,
+            );
+            if fit < uniform[idx] {
+                uniform[idx] = fit;
+            }
+        }
+    }
+    uniform
+}
+
 // Build a Form XObject (background + label text) for each CSV row, returning
 // the object IDs of the generated cards.
 pub(crate) fn build_card_xobjects(
@@ -123,10 +280,22 @@ pub(crate) fn build_card_xobjects(
         .from_reader(csv_data.as_bytes());
 
     let y_positions: Vec<f32> = opts.text_y_mm.iter().map(|y| y * MM).collect();
+    let safe_margin = opts.safe_margin_mm * MM;
+
+    // Collect the records so the "Corectare depășire" column pre-pass can scan
+    // every code before rendering (harmless for the other paths).
+    let records: Vec<csv::StringRecord> = rdr.records().collect::<Result<Vec<_>, _>>()?;
+
+    // "Pe coloană": one uniform, all-codes-fit size per word position. "Pe cod"
+    // shrinks each code individually in the render loop below.
+    let uniform_fs: Option<Vec<f32>> = if opts.correct_overflow && opts.overflow_correction_by_column {
+        Some(compute_uniform_fs(&records, opts, embedded_fonts, &y_positions, card_w, safe_margin))
+    } else {
+        None
+    };
 
     let mut card_ids = Vec::new();
-    for result in rdr.records() {
-        let record = result?;
+    for record in &records {
         let texts: Vec<&str> = record.iter().collect();
         let txt = texts.join(std::str::from_utf8(&[sep]).unwrap_or(" "));
 
@@ -234,47 +403,36 @@ pub(crate) fn build_card_xobjects(
         operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
 
         for (idx, text) in texts.iter().enumerate() {
-            let font_size = opts.font_sizes[idx];
+            let wf = resolve_word_fit(opts, &y_positions, idx);
             let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx };
             let ef = &embedded_fonts[font_idx];
-            let align_idx = if opts.align.len() == 1 { 0 } else { idx };
-            let align = opts.align[align_idx];
+            let align = wf.align;
+            let char_spacing = wf.char_spacing;
+            let rotation_deg = wf.rotation_deg;
+            let flip_x = wf.flip_x;
+            let flip_y = wf.flip_y;
+            let y = wf.y;
 
-            // Per-word character spacing (PDF `Tc`), falling back to the default
-            // when unset. A single entry applies to every word.
-            let char_spacing = if opts.text_char_spacing_pt.is_empty() {
-                DEFAULT_CHAR_SPACING_PT
-            } else {
-                let sp_idx = if opts.text_char_spacing_pt.len() == 1 { 0 } else { idx };
-                opts.text_char_spacing_pt[sp_idx]
-            };
-
-            // Calculate text width using ttf-parser
-            let mut base_text_width = 0.0f32;
-            for ch in text.chars() {
-                let glyph_id = ef.face.glyph_index(ch).unwrap_or(GlyphId(0));
-                let advance = ef.face.glyph_hor_advance(glyph_id).unwrap_or(0);
-                let char_width = (advance as f32 / ef.units_per_em as f32) * font_size;
-                base_text_width += char_width;
-            }
-
-            // Account for Tc spacing applied between each character. Count
-            // Unicode scalar values, not UTF-8 bytes, so multi-byte characters
-            // don't over-inflate the width (which would mis-center the text).
+            // Glyph-run width per point, so the size can be re-evaluated cheaply.
+            let advance_per_pt = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
             let num_chars = text.chars().count() as f32;
-            let text_width = base_text_width + (char_spacing * (num_chars - 1.0));
 
-            let safe_margin = opts.safe_margin_mm * MM;
-            let x = if !opts.text_x_mm.is_empty() {
-                opts.text_x_mm[idx] * MM
+            // "Corectare depășire": render at a uniform per-column size (Pe
+            // coloană), an individually shrunk size (Pe cod), or the configured
+            // size when correction is off.
+            let font_size = if let Some(uf) = &uniform_fs {
+                uf[idx]
+            } else if opts.correct_overflow {
+                max_fitting_fs(
+                    ef, wf.configured_fs, opts.min_font_size_pt, advance_per_pt, &wf,
+                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons,
+                )
             } else {
-                match align {
-                    TextAlign::Left => safe_margin,
-                    TextAlign::Center => (card_w - text_width) / 2.0,
-                    TextAlign::Right => card_w - text_width - safe_margin,
-                }
+                wf.configured_fs
             };
-            let y = y_positions[idx];
+
+            let text_width = word_text_width(advance_per_pt, char_spacing, num_chars, font_size);
+            let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width);
 
             let color = if opts.text_colors.is_empty() {
                 TextColor::Rgb(0.0, 0.0, 0.0)
@@ -286,49 +444,11 @@ pub(crate) fn build_card_xobjects(
             let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * font_size;
             let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * font_size;
 
-            let rotation_deg = if opts.text_rotations.is_empty() {
-                0.0
-            } else {
-                let rotation_idx = if opts.text_rotations.len() == 1 { 0 } else { idx };
-                opts.text_rotations[rotation_idx]
-            };
-            let flip_x = if opts.text_flip_x.is_empty() {
-                false
-            } else {
-                let flip_idx = if opts.text_flip_x.len() == 1 { 0 } else { idx };
-                opts.text_flip_x[flip_idx]
-            };
-            let flip_y = if opts.text_flip_y.is_empty() {
-                false
-            } else {
-                let flip_idx = if opts.text_flip_y.len() == 1 { 0 } else { idx };
-                opts.text_flip_y[flip_idx]
-            };
-
-            // Flag text that won't fit. With a cut contour supplied
-            // (`contour_keep_polygons`), the real constraint is the cut, not the
-            // page: a code is flagged unless its exact glyph outlines lie fully
-            // inside the keep region. Without a contour, fall back to the legacy
-            // card/safe-margin extent check. Counted per word, with a few distinct
-            // offenders kept as examples so the web app can warn.
-            let overflows = if !opts.contour_keep_polygons.is_empty() {
-                !code_fits_contour(
-                    &ef.face, ef.units_per_em, font_size, char_spacing, text,
-                    x, y, rotation_deg, flip_x, flip_y, ascent, descent,
-                    &opts.contour_keep_polygons,
-                )
-            } else {
-                // Legacy: wider than the safe area, or spilling past a safe edge
-                // (rotation ignored — checked against the horizontal extent).
-                let available_w = card_w - 2.0 * safe_margin;
-                text_width > available_w + OVERFLOW_EPS_PT
-                    || x < safe_margin - OVERFLOW_EPS_PT
-                    || x + text_width > card_w - safe_margin + OVERFLOW_EPS_PT
-            };
-            if overflows {
+            // Flag codes that still don't fit at the (possibly corrected) size —
+            // the cut contour when supplied, else the card/safe-margin extent.
+            // Distinct offenders kept in first-seen order for the warning + CSV.
+            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons) {
                 overflow.count += 1;
-                // Keep every distinct offender (in first-seen order) so the web app
-                // can offer the full set as a CSV; `seen` bounds the dedup to O(1).
                 if seen.insert(text.to_string()) {
                     overflow.samples.push(text.to_string());
                 }
@@ -579,4 +699,92 @@ fn ext_gstate_name(
     let name = format!("GS{}", ext_gstates.len());
     ext_gstates.push((name.clone(), alpha, blend));
     Some(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ttf_parser::Face;
+
+    static FONT: &[u8] = include_bytes!("../assets/fonts/Montserrat-Bold.ttf");
+
+    fn font() -> EmbeddedFont<'static> {
+        let face = Face::parse(FONT, 0).unwrap();
+        let units_per_em = face.units_per_em() as i32;
+        EmbeddedFont { face, units_per_em, font_id: (1, 0), resource_name: b"F1".to_vec() }
+    }
+
+    fn centered_fit(configured_fs: f32) -> WordFit {
+        WordFit {
+            align: TextAlign::Center,
+            char_spacing: 0.0,
+            rotation_deg: 0.0,
+            flip_x: false,
+            flip_y: false,
+            y: 5.0,
+            configured_fs,
+            text_x_mm: None,
+        }
+    }
+
+    #[test]
+    fn max_fitting_fs_keeps_the_configured_size_when_it_already_fits() {
+        let ef = font();
+        let wf = centered_fit(12.0);
+        let adv = advance_sum_per_pt(&ef.face, ef.units_per_em, "AB");
+        // A very wide card: nothing needs shrinking.
+        let fs = max_fitting_fs(&ef, 12.0, 6.0, adv, &wf, 2.0, "AB", 1000.0, 0.0, &[]);
+        assert_eq!(fs, 12.0);
+    }
+
+    #[test]
+    fn max_fitting_fs_shrinks_to_fit_and_bottoms_out_at_the_minimum() {
+        let ef = font();
+        let text = "WWWWWWWWWW";
+        let wf = centered_fit(40.0);
+        let adv = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
+        let num = text.chars().count() as f32;
+        let card_w = 40.0 * MM; // narrow: 40pt text won't fit
+
+        let fs = max_fitting_fs(&ef, 40.0, 6.0, adv, &wf, num, text, card_w, 0.0, &[]);
+        assert!(fs < 40.0 && fs >= 6.0, "should shrink into range, got {fs}");
+        assert!(!word_overflows(&ef, fs, adv, &wf, num, text, card_w, 0.0, &[]), "shrunk size must fit");
+
+        // A high floor prevents shrinking enough — it stops at the minimum.
+        let fs2 = max_fitting_fs(&ef, 40.0, 39.0, adv, &wf, num, text, card_w, 0.0, &[]);
+        assert_eq!(fs2, 39.0);
+    }
+
+    #[test]
+    fn compute_uniform_fs_is_driven_by_the_widest_code_in_the_column() {
+        let ef = vec![font()];
+        let records = vec![
+            csv::StringRecord::from(vec!["I"]),
+            csv::StringRecord::from(vec!["WWWWWWWWWW"]),
+        ];
+        let opts = Options {
+            font_sizes: vec![40.0],
+            text_y_mm: vec![5.0],
+            align: vec![TextAlign::Center],
+            min_font_size_pt: 6.0,
+            correct_overflow: true,
+            overflow_correction_by_column: true,
+            ..Options::default()
+        };
+        let y_positions = vec![5.0 * MM];
+        let card_w = 40.0 * MM;
+
+        let uniform = compute_uniform_fs(&records, &opts, &ef, &y_positions, card_w, 0.0);
+        assert!(uniform[0] < 40.0 && uniform[0] >= 6.0, "column shrinks, got {}", uniform[0]);
+        // The uniform size fits every code in the column, including the narrow one.
+        for text in ["I", "WWWWWWWWWW"] {
+            let wf = resolve_word_fit(&opts, &y_positions, 0);
+            let adv = advance_sum_per_pt(&ef[0].face, ef[0].units_per_em, text);
+            let num = text.chars().count() as f32;
+            assert!(
+                !word_overflows(&ef[0], uniform[0], adv, &wf, num, text, card_w, 0.0, &[]),
+                "uniform size must fit {text}",
+            );
+        }
+    }
 }

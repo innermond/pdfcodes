@@ -166,6 +166,14 @@ pub struct Options {
     // The web app derives it from the actual contour path / preset shape and its
     // placement within the card; see `contourKeepRegion.ts`.
     pub contour_keep_polygons: Vec<Vec<(f32, f32)>>,
+    // "Corectare depășire": when a code overflows the cut/card, shrink its font
+    // size (down to `min_font_size_pt`, never below) until it fits instead of only
+    // flagging it. `overflow_correction_by_column` selects the scope: false shrinks
+    // each overflowing code on its own card (per-code); true shrinks a whole word
+    // position uniformly to the largest size at which every code in it fits.
+    pub correct_overflow: bool,
+    pub min_font_size_pt: f32,
+    pub overflow_correction_by_column: bool,
 }
 
 impl Options {
@@ -231,6 +239,9 @@ impl Default for Options {
             minimal_width_mm: None,
             minimal_height_mm: None,
             contour_keep_polygons: Vec::new(),
+            correct_overflow: false,
+            min_font_size_pt: 6.0,
+            overflow_correction_by_column: false,
         }
     }
 }

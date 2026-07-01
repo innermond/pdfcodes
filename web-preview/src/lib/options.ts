@@ -268,6 +268,12 @@ export function buildJsOptions(
   // the generator to flag codes the cut would slice instead of testing against the
   // page/safe margin. Null ⇒ legacy card-confinement check. See `contourKeepRegion.ts`.
   contourKeepRegion?: { coords: Float32Array; lens: Uint32Array } | null,
+  // "Corectare depășire": auto-shrink overflowing codes down to `minFontSizePt`
+  // (never below). `overflowCorrectionByColumn` picks the scope (false = per code,
+  // true = uniform per word position). Off by default.
+  correctOverflow?: boolean,
+  minFontSizePt?: number,
+  overflowCorrectionByColumn?: boolean,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -337,6 +343,9 @@ export function buildJsOptions(
     ...(contourTrimToPath ? { contourTrimToPath: true } : {}),
     ...(contourKeepRegion && contourKeepRegion.lens.length > 0
       ? { contourKeepRegion: contourKeepRegion.coords, contourKeepSubpathLens: contourKeepRegion.lens }
+      : {}),
+    ...(correctOverflow
+      ? { correctOverflow: true, minFontSizePt, overflowCorrectionByColumn: overflowCorrectionByColumn === true }
       : {}),
   }
 }

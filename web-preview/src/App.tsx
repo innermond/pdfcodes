@@ -46,6 +46,9 @@ interface Preset {
   codeSingleField: boolean
   words: WordStyle[]
   safeMarginMm: number
+  correctOverflow?: boolean
+  minFontSizePt?: number
+  overflowCorrectionMode?: 'per-code' | 'column'
   backgroundPaddingMm: number
   contourOpacity: number
   contourBlendMode: BlendMode
@@ -316,6 +319,12 @@ export default function App() {
   const [fontsError, setFontsError] = useState<string | null>(null)
   const [fontsNotice, setFontsNotice] = useState<string | null>(null)
   const [safeMarginMm, setSafeMarginMm] = useState(0)
+  // "Corectare depășire": auto-shrink overflowing codes to fit, down to a minimum
+  // font size. `overflowCorrectionMode` picks whether each code shrinks on its own
+  // card ('per-code') or a whole field/column shrinks uniformly ('column').
+  const [correctOverflow, setCorrectOverflow] = useState(false)
+  const [minFontSizePt, setMinFontSizePt] = useState(6)
+  const [overflowCorrectionMode, setOverflowCorrectionMode] = useState<'per-code' | 'column'>('per-code')
   const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   // While true, code/text colors auto-track a contrasting color over a simple
@@ -882,6 +891,9 @@ export default function App() {
       codeSingleField,
       words,
       safeMarginMm,
+      correctOverflow,
+      minFontSizePt,
+      overflowCorrectionMode,
       backgroundPaddingMm,
       contourOpacity,
       contourBlendMode,
@@ -982,6 +994,10 @@ export default function App() {
         setGoogleFontSelections(selections)
         setSelectedIndex(null)
         if (typeof preset.safeMarginMm === 'number') setSafeMarginMm(preset.safeMarginMm)
+        if (typeof preset.correctOverflow === 'boolean') setCorrectOverflow(preset.correctOverflow)
+        if (typeof preset.minFontSizePt === 'number') setMinFontSizePt(preset.minFontSizePt)
+        if (preset.overflowCorrectionMode === 'per-code' || preset.overflowCorrectionMode === 'column')
+          setOverflowCorrectionMode(preset.overflowCorrectionMode)
         if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
         if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
         if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
@@ -1745,7 +1761,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath, contourKeepRegion)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column')
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead.
@@ -1785,7 +1801,11 @@ export default function App() {
           fonts: fontBufs,
           printOptions,
           contourOptions,
-          pagesPerBatch: PAGES_PER_BATCH,
+          // "Pe coloană" needs the whole dataset in one pass so the uniform per-column
+          // size is consistent across every card (a per-batch size would differ between
+          // batches); generate it as a single batch. Per-code correction and the
+          // no-correction path keep normal row-batching.
+          pagesPerBatch: correctOverflow && overflowCorrectionMode === 'column' ? Number.MAX_SAFE_INTEGER : PAGES_PER_BATCH,
           totalRows: effectiveRowCount > 0 ? effectiveRowCount : null,
           csv: csvDataFile,
         },
@@ -1867,6 +1887,9 @@ export default function App() {
         sampleMinimal ? effectiveContourHeightMm : undefined,
         contourTrimToPath,
         contourKeepRegion,
+        correctOverflow,
+        minFontSizePt,
+        overflowCorrectionMode === 'column',
       )
 
       await ensureWasmInit()
@@ -2678,6 +2701,12 @@ export default function App() {
 
           {step === 'date' && (
           <CodeSourceSection
+            correctOverflow={correctOverflow}
+            onCorrectOverflowChange={setCorrectOverflow}
+            minFontSizePt={minFontSizePt}
+            onMinFontSizeChange={setMinFontSizePt}
+            overflowCorrectionMode={overflowCorrectionMode}
+            onOverflowCorrectionModeChange={setOverflowCorrectionMode}
             dataMode={codeDataMode}
             onDataModeChange={handleCodeDataModeChange}
             onCsvUpload={(f) => void handleCsvUpload(f)}
