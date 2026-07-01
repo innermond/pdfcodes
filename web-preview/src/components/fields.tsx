@@ -511,11 +511,16 @@ export function FileField({
   accept,
   multiple,
   onChange,
+  currentName,
 }: {
   label: string
   accept?: string
   multiple?: boolean
   onChange: (files: FileList | null) => void
+  // Filename to show as a persistent hint. The native input loses its displayed
+  // name when this field is remounted (e.g. switching wizard steps), so we surface
+  // the retained filename from state here instead of relying on the browser UI.
+  currentName?: string | null
 }) {
   return (
     <label className="flex min-w-0 flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
@@ -527,6 +532,11 @@ export function FileField({
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.files)}
         className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 text-sm file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
       />
+      {currentName ? (
+        <span className="min-w-0 break-all text-xs text-green-600 dark:text-green-500">
+          ✓ Fișier selectat: {currentName}
+        </span>
+      ) : null}
     </label>
   )
 }

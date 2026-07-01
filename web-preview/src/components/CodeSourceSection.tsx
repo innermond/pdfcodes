@@ -66,12 +66,19 @@ function CodeColumnEditor({
       <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
         <TextField label="Prefix (opțional)" value={column.prefix} onChange={(v) => set('prefix', v)} />
         <TextField label="Sufix (opțional)" value={column.postfix} onChange={(v) => set('postfix', v)} />
-        <SelectField label="Tip cod" value={column.mode} options={MODE_OPTIONS} onChange={(v) => set('mode', v)} />
+      </div>
 
+      {/* Code type and its per-mode fields are tightly related: keep them on one
+          row (fragments are DOM-transparent, so the conditional fields become
+          direct flex children). A small min-width floor lets the three fields
+          shrink together and share the row, wrapping only as a last resort when
+          the column is genuinely too narrow. */}
+      <div className="flex flex-wrap gap-3 [&>*]:min-w-24 [&>*]:flex-1">
+        <SelectField label="Tip cod" value={column.mode} options={MODE_OPTIONS} onChange={(v) => set('mode', v)} />
         {column.mode === 'random' && (
           <>
             <SelectField label="Caractere" value={column.charset} options={CHARSET_OPTIONS} onChange={(v) => set('charset', v)} />
-            <NumberField label="Lungime cod" value={column.length} onChange={(v) => set('length', v)} step={1} />
+            <NumberField label="Lungime" value={column.length} onChange={(v) => set('length', v)} step={1} />
           </>
         )}
         {column.mode === 'range' && (
@@ -83,17 +90,21 @@ function CodeColumnEditor({
         {column.mode === 'text' && (
           <TextField label="Text" value={column.text} onChange={(v) => set('text', v)} placeholder="ex. SPECIMEN" />
         )}
-        {/* Padding only applies to generated codes, not a fixed text label. */}
-        {column.mode !== 'text' && (
-          <>
-            <SelectField label="Mod completare" value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
-            <TextField label="Caractere de completare" value={column.padChar} onChange={(v) => set('padChar', v)} />
-            {column.padMode === 'width' && (
-              <NumberField label="Lățime totală (caractere)" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
-            )}
-          </>
-        )}
       </div>
+
+      {/* Padding only applies to generated codes, not a fixed text label. Same
+          single-row-until-last-resort treatment for the completion controls: a
+          small min-width floor keeps the three fields sharing one row and wrapping
+          only as a last resort. */}
+      {column.mode !== 'text' && (
+        <div className="flex flex-wrap gap-3 [&>*]:min-w-24 [&>*]:flex-1">
+          <SelectField label="Completare" value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
+          <TextField label="Umplutură" value={column.padChar} onChange={(v) => set('padChar', v)} />
+          {column.padMode === 'width' && (
+            <NumberField label="Lățime totală" value={column.padLength} onChange={(v) => set('padLength', v)} step={1} />
+          )}
+        </div>
+      )}
       {column.padChar.length > 0 && column.padMode === 'width' && column.mode === 'random' &&
         column.padLength > 0 && column.padLength <= column.length && (
         <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -193,6 +204,7 @@ export function CodeSourceSection({
   dataMode,
   onDataModeChange,
   onCsvUpload,
+  uploadFileName,
   uploadRowCount,
   uploadInfo,
   uploadWarnings,
@@ -227,6 +239,8 @@ export function CodeSourceSection({
   dataMode: CodeDataMode
   onDataModeChange: (mode: CodeDataMode) => void
   onCsvUpload: (file: File | null) => void
+  /** Name of the currently uploaded CSV, shown as a persistent hint on remount. */
+  uploadFileName?: string | null
   uploadRowCount: number
   /** Human-readable summary of the detected delimiter / row & column counts. */
   uploadInfo?: string | null
@@ -333,6 +347,7 @@ export function CodeSourceSection({
             label="Fișier CSV"
             accept=".csv,text/csv,text/plain"
             onChange={(files) => onCsvUpload(files?.[0] ?? null)}
+            currentName={uploadFileName}
           />
           {uploadRowCount > 0 && (
             <CheckboxField

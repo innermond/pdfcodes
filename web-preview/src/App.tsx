@@ -1729,6 +1729,22 @@ export default function App() {
       contourFitWidthMm > cuttableWidthMm + 1e-6 ||
       contourFitHeightMm > cuttableHeightMm + 1e-6)
 
+  // A plain rectangle contour tiles edge-to-edge: neighbouring cards share a single
+  // cut line, so a zero "Decalaj X/Y" (tiling gutter) is fine. Every other contour —
+  // rounded/beveled/heart/circle shapes, or an uploaded contour of unknown shape —
+  // needs a real gap between cards; below ~1 mm the individual cut outlines touch or
+  // overlap, so the cutter double-cuts the same material and can tear the stock.
+  // Keyed to the configured contour (its shape/source), not the print/contour/both
+  // `mode`: the double-cut risk exists whenever that contour is cut, and `mode`
+  // defaults to 'print', which would otherwise hide the warning in the common case.
+  // `contourBackground` is non-null once a shape or an uploaded contour is available.
+  const contourIsPlainRectangle = contourSource === 'shape' && shapeKind === 'rectangle'
+  const cutGapTooSmall =
+    contourBackground != null &&
+    !pageOptions.noCut &&
+    !contourIsPlainRectangle &&
+    (pageOptions.offsetXMm < 1 || pageOptions.offsetYMm < 1)
+
   // The page fields are the media (sheet) size. The print background is one card
   // tiled onto that sheet, so a single card must fit within the media. (Printing can
   // use the whole sheet — only cutting reserves the circle band, handled above. In
@@ -2156,20 +2172,28 @@ export default function App() {
               ]}
             />
             {backgroundSource === 'upload' ? (
-              <>
-                <FileField
-                  label="PDF de fundal (un card)"
-                  accept="application/pdf"
-                  onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
-                />
-                {backgroundPageCount > 1 && (
-                  <NumberField
-                    label={`Pagina (1–${backgroundPageCount})`}
-                    value={backgroundPageNumber}
-                    onChange={handleBackgroundPageChange}
+              // File input and its page picker are tightly related: keep them on
+              // one row (the file grows, the page field stays narrow) and only let
+              // them wrap when the row genuinely can't fit.
+              <div className="flex flex-wrap items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <FileField
+                    label="PDF de fundal (un card)"
+                    accept="application/pdf"
+                    onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
+                    currentName={backgroundFile?.name}
                   />
+                </div>
+                {backgroundPageCount > 1 && (
+                  <div className="w-28 shrink-0">
+                    <NumberField
+                      label={`Pagina (1–${backgroundPageCount})`}
+                      value={backgroundPageNumber}
+                      onChange={handleBackgroundPageChange}
+                    />
+                  </div>
                 )}
-              </>
+              </div>
             ) : backgroundSource === 'simple' ? (
               <>
                 <LinkedDimensions
@@ -2209,6 +2233,7 @@ export default function App() {
                     label="Imagine fundal (PNG sau JPEG)"
                     accept="image/png,image/jpeg"
                     onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
+                    currentName={genBgImageFile?.name}
                   />
                 ) : genBgImageSource === 'url' ? (
                   <div className="flex items-end gap-2">
@@ -2355,6 +2380,7 @@ export default function App() {
                   label="PDF de fundal contur (opțional)"
                   accept="application/pdf"
                   onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
+                  currentName={contourBackgroundFile?.name}
                 />
                 {contourPageCount > 1 && (
                   <>
@@ -2388,26 +2414,31 @@ export default function App() {
               </>
             ) : (
               <>
-                <SelectField
-                  label="Formă"
-                  value={shapeKind}
-                  options={SHAPE_OPTIONS}
-                  onChange={setShapeKind}
-                />
-                {shapeKind === 'rounded-rectangle' && (
-                  <>
-                    <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
-                    <SelectField
-                      label="Orientare"
-                      value={shapeCornerOrientation}
-                      options={CORNER_ORIENTATION_OPTIONS}
-                      onChange={setShapeCornerOrientation}
-                    />
-                  </>
-                )}
-                {shapeKind === 'beveled-rectangle' && (
-                  <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
-                )}
+                {/* Shape and its corner controls are tightly related: keep them on
+                    one row (fragments are DOM-transparent, so the conditional fields
+                    become direct flex children) and only wrap as a last resort. */}
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <SelectField
+                    label="Formă"
+                    value={shapeKind}
+                    options={SHAPE_OPTIONS}
+                    onChange={setShapeKind}
+                  />
+                  {shapeKind === 'rounded-rectangle' && (
+                    <>
+                      <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                      <SelectField
+                        label="Orientare"
+                        value={shapeCornerOrientation}
+                        options={CORNER_ORIENTATION_OPTIONS}
+                        onChange={setShapeCornerOrientation}
+                      />
+                    </>
+                  )}
+                  {shapeKind === 'beveled-rectangle' && (
+                    <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                  )}
+                </div>
                 {!background && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
                 )}
@@ -2682,24 +2713,29 @@ export default function App() {
                     updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
                   }}
                 />
+                {/* Opacity, blend mode and rotation are tightly related: a small
+                    min-width floor keeps them sharing one row and wrapping only as
+                    a last resort when the column is too narrow. */}
+                <div className="flex flex-wrap gap-3 [&>*]:min-w-24 [&>*]:flex-1">
+                  <NumberField
+                    label="Opacitate (0-1)"
+                    value={selected.opacity}
+                    onChange={(v) => updateWord(selectedIndex, { opacity: v })}
+                    step={0.1}
+                    min={0}
+                    max={1}
+                  />
+                  <SelectField
+                    label="Mod îmbinare text"
+                    value={selected.blendMode}
+                    options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                    onChange={(v) => updateWord(selectedIndex, { blendMode: v })}
+                  />
+                  <NumberField label="Rotație (grade)" value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
+                </div>
                 <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                <NumberField
-                  label="Opacitate (0-1)"
-                  value={selected.opacity}
-                  onChange={(v) => updateWord(selectedIndex, { opacity: v })}
-                  step={0.1}
-                  min={0}
-                  max={1}
-                />
-                <SelectField
-                  label="Mod îmbinare text"
-                  value={selected.blendMode}
-                  options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
-                  onChange={(v) => updateWord(selectedIndex, { blendMode: v })}
-                />
-                <NumberField label="Rotație (grade)" value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
-                <CheckboxField label="Oglindire X" checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
-                <CheckboxField label="Oglindire Y" checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />
+                  <CheckboxField label="Oglindire X" checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
+                  <CheckboxField label="Oglindire Y" checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />
                 </div>
               </Section>
               <Section title="Fundal text" collapsible defaultCollapsed>
@@ -2710,19 +2746,27 @@ export default function App() {
                   onChange={(v) => updateWord(selectedIndex, { background: v })}
                 />
                 {selected.background !== null && (
-                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  // Width, transparency and blend mode are tightly related: a small
+                  // min-width floor keeps them sharing one row and wrapping only as
+                  // a last resort when the column is too narrow.
+                  <div className="flex flex-wrap gap-3 [&>*]:min-w-24 [&>*]:flex-1">
                     <NumberField
-                      label="Lățime fundal (mm, gol = automat)"
+                      label="Lățime (mm, gol = automat)"
                       value={selected.backgroundWidthMm ?? NaN}
                       onChange={(v) => updateWord(selectedIndex, { backgroundWidthMm: Number.isNaN(v) ? null : v })}
                     />
-                    <NumberField label="Transparență fundal (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} step={0.1} min={0} max={1} />
-                    <SelectField
-                      label="Mod îmbinare fundal"
-                      value={selected.backgroundBlendMode}
-                      options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
-                      onChange={(v) => updateWord(selectedIndex, { backgroundBlendMode: v })}
-                    />
+                    <NumberField label="Transparență (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} step={0.1} min={0} max={1} />
+                    {/* Blend-mode select hugs its content (min-content) instead of
+                        stretching, so the two number fields take the extra width.
+                        `!` overrides the row's `[&>*]:flex-1 [&>*]:min-w-24`. */}
+                    <div className="w-min !min-w-0 !flex-none">
+                      <SelectField
+                        label="Mod îmbinare"
+                        value={selected.backgroundBlendMode}
+                        options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
+                        onChange={(v) => updateWord(selectedIndex, { backgroundBlendMode: v })}
+                      />
+                    </div>
                   </div>
                 )}
               </Section>
@@ -2763,6 +2807,7 @@ export default function App() {
             dataMode={codeDataMode}
             onDataModeChange={handleCodeDataModeChange}
             onCsvUpload={(f) => void handleCsvUpload(f)}
+            uploadFileName={uploadedRawFile?.name}
             uploadRowCount={uploadedCsvRowCount}
             uploadInfo={uploadedCsvInfo}
             uploadWarnings={uploadedCsvWarnings}
@@ -2902,6 +2947,16 @@ export default function App() {
                 ⚠ Conturul ({contourFitWidthMm.toFixed(1)} × {contourFitHeightMm.toFixed(1)} mm) nu încape în zona de
                 tăiere a paginii ({Math.max(0, cuttableWidthMm).toFixed(1)} × {Math.max(0, cuttableHeightMm).toFixed(1)}{' '}
                 mm = pagina minus cercurile de reglaj). Mărește pagina, micșorează diametrul cercurilor sau conturul.
+              </p>
+            )}
+
+            {cutGapTooSmall && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                ⚠ Decalaj X/Y ({pageOptions.offsetXMm.toFixed(1)} × {pageOptions.offsetYMm.toFixed(1)} mm) este prea
+                mic pentru acest contur. Doar un contur dreptunghiular simplu poate avea decalaj 0 (cardurile
+                împart aceeași linie de tăiere). Pentru celelalte forme sau pentru un contur încărcat, un decalaj
+                sub 1,0 mm face ca tăierile vecine să se suprapună — cutter-ul taie de două ori aceeași zonă la
+                dublă tăiere și materialul se poate deteriora. Mărește Decalaj X și Y la cel puțin 1,0 mm.
               </p>
             )}
 
