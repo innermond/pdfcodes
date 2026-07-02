@@ -224,6 +224,50 @@ type GenBgImageSource = 'file' | 'url' | 'clipboard'
 type ContourSource = 'upload' | 'shape'
 type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
 
+// Grouped user-input config for the "Fundal" (background) step, folded into one
+// useState (see `setBgField`) instead of a dozen separate ones — following the
+// `pageOptions` precedent. Holds only *scalar user choices*; the rendered
+// artifacts (`background`, `backgroundFile`, `backgroundPageCount`) and the
+// transient `backgroundError`/`genBgLoading`/`genBgImageFile` boundary stay as
+// their own state, since they're derived/async rather than user-set config.
+interface BgConfig {
+  backgroundSource: BackgroundSource
+  // Multi-page PDF page selection (1-based); sent to the generator so the print
+  // output uses the same page as the preview.
+  backgroundPageNumber: number
+  // Simple solid-color background dimensions + color ("c:m:y:k" or null).
+  simpleBgWidthMm: number
+  simpleBgHeightMm: number
+  simpleBgColor: string | null
+  // "Fundal imagine" (generate-from-raster) target card size + image source.
+  genBgWidthMm: number
+  genBgHeightMm: number
+  genBgImageSource: GenBgImageSource
+  genBgImageUrl: string
+  // User-editable target card dimensions for an uploaded background PDF.
+  // NaN = no override; pre-filled with the detected MediaBox on file load.
+  bgTargetWidthMm: number
+  bgTargetHeightMm: number
+  // User-applied rotation of the uploaded/generated background (0/90/180/270,
+  // clockwise), baked into both the preview and the generated output.
+  bgRotation: number
+}
+
+const defaultBgConfig: BgConfig = {
+  backgroundSource: 'upload',
+  backgroundPageNumber: 1,
+  simpleBgWidthMm: 86,
+  simpleBgHeightMm: 54,
+  simpleBgColor: null,
+  genBgWidthMm: 86,
+  genBgHeightMm: 54,
+  genBgImageSource: 'file',
+  genBgImageUrl: '',
+  bgTargetWidthMm: NaN,
+  bgTargetHeightMm: NaN,
+  bgRotation: 0,
+}
+
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'circle', label: 'Cerc' },
   { value: 'ellipse', label: 'Elipsă' },
@@ -268,6 +312,109 @@ const PREVIEW_ZOOM_STEP = 1.25
 // Orientation of a rounded rectangle's corner arcs: "out" bulges outward (the
 // usual rounded corner), "in" curves them toward the interior (scalloped).
 type CornerOrientation = 'out' | 'in'
+
+// Contour-step user config, grouped into one object (mirrors BgConfig). Holds
+// only scalar, user-editable settings; async artifacts (the rendered
+// PdfBackground, its File, page count, errors) and transient UI selection stay
+// as their own useState. `contourLockAspect` and `contourInsetMm` are kept out
+// on purpose — the former mirrors BgConfig's separate `lockAspect`, the latter
+// groups with the overflow-correction controls in the Coduri step.
+interface ContourConfig {
+  contourSource: ContourSource
+  contourPageNumber: number
+  contourOpacity: number
+  contourBlendMode: BlendMode
+  // Preview-only: dim everything outside the cut region. Doesn't affect output.
+  dimContourExterior: boolean
+  shapeKind: ShapeKind
+  shapeCornerRadiusMm: number
+  shapeCornerOrientation: CornerOrientation
+  // Draw a rectangle contour as plain tiled rectangles vs. the optimized grid.
+  rectangleContour: boolean
+  // Nudge the contour within the background (right/up positive, mm), clamped.
+  contourOffsetXMm: number
+  contourOffsetYMm: number
+  // Size an uploaded contour by its drawn path's bbox instead of the page box.
+  contourTrimToPath: boolean
+  // User target size (NaN = detected default) and rotation (0/90/180/270 cw).
+  contourTargetWidthMm: number
+  contourTargetHeightMm: number
+  contourRotation: number
+}
+const defaultContourConfig: ContourConfig = {
+  contourSource: 'upload',
+  contourPageNumber: 1,
+  contourOpacity: 1.0,
+  contourBlendMode: 'normal',
+  dimContourExterior: false,
+  shapeKind: 'circle',
+  shapeCornerRadiusMm: 3,
+  shapeCornerOrientation: 'out',
+  rectangleContour: false,
+  contourOffsetXMm: 0,
+  contourOffsetYMm: 0,
+  contourTrimToPath: false,
+  contourTargetWidthMm: NaN,
+  contourTargetHeightMm: NaN,
+  contourRotation: 0,
+}
+
+// Data-step user config, grouped into one object (mirrors BgConfig/ContourConfig).
+// Holds the scalar/array settings that describe the codes themselves and how a
+// CSV is interpreted. Everything derived from parsing an uploaded file (preview
+// text, row/warning info, the parsed rows, the raw File, the generated CSV URL
+// and its progress/stale/duplicate status) stays as its own useState — those are
+// artifacts, not user config. All seven fields here round-trip through `Preset`.
+interface DataConfig {
+  sampleText: string
+  codeDataMode: CodeDataMode
+  codeRowCount: number
+  codeSeparator: string
+  codeColumns: CodeColumnConfig[]
+  // Gap indices the user merged back into one field after a wrong auto-split.
+  codeFieldMerges: number[]
+  // Treat each uploaded row as a single code (re-join all its fields).
+  codeSingleField: boolean
+}
+const defaultDataConfig: DataConfig = {
+  sampleText: '',
+  codeDataMode: 'generate',
+  codeRowCount: 10,
+  codeSeparator: SEPARATOR_DEFAULT,
+  codeColumns: [defaultCodeColumn()],
+  codeFieldMerges: [],
+  codeSingleField: false,
+}
+
+// Coduri-step (text/layout) user config, grouped into one object (mirrors the
+// other *Config clusters). Scalars only: the per-word style collections
+// (`words`, `fonts`, `fontSources`, `googleFontSelections`) are heavily mutated
+// index-wise and `words` round-trips through Preset on its own, so they stay as
+// their own useState. Transient UI (`selectedIndex`) stays separate too.
+interface StyleConfig {
+  safeMarginMm: number
+  backgroundPaddingMm: number
+  // Safety inset (mm) from the cut: codes are checked against the contour eroded
+  // by this much, so the fit/correction never parks a code on the cut line.
+  contourInsetMm: number
+  // "Corectare depășire": auto-shrink overflowing codes to fit, down to
+  // `minFontSizePt`. `overflowCorrectionMode` picks per-card vs. per-column shrink.
+  correctOverflow: boolean
+  minFontSizePt: number
+  overflowCorrectionMode: 'per-code' | 'column'
+  // While true, code/text colors auto-track a contrasting color over a simple
+  // colored background; turns off once the user picks a text color / loads a preset.
+  autoTextColor: boolean
+}
+const defaultStyleConfig: StyleConfig = {
+  safeMarginMm: 0,
+  backgroundPaddingMm: 0,
+  contourInsetMm: 0,
+  correctOverflow: false,
+  minFontSizePt: 6,
+  overflowCorrectionMode: 'per-code',
+  autoTextColor: true,
+}
 
 const CORNER_ORIENTATION_OPTIONS: { value: CornerOrientation; label: string }[] = [
   { value: 'out', label: 'În afară' },
@@ -322,44 +469,58 @@ export default function App() {
 
   const [background, setBackground] = useState<PdfBackground | null>(null)
   const [backgroundError, setBackgroundError] = useState<string | null>(null)
-  const [backgroundSource, setBackgroundSource] = useState<BackgroundSource>('upload')
-  const [simpleBgWidthMm, setSimpleBgWidthMm] = useState(86)
-  const [simpleBgHeightMm, setSimpleBgHeightMm] = useState(54)
-  const [simpleBgColor, setSimpleBgColor] = useState<string | null>(null)
+  // Background-step user config, grouped into one object (see BgConfig) with a
+  // generic field setter — mirrors the `pageOptions` precedent. Destructured
+  // immediately so every read/effect-dep site stays a plain identifier.
+  const [bgConfig, setBgConfig] = useState<BgConfig>(defaultBgConfig)
+  const {
+    backgroundSource, backgroundPageNumber,
+    simpleBgWidthMm, simpleBgHeightMm, simpleBgColor,
+    genBgWidthMm, genBgHeightMm, genBgImageSource, genBgImageUrl,
+    bgTargetWidthMm, bgTargetHeightMm, bgRotation,
+  } = bgConfig
+  function setBgField<K extends keyof BgConfig>(key: K, value: BgConfig[K]) {
+    setBgConfig((prev) => ({ ...prev, [key]: value }))
+  }
   // "Crează fundal": build the print background from a raster image (PNG/JPEG)
   // at the chosen card size. `genBgImageFile` is the source-image boundary — any
-  // future image source (e.g. AI generation) just feeds a File in here.
-  const [genBgWidthMm, setGenBgWidthMm] = useState(86)
-  const [genBgHeightMm, setGenBgHeightMm] = useState(54)
+  // future image source (e.g. AI generation) just feeds a File in here. It's a
+  // binary/async boundary, not scalar config, so it stays outside BgConfig.
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
-  // The image can come from a local file picker or a remote URL (sub-toggle).
-  const [genBgImageSource, setGenBgImageSource] = useState<GenBgImageSource>('file')
-  const [genBgImageUrl, setGenBgImageUrl] = useState('')
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
-  const [contourOpacity, setContourOpacity] = useState(1.0)
-  const [contourBlendMode, setContourBlendMode] = useState<BlendMode>('normal')
-  // Preview-only: dim everything outside the cut region so the user can see what
-  // the contour keeps from the background. Does not affect the generated PDFs.
-  const [dimContourExterior, setDimContourExterior] = useState(false)
+  // Contour-step user config, grouped into one object (see ContourConfig) with a
+  // `setContourField` helper — the same pattern as bgConfig/setBgField. Reads
+  // stay via the destructured names below; only write sites go through the helper.
+  const [contourConfig, setContourConfig] = useState<ContourConfig>(defaultContourConfig)
+  const {
+    contourSource, contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
+    shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, rectangleContour,
+    contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
+    contourTargetWidthMm, contourTargetHeightMm, contourRotation,
+  } = contourConfig
+  // Accepts a plain value or an updater fn (like a raw setState). None of the
+  // config fields are functions, so the typeof check safely tells them apart —
+  // this is what lets the async shape effect read the latest target size.
+  function setContourField<K extends keyof ContourConfig>(
+    key: K,
+    value: ContourConfig[K] | ((prev: ContourConfig[K]) => ContourConfig[K]),
+  ) {
+    setContourConfig((prev) => ({
+      ...prev,
+      [key]:
+        typeof value === 'function'
+          ? (value as (p: ContourConfig[K]) => ContourConfig[K])(prev[key])
+          : value,
+    }))
+  }
   // Traced vector "keep" path for the dim-exterior preview of an uploaded contour
   // (preset shapes use the precise `contourCutShape` instead). Recomputed from
   // the rendered outline below; null falls back to the bounding box.
   const [contourInteriorMaskPath, setContourInteriorMaskPath] = useState<string | null>(null)
-  const [contourSource, setContourSource] = useState<ContourSource>('upload')
-  const [shapeKind, setShapeKind] = useState<ShapeKind>('circle')
-  const [shapeCornerRadiusMm, setShapeCornerRadiusMm] = useState(3)
-  const [shapeCornerOrientation, setShapeCornerOrientation] = useState<CornerOrientation>('out')
-  // Draw a rectangle contour as plain tiled rectangles instead of the optimized
-  // spanning grid lines ("Contur Dreptunghi"). Default off = optimization on.
-  const [rectangleContour, setRectangleContour] = useState(false)
   const [shapeError, setShapeError] = useState<string | null>(null)
-  // Nudge the contour within the background (right/up positive, mm). Clamped so
-  // the contour box stays fully inside the background — see contourOffsetMax*.
-  const [contourOffsetXMm, setContourOffsetXMm] = useState(0)
-  const [contourOffsetYMm, setContourOffsetYMm] = useState(0)
   // Whether the contour is selected for direct manipulation (drag / arrow-key nudge in
   // the preview). Mutually exclusive with word selection (a word is always selectedIndex,
   // so we gate on this flag rather than nulling the index).
@@ -370,7 +531,27 @@ export default function App() {
   // instead of keeping a stale absolute mm that drifts off as dimensions change.
   const prevContourBoundsRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null)
 
-  const [sampleText, setSampleText] = useState('')
+  // Data-step user config, grouped into one object (see DataConfig) with a
+  // `setDataField` helper — same pattern as bgConfig/contourConfig. Reads stay
+  // via the destructured names; the helper takes a value or an updater fn (none
+  // of the fields are functions, so the typeof check safely tells them apart).
+  const [dataConfig, setDataConfig] = useState<DataConfig>(defaultDataConfig)
+  const {
+    sampleText, codeDataMode, codeRowCount, codeSeparator,
+    codeColumns, codeFieldMerges, codeSingleField,
+  } = dataConfig
+  function setDataField<K extends keyof DataConfig>(
+    key: K,
+    value: DataConfig[K] | ((prev: DataConfig[K]) => DataConfig[K]),
+  ) {
+    setDataConfig((prev) => ({
+      ...prev,
+      [key]:
+        typeof value === 'function'
+          ? (value as (p: DataConfig[K]) => DataConfig[K])(prev[key])
+          : value,
+    }))
+  }
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
   const [fontSources, setFontSources] = useState<FontSource[]>(() => resizeFontSources([], words.length))
@@ -379,61 +560,49 @@ export default function App() {
   )
   const [fontsError, setFontsError] = useState<string | null>(null)
   const [fontsNotice, setFontsNotice] = useState<string | null>(null)
-  const [safeMarginMm, setSafeMarginMm] = useState(0)
-  // "Corectare depășire": auto-shrink overflowing codes to fit, down to a minimum
-  // font size. `overflowCorrectionMode` picks whether each code shrinks on its own
-  // card ('per-code') or a whole field/column shrinks uniformly ('column').
-  const [correctOverflow, setCorrectOverflow] = useState(false)
-  const [minFontSizePt, setMinFontSizePt] = useState(6)
-  const [overflowCorrectionMode, setOverflowCorrectionMode] = useState<'per-code' | 'column'>('per-code')
-  // Safety inset (mm) from the cut: codes are checked against the contour eroded by
-  // this much, so the fit/correction never parks a code on the cut line.
-  const [contourInsetMm, setContourInsetMm] = useState(0)
-  const [backgroundPaddingMm, setBackgroundPaddingMm] = useState(0)
+  // Coduri-step (text/layout) scalar config, grouped into one object (see
+  // StyleConfig) with a `setStyleField` helper — same pattern as the other
+  // clusters. The per-word arrays (words/fonts/…) stay as separate useState.
+  const [styleConfig, setStyleConfig] = useState<StyleConfig>(defaultStyleConfig)
+  const {
+    safeMarginMm, backgroundPaddingMm, contourInsetMm,
+    correctOverflow, minFontSizePt, overflowCorrectionMode, autoTextColor,
+  } = styleConfig
+  function setStyleField<K extends keyof StyleConfig>(
+    key: K,
+    value: StyleConfig[K] | ((prev: StyleConfig[K]) => StyleConfig[K]),
+  ) {
+    setStyleConfig((prev) => ({
+      ...prev,
+      [key]:
+        typeof value === 'function'
+          ? (value as (p: StyleConfig[K]) => StyleConfig[K])(prev[key])
+          : value,
+    }))
+  }
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
-  // While true, code/text colors auto-track a contrasting color over a simple
-  // colored background so they stay visible. Turns off once the user picks a
-  // text color (or loads a preset), after which their choices are kept.
-  const [autoTextColor, setAutoTextColor] = useState(true)
 
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null)
-  // User-editable target card dimensions for an uploaded background PDF.
-  // NaN = no override; pre-filled with the detected MediaBox on file load.
-  const [bgTargetWidthMm, setBgTargetWidthMm] = useState<number>(NaN)
-  const [bgTargetHeightMm, setBgTargetHeightMm] = useState<number>(NaN)
   // When locked, the target width/height inputs keep the uploaded PDF's original
   // aspect ratio; editing one derives the other. Unlocked lets them move freely.
+  // (The target dims themselves — `bgTargetWidthMm/HeightMm` — live in BgConfig.)
   const [lockAspect, setLockAspect] = useState(true)
-  // User-applied rotation of the uploaded background (0/90/180/270, clockwise),
-  // baked into both the preview and the generated output.
-  const [bgRotation, setBgRotation] = useState(0)
-  // Multi-page PDF page selection (1-based). The page count drives whether the
-  // page stepper is shown; the page number is sent to the generator so the print
-  // output uses the same page as the preview.
-  const [backgroundPageNumber, setBackgroundPageNumber] = useState(1)
+  // Page count of the loaded multi-page PDF (drives whether the page stepper is
+  // shown). Derived from the rendered PDF, so it stays out of BgConfig; the
+  // user-picked `backgroundPageNumber` lives in BgConfig.
   const [backgroundPageCount, setBackgroundPageCount] = useState(1)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
-  const [contourPageNumber, setContourPageNumber] = useState(1)
   const [contourPageCount, setContourPageCount] = useState(1)
   // True when the app auto-selected the contour page (a page distinct from the
   // background's) on load, rather than the user picking it. Drives an
   // informational note and is cleared once the user changes the page manually.
   const [contourPageAutoPicked, setContourPageAutoPicked] = useState(false)
-  // Size an uploaded contour by the bounding box of its drawn path instead of its
-  // page MediaBox. Off = page size (historical behavior); on = trim to the artwork so
-  // a cut line inside a whitespace-padded page is sized/placed by the shape. The user
-  // must then align the cut to the print carefully (the origin/extent change).
-  const [contourTrimToPath, setContourTrimToPath] = useState(false)
-  // User-editable target size for an uploaded contour PDF (NaN = no override,
-  // pre-filled with the detected MediaBox on load), plus a lock that keeps the
-  // contour's aspect ratio and a rotation (0/90/180/270, clockwise) — the same
-  // resize/switch/rotate machinery the background upload uses. The contour-only
-  // cut job applies these through the background pipeline (scale + /Rotate); the
-  // combine overlay applies them in build_overlay.
-  const [contourTargetWidthMm, setContourTargetWidthMm] = useState<number>(NaN)
-  const [contourTargetHeightMm, setContourTargetHeightMm] = useState<number>(NaN)
+  // Lock that keeps an uploaded/preset contour's aspect ratio while resizing —
+  // mirrors BgConfig's separate `lockAspect`. The target dims, trim flag, and
+  // rotation it acts on all live in ContourConfig (same resize/switch/rotate
+  // machinery as the background upload: contour-only cut applies them through the
+  // background pipeline (scale + /Rotate); the combine overlay in build_overlay).
   const [contourLockAspect, setContourLockAspect] = useState(true)
-  const [contourRotation, setContourRotation] = useState(0)
   const [mode, setMode] = useState<Mode>('print')
   const [pageOptions, setPageOptions] = useState<PageOptions>(defaultPageOptions)
   const [printArtifact, setPrintArtifact] = useState<PrintArtifact | null>(null)
@@ -447,7 +616,6 @@ export default function App() {
   const [sampleArtifact, setSampleArtifact] = useState<{ blob: Blob } | null>(null)
   const [sampleLoading, setSampleLoading] = useState(false)
   const [csvDataFile, setCsvDataFile] = useState<File | null>(null)
-  const [codeDataMode, setCodeDataMode] = useState<CodeDataMode>('generate')
   const [uploadedCsvPreview, setUploadedCsvPreview] = useState('')
   const [uploadedCsvRowCount, setUploadedCsvRowCount] = useState(0)
   const [uploadedCsvInfo, setUploadedCsvInfo] = useState<string | null>(null)
@@ -458,20 +626,10 @@ export default function App() {
   const [presetError, setPresetError] = useState<string | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
-  const [codeRowCount, setCodeRowCount] = useState(10)
-  const [codeSeparator, setCodeSeparator] = useState(SEPARATOR_DEFAULT)
-  const [codeColumns, setCodeColumns] = useState<CodeColumnConfig[]>([defaultCodeColumn()])
   // For an uploaded CSV whose delimiter was auto-detected wrongly: the raw parsed
-  // rows, plus the gap indices the user merged back into one field (so a value
-  // like "1A 1" mis-split into ["1A","1"] becomes a single field again).
+  // rows (the merges the user applied to them live in DataConfig.codeFieldMerges,
+  // e.g. so a value like "1A 1" mis-split into ["1A","1"] becomes one field again).
   const [uploadedRows, setUploadedRows] = useState<string[][]>([])
-  const [codeFieldMerges, setCodeFieldMerges] = useState<number[]>([])
-  // When true, each uploaded row is treated as one code: every field on the row
-  // is re-joined into a single value. This handles label CSVs (e.g. "Rasol cu
-  // mușchi") that the delimiter auto-detect over-split on spaces, which would
-  // otherwise yield rows with more words than the configured styles. Auto-enabled
-  // when a freshly parsed file has rows with differing field counts (ragged).
-  const [codeSingleField, setCodeSingleField] = useState(false)
   // The widest merged row in the uploaded file (sentinel-joined), used to size
   // the per-word styles. Sizing from the *widest* row — not just the first —
   // ensures every row fits the configured word count, so the generator (which
@@ -617,8 +775,8 @@ export default function App() {
   // Drag / arrow-key nudge from the preview: clamp the raw offset into the in-card range
   // (same clamp the offset sliders apply) before storing it.
   function handleContourOffsetChange(xMm: number, yMm: number) {
-    setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, xMm), contourOffsetMaxXMm))
-    setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, yMm), contourOffsetMaxYMm))
+    setContourField('contourOffsetXMm', Math.min(Math.max(contourOffsetMinXMm, xMm), contourOffsetMaxXMm))
+    setContourField('contourOffsetYMm', Math.min(Math.max(contourOffsetMinYMm, yMm), contourOffsetMaxYMm))
   }
 
   // Preserve the contour offset's relative position across any resize of the card
@@ -635,16 +793,16 @@ export default function App() {
     prevContourBoundsRef.current = cur
     if (!prev) {
       // First appearance of this contour: center it (offsets are corner-anchored).
-      setContourOffsetXMm((cur.minX + cur.maxX) / 2)
-      setContourOffsetYMm((cur.minY + cur.maxY) / 2)
+      setContourField('contourOffsetXMm', (cur.minX + cur.maxX) / 2)
+      setContourField('contourOffsetYMm', (cur.minY + cur.maxY) / 2)
       return
     }
     const fx = prev.maxX > prev.minX ? (contourOffsetXMm - prev.minX) / (prev.maxX - prev.minX) : 0.5
     const fy = prev.maxY > prev.minY ? (contourOffsetYMm - prev.minY) / (prev.maxY - prev.minY) : 0.5
     const nx = cur.minX + fx * (cur.maxX - cur.minX)
     const ny = cur.minY + fy * (cur.maxY - cur.minY)
-    if (Math.abs(nx - contourOffsetXMm) > 1e-6) setContourOffsetXMm(nx)
-    if (Math.abs(ny - contourOffsetYMm) > 1e-6) setContourOffsetYMm(ny)
+    if (Math.abs(nx - contourOffsetXMm) > 1e-6) setContourField('contourOffsetXMm', nx)
+    if (Math.abs(ny - contourOffsetYMm) > 1e-6) setContourField('contourOffsetYMm', ny)
   }, [contourSource, contourBackground, contourOffsetXMm, contourOffsetYMm, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
 
   // Cut region for the preview's "dim exterior" overlay. The preset shape now
@@ -795,8 +953,8 @@ export default function App() {
     setUploadedCsvWarnings([])
     setUploadedRawFile(null)
     setUploadedRows([])
-    setCodeFieldMerges([])
-    setCodeSingleField(false)
+    setDataField('codeFieldMerges', [])
+    setDataField('codeSingleField', false)
     setUploadedMaxRow('')
   }
 
@@ -832,13 +990,13 @@ export default function App() {
 
   // Re-apply merges to the already-parsed rows when the user toggles a field gap.
   function handleUploadFieldMergesChange(gaps: number[]) {
-    setCodeFieldMerges(gaps)
+    setDataField('codeFieldMerges', gaps)
     applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ', codeSingleField)
   }
 
   // Toggle "each row is a single code" and re-build the downstream CSV.
   function handleSingleFieldChange(value: boolean) {
-    setCodeSingleField(value)
+    setDataField('codeSingleField', value)
     applyUploadedCsvRows(uploadedRows, codeFieldMerges, codeSeparator || ' ', value)
   }
 
@@ -867,7 +1025,7 @@ export default function App() {
     // label and the "detected wrong?" override field). The actual downstream
     // split uses `UPLOAD_SEPARATOR`, so the user never has to know about CSV
     // separators at all.
-    setCodeSeparator(parsed.delimiter)
+    setDataField('codeSeparator', parsed.delimiter)
     setUploadedRawFile(file)
     // Ragged rows (varying field counts) on an auto-detected delimiter mean the
     // split likely fell inside labels (e.g. spaces in "Rasol cu mușchi"). Default
@@ -879,8 +1037,8 @@ export default function App() {
     // (the layout may have changed) and falls back to the ragged default.
     const merges = restore ? restore.merges : []
     const singleField = restore ? restore.singleField : ragged
-    setCodeFieldMerges(merges)
-    setCodeSingleField(singleField)
+    setDataField('codeFieldMerges', merges)
+    setDataField('codeSingleField', singleField)
     const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
     if (singleField) {
       setUploadedCsvInfo(`Fiecare rând este tratat ca un singur cod · ${rowsLabel}`)
@@ -911,19 +1069,19 @@ export default function App() {
   }
 
   function handleCodeDataModeChange(mode: CodeDataMode) {
-    setCodeDataMode(mode)
+    setDataField('codeDataMode', mode)
     // Clear the current CSV when switching so the gate re-opens cleanly.
     clearUploadedCsv()
     setCodeCsvStale(false)
   }
 
   function handleCodeRowCountChange(value: number) {
-    setCodeRowCount(value)
+    setDataField('codeRowCount', value)
     invalidateCsv()
   }
 
   function handleCodeColumnsChange(columns: CodeColumnConfig[]) {
-    setCodeColumns(columns)
+    setDataField('codeColumns', columns)
     invalidateCsv()
   }
 
@@ -1039,52 +1197,52 @@ export default function App() {
         if (!Array.isArray(preset.words)) {
           throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
         }
-        setSampleText(preset.sampleText ?? '')
-        setCodeSeparator(preset.codeSeparator ?? '')
-        if (typeof preset.codeRowCount === 'number') setCodeRowCount(preset.codeRowCount)
-        if (Array.isArray(preset.codeColumns)) setCodeColumns(preset.codeColumns)
+        setDataField('sampleText', preset.sampleText ?? '')
+        setDataField('codeSeparator', preset.codeSeparator ?? '')
+        if (typeof preset.codeRowCount === 'number') setDataField('codeRowCount', preset.codeRowCount)
+        if (Array.isArray(preset.codeColumns)) setDataField('codeColumns', preset.codeColumns)
         const presetMerges = Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : []
         const presetSingleField = preset.codeSingleField === true
-        setCodeFieldMerges(presetMerges)
-        setCodeSingleField(presetSingleField)
+        setDataField('codeFieldMerges', presetMerges)
+        setDataField('codeSingleField', presetSingleField)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
         // background-contrast default.
-        setAutoTextColor(false)
+        setStyleField('autoTextColor', false)
         setFonts(resizeFonts([], length))
         const sources = resizeFontSources(preset.fontSources ?? [], length)
         const selections = resizeGoogleFontSelections(preset.googleFontSelections ?? [], length)
         setFontSources(sources)
         setGoogleFontSelections(selections)
         setSelectedIndex(null)
-        if (typeof preset.safeMarginMm === 'number') setSafeMarginMm(preset.safeMarginMm)
-        if (typeof preset.correctOverflow === 'boolean') setCorrectOverflow(preset.correctOverflow)
-        if (typeof preset.minFontSizePt === 'number') setMinFontSizePt(preset.minFontSizePt)
+        if (typeof preset.safeMarginMm === 'number') setStyleField('safeMarginMm', preset.safeMarginMm)
+        if (typeof preset.correctOverflow === 'boolean') setStyleField('correctOverflow', preset.correctOverflow)
+        if (typeof preset.minFontSizePt === 'number') setStyleField('minFontSizePt', preset.minFontSizePt)
         if (preset.overflowCorrectionMode === 'per-code' || preset.overflowCorrectionMode === 'column')
-          setOverflowCorrectionMode(preset.overflowCorrectionMode)
-        if (typeof preset.contourInsetMm === 'number') setContourInsetMm(preset.contourInsetMm)
-        if (typeof preset.backgroundPaddingMm === 'number') setBackgroundPaddingMm(preset.backgroundPaddingMm)
-        if (typeof preset.contourOpacity === 'number') setContourOpacity(preset.contourOpacity)
-        if (preset.contourBlendMode) setContourBlendMode(preset.contourBlendMode)
+          setStyleField('overflowCorrectionMode', preset.overflowCorrectionMode)
+        if (typeof preset.contourInsetMm === 'number') setStyleField('contourInsetMm', preset.contourInsetMm)
+        if (typeof preset.backgroundPaddingMm === 'number') setStyleField('backgroundPaddingMm', preset.backgroundPaddingMm)
+        if (typeof preset.contourOpacity === 'number') setContourField('contourOpacity', preset.contourOpacity)
+        if (preset.contourBlendMode) setContourField('contourBlendMode', preset.contourBlendMode)
         // A saved offset is an explicit placement — load it as the new baseline
         // (clearing remembered bounds so it isn't rescaled against stale slack).
         prevContourBoundsRef.current = null
-        if (typeof preset.contourOffsetXMm === 'number') setContourOffsetXMm(preset.contourOffsetXMm)
-        if (typeof preset.contourOffsetYMm === 'number') setContourOffsetYMm(preset.contourOffsetYMm)
+        if (typeof preset.contourOffsetXMm === 'number') setContourField('contourOffsetXMm', preset.contourOffsetXMm)
+        if (typeof preset.contourOffsetYMm === 'number') setContourField('contourOffsetYMm', preset.contourOffsetYMm)
         if (preset.mode) setMode(preset.mode)
         if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
         const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
-        setBackgroundSource(loadedBackgroundSource)
-        if (typeof preset.simpleBgWidthMm === 'number') setSimpleBgWidthMm(preset.simpleBgWidthMm)
-        if (typeof preset.simpleBgHeightMm === 'number') setSimpleBgHeightMm(preset.simpleBgHeightMm)
-        if (preset.simpleBgColor === null || typeof preset.simpleBgColor === 'string') setSimpleBgColor(preset.simpleBgColor)
-        if (preset.contourSource === 'upload' || preset.contourSource === 'shape') setContourSource(preset.contourSource)
-        if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setShapeKind(preset.shapeKind)
-        if (typeof preset.shapeCornerRadiusMm === 'number') setShapeCornerRadiusMm(preset.shapeCornerRadiusMm)
+        setBgField('backgroundSource', loadedBackgroundSource)
+        if (typeof preset.simpleBgWidthMm === 'number') setBgField('simpleBgWidthMm', preset.simpleBgWidthMm)
+        if (typeof preset.simpleBgHeightMm === 'number') setBgField('simpleBgHeightMm', preset.simpleBgHeightMm)
+        if (preset.simpleBgColor === null || typeof preset.simpleBgColor === 'string') setBgField('simpleBgColor', preset.simpleBgColor)
+        if (preset.contourSource === 'upload' || preset.contourSource === 'shape') setContourField('contourSource', preset.contourSource)
+        if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setContourField('shapeKind', preset.shapeKind)
+        if (typeof preset.shapeCornerRadiusMm === 'number') setContourField('shapeCornerRadiusMm', preset.shapeCornerRadiusMm)
         if (preset.shapeCornerOrientation === 'in' || preset.shapeCornerOrientation === 'out')
-          setShapeCornerOrientation(preset.shapeCornerOrientation)
-        if (typeof preset.rectangleContour === 'boolean') setRectangleContour(preset.rectangleContour)
+          setContourField('shapeCornerOrientation', preset.shapeCornerOrientation)
+        if (typeof preset.rectangleContour === 'boolean') setContourField('rectangleContour', preset.rectangleContour)
 
         // Restore the print/contour background PDFs bundled in the archive, if any.
         // A simple background is regenerated from its saved dimensions/color by
@@ -1098,30 +1256,30 @@ export default function App() {
         const savedContourPage = typeof preset.contourPageNumber === 'number' ? preset.contourPageNumber : 1
         if (bgFile && loadedBackgroundSource === 'upload') {
           setBackgroundFile(bgFile)
-          setBackgroundPageNumber(savedBgPage)
+          setBgField('backgroundPageNumber', savedBgPage)
           renderPdfBackground(bgFile, savedBgPage)
             .then((bg) => {
               setBackground(bg)
               setBackgroundPageCount(bg.pageCount)
-              setBackgroundPageNumber(Math.min(Math.max(1, savedBgPage), bg.pageCount))
+              setBgField('backgroundPageNumber', Math.min(Math.max(1, savedBgPage), bg.pageCount))
             })
             .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
         }
         const savedContourTrim = preset.contourTrimToPath === true
-        setContourTrimToPath(savedContourTrim)
+        setContourField('contourTrimToPath', savedContourTrim)
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
           setContourBackgroundFile(contourFile)
-          setContourPageNumber(savedContourPage)
+          setContourField('contourPageNumber', savedContourPage)
           renderContourPreview(contourFile, savedContourPage, 0, savedContourTrim)
             .then((bg) => {
               setContourBackground(bg)
               setContourPageCount(bg.pageCount)
-              setContourPageNumber(Math.min(Math.max(1, savedContourPage), bg.pageCount))
+              setContourField('contourPageNumber', Math.min(Math.max(1, savedContourPage), bg.pageCount))
             })
             .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
         }
         const loadedDataMode: CodeDataMode = preset.codeDataMode === 'upload' ? 'upload' : 'generate'
-        setCodeDataMode(loadedDataMode)
+        setDataField('codeDataMode', loadedDataMode)
         if (csvFile && loadedDataMode === 'upload') {
           // Re-ingesting the file would otherwise re-detect the layout and wipe
           // the merges set above, so pass the saved joining through to be honoured.
@@ -1166,18 +1324,18 @@ export default function App() {
     setBackground(null)
     setBackgroundError(null)
     setBackgroundFile(file)
-    setBgTargetWidthMm(NaN)
-    setBgTargetHeightMm(NaN)
-    setBgRotation(0)
-    setBackgroundPageNumber(1)
+    setBgField('bgTargetWidthMm', NaN)
+    setBgField('bgTargetHeightMm', NaN)
+    setBgField('bgRotation', 0)
+    setBgField('backgroundPageNumber', 1)
     setBackgroundPageCount(1)
     if (!file) return
     renderPdfBackground(file)
       .then(async (bg) => {
         setBackground(bg)
         setBackgroundPageCount(bg.pageCount)
-        setBgTargetWidthMm(bg.widthPt / MM)
-        setBgTargetHeightMm(bg.heightPt / MM)
+        setBgField('bgTargetWidthMm', bg.widthPt / MM)
+        setBgField('bgTargetHeightMm', bg.heightPt / MM)
         await ensureDefaultFont()
         const maxWidthPt = bg.widthPt * 0.9
         const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
@@ -1192,13 +1350,13 @@ export default function App() {
   function handleBackgroundPageChange(pageNumber: number) {
     if (!backgroundFile) return
     const page = Math.min(Math.max(1, Math.round(pageNumber)), backgroundPageCount)
-    setBackgroundPageNumber(page)
+    setBgField('backgroundPageNumber', page)
     setBackgroundError(null)
     renderPdfBackground(backgroundFile, page, bgRotation)
       .then((bg) => {
         setBackground(bg)
-        setBgTargetWidthMm(bg.widthPt / MM)
-        setBgTargetHeightMm(bg.heightPt / MM)
+        setBgField('bgTargetWidthMm', bg.widthPt / MM)
+        setBgField('bgTargetHeightMm', bg.heightPt / MM)
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -1211,15 +1369,15 @@ export default function App() {
   function rotateBackground() {
     if (!backgroundFile) return
     const next = (bgRotation + 90) % 360
-    setBgRotation(next)
+    setBgField('bgRotation', next)
     if (backgroundSource === 'generate') {
       const w = genBgWidthMm
-      setGenBgWidthMm(genBgHeightMm)
-      setGenBgHeightMm(w)
+      setBgField('genBgWidthMm', genBgHeightMm)
+      setBgField('genBgHeightMm', w)
     } else {
       const w = bgTargetWidthMm
-      setBgTargetWidthMm(bgTargetHeightMm)
-      setBgTargetHeightMm(w)
+      setBgField('bgTargetWidthMm', bgTargetHeightMm)
+      setBgField('bgTargetHeightMm', w)
     }
     setBackgroundError(null)
     renderPdfBackground(backgroundFile, backgroundPageNumber, next)
@@ -1228,7 +1386,7 @@ export default function App() {
   }
 
   function handleBackgroundSourceChange(source: BackgroundSource) {
-    setBackgroundSource(source)
+    setBgField('backgroundSource', source)
     setBackgroundError(null)
     // Upload and generate both start from an empty background until the user
     // provides input (a PDF / an image); simple instead regenerates from its
@@ -1237,10 +1395,10 @@ export default function App() {
     if (source !== 'simple') {
       setBackground(null)
       setBackgroundFile(null)
-      setBgTargetWidthMm(NaN)
-      setBgTargetHeightMm(NaN)
-      setBgRotation(0)
-      setBackgroundPageNumber(1)
+      setBgField('bgTargetWidthMm', NaN)
+      setBgField('bgTargetHeightMm', NaN)
+      setBgField('bgRotation', 0)
+      setBgField('backgroundPageNumber', 1)
       setBackgroundPageCount(1)
     }
     // The "Fundal imagine" (generate) source holds the raster image
@@ -1299,13 +1457,13 @@ export default function App() {
   // the height derived from the natural aspect).
   function handleGenBgImageChange(file: File | null) {
     setGenBgImageFile(file)
-    setBgRotation(0)
+    setBgField('bgRotation', 0)
     if (!file) return
     createImageBitmap(file)
       .then((bmp) => {
         const a = bmp.width / bmp.height
         if (typeof bmp.close === 'function') bmp.close()
-        if (a > 0) setGenBgHeightMm(Math.round((genBgWidthMm / a) * 100) / 100)
+        if (a > 0) setBgField('genBgHeightMm', Math.round((genBgWidthMm / a) * 100) / 100)
       })
       .catch(() => {})
   }
@@ -1464,12 +1622,12 @@ export default function App() {
     setContourBackgroundError(null)
     setContourSelected(false)
     setContourBackgroundFile(file)
-    setContourPageNumber(1)
+    setContourField('contourPageNumber', 1)
     setContourPageCount(1)
     setContourPageAutoPicked(false)
-    setContourTargetWidthMm(NaN)
-    setContourTargetHeightMm(NaN)
-    setContourRotation(0)
+    setContourField('contourTargetWidthMm', NaN)
+    setContourField('contourTargetHeightMm', NaN)
+    setContourField('contourRotation', 0)
     if (!file) return
     // When the contour reuses the same PDF as the background (Step 1), default to
     // a DIFFERENT page than the one chosen for the background: a multi-page PDF
@@ -1477,8 +1635,8 @@ export default function App() {
     const sameAsBackground = backgroundFile != null && isSameFile(file, backgroundFile)
     const prefill = (bg: PdfBackground) => {
       setContourBackground(bg)
-      setContourTargetWidthMm(bg.widthPt / MM)
-      setContourTargetHeightMm(bg.heightPt / MM)
+      setContourField('contourTargetWidthMm', bg.widthPt / MM)
+      setContourField('contourTargetHeightMm', bg.heightPt / MM)
     }
     renderContourPreview(file)
       .then((bg) => {
@@ -1488,7 +1646,7 @@ export default function App() {
         // for the background's own page when there's no other (single-page PDF).
         const contourPage = sameAsBackground ? pickDistinctPage(backgroundPageNumber, bg.pageCount) : 1
         if (sameAsBackground && contourPage !== 1) {
-          setContourPageNumber(contourPage)
+          setContourField('contourPageNumber', contourPage)
           setContourPageAutoPicked(true)
           return renderContourPreview(file, contourPage).then(prefill)
         }
@@ -1503,14 +1661,14 @@ export default function App() {
   function handleContourPageChange(pageNumber: number) {
     if (!contourBackgroundFile) return
     const page = Math.min(Math.max(1, Math.round(pageNumber)), contourPageCount)
-    setContourPageNumber(page)
+    setContourField('contourPageNumber', page)
     setContourPageAutoPicked(false)
     setContourBackgroundError(null)
     renderContourPreview(contourBackgroundFile, page, contourRotation)
       .then((bg) => {
         setContourBackground(bg)
-        setContourTargetWidthMm(bg.widthPt / MM)
-        setContourTargetHeightMm(bg.heightPt / MM)
+        setContourField('contourTargetWidthMm', bg.widthPt / MM)
+        setContourField('contourTargetHeightMm', bg.heightPt / MM)
       })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -1519,14 +1677,14 @@ export default function App() {
   // re-detect the contour size from the result (the box snaps to the artwork or back
   // to the page). Resets any manual resize override, like a page change does.
   function handleContourTrimChange(trim: boolean) {
-    setContourTrimToPath(trim)
+    setContourField('contourTrimToPath', trim)
     if (!contourBackgroundFile) return
     setContourBackgroundError(null)
     renderContourPreview(contourBackgroundFile, contourPageNumber, contourRotation, trim)
       .then((bg) => {
         setContourBackground(bg)
-        setContourTargetWidthMm(bg.widthPt / MM)
-        setContourTargetHeightMm(bg.heightPt / MM)
+        setContourField('contourTargetWidthMm', bg.widthPt / MM)
+        setContourField('contourTargetHeightMm', bg.heightPt / MM)
       })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -1537,10 +1695,10 @@ export default function App() {
   function rotateContour() {
     if (!contourBackgroundFile) return
     const next = (contourRotation + 90) % 360
-    setContourRotation(next)
+    setContourField('contourRotation', next)
     const w = contourTargetWidthMm
-    setContourTargetWidthMm(contourTargetHeightMm)
-    setContourTargetHeightMm(w)
+    setContourField('contourTargetWidthMm', contourTargetHeightMm)
+    setContourField('contourTargetHeightMm', w)
     setContourBackgroundError(null)
     // A preset shape's generation effect depends on contourRotation and re-renders
     // the rotated outline itself; only the uploaded file needs a manual re-render.
@@ -1552,15 +1710,15 @@ export default function App() {
   }
 
   function handleContourSourceChange(source: ContourSource) {
-    setContourSource(source)
+    setContourField('contourSource', source)
     setShapeError(null)
     setContourSelected(false)
     // Reset the resize/rotate overrides on every switch so the new source starts
     // from its own detected/card size (upload re-detects on load; the preset
     // shape re-prefills to the card size in its generation effect).
-    setContourTargetWidthMm(NaN)
-    setContourTargetHeightMm(NaN)
-    setContourRotation(0)
+    setContourField('contourTargetWidthMm', NaN)
+    setContourField('contourTargetHeightMm', NaN)
+    setContourField('contourRotation', 0)
     // A freshly selected preset shape starts full-card (auto-tracks the card).
     // Drop the remembered offset bounds so the new contour isn't rescaled
     // against the previous source's slack.
@@ -1570,7 +1728,7 @@ export default function App() {
       setContourBackground(null)
       setContourBackgroundFile(null)
       setContourBackgroundError(null)
-      setContourPageNumber(1)
+      setContourField('contourPageNumber', 1)
       setContourPageCount(1)
     }
   }
@@ -1649,13 +1807,13 @@ export default function App() {
       .then((bg) => {
         if (!cancelled && bg) {
           setContourBackground(bg)
-          setContourPageNumber(1)
+          setContourField('contourPageNumber', 1)
           setContourPageCount(1)
           setShapeError(null)
           // Default the contour size to fill the available space the first time;
           // a later user resize is preserved.
-          setContourTargetWidthMm((v) => (isFinite(v) && v > 0 ? v : contourAvailWidthMm))
-          setContourTargetHeightMm((v) => (isFinite(v) && v > 0 ? v : contourAvailHeightMm))
+          setContourField('contourTargetWidthMm', (v) => (isFinite(v) && v > 0 ? v : contourAvailWidthMm))
+          setContourField('contourTargetHeightMm', (v) => (isFinite(v) && v > 0 ? v : contourAvailHeightMm))
         }
       })
       .catch((err) => {
@@ -1670,8 +1828,8 @@ export default function App() {
   // the full card as the BACKGROUND is resized.
   useEffect(() => {
     if (contourSource !== 'shape' || !background || !contourShapeTargetAutoRef.current) return
-    setContourTargetWidthMm(effectiveCardWidthMm)
-    setContourTargetHeightMm(effectiveCardHeightMm)
+    setContourField('contourTargetWidthMm', effectiveCardWidthMm)
+    setContourField('contourTargetHeightMm', effectiveCardHeightMm)
   }, [contourSource, background, effectiveCardWidthMm, effectiveCardHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
@@ -1712,7 +1870,7 @@ export default function App() {
   // uploaded rows so the word count matches the generator's separator-based
   // count (which keeps empty fields) instead of `splitWords` (which drops them).
   function handleSampleTextChange(value: string, separator: string = effectiveSeparator, presplit?: string[]) {
-    setSampleText(value)
+    setDataField('sampleText', value)
     const texts = presplit ?? splitWords(value, separator)
     setWords((prev) => resizeWords(prev, texts))
     setFonts((prev) => resizeFonts(prev, texts.length))
@@ -1721,9 +1879,9 @@ export default function App() {
   }
 
   function handleCodeSeparatorChange(value: string) {
-    setCodeSeparator(value)
+    setDataField('codeSeparator', value)
     // The split structure changes, so previously chosen merges no longer line up.
-    setCodeFieldMerges([])
+    setDataField('codeFieldMerges', [])
     if (codeDataMode === 'generate') {
       invalidateCsv()
     } else if (uploadedRawFile && value.length > 0) {
@@ -2258,8 +2416,8 @@ export default function App() {
                   heightLabel="Înălțime (mm)"
                   width={simpleBgWidthMm}
                   height={simpleBgHeightMm}
-                  onWidth={setSimpleBgWidthMm}
-                  onHeight={setSimpleBgHeightMm}
+                  onWidth={(v) => setBgField('simpleBgWidthMm', v)}
+                  onHeight={(v) => setBgField('simpleBgHeightMm', v)}
                   // No source artwork — lock keeps the ratio currently set.
                   aspect={simpleBgWidthMm / simpleBgHeightMm}
                   locked={lockAspect}
@@ -2268,7 +2426,7 @@ export default function App() {
                 <ColorField
                   label="Culoare fundal (opțional)"
                   value={simpleBgColor}
-                  onChange={setSimpleBgColor}
+                  onChange={(v) => setBgField('simpleBgColor', v)}
                   allowNone
                   noneLabel="fără culoare"
                 />
@@ -2278,7 +2436,7 @@ export default function App() {
                 <RadioGroupField<GenBgImageSource>
                   label="Sursă imagine"
                   value={genBgImageSource}
-                  onChange={setGenBgImageSource}
+                  onChange={(v) => setBgField('genBgImageSource', v)}
                   options={[
                     { value: 'file', label: 'Fișier local' },
                     { value: 'url', label: 'URL' },
@@ -2298,7 +2456,7 @@ export default function App() {
                       <TextField
                         label="URL imagine (PNG sau JPEG)"
                         value={genBgImageUrl}
-                        onChange={setGenBgImageUrl}
+                        onChange={(v) => setBgField('genBgImageUrl', v)}
                         placeholder="https://exemplu.ro/imagine.png"
                       />
                     </div>
@@ -2357,8 +2515,8 @@ export default function App() {
                   heightLabel="Înălțime țintă (mm)"
                   width={bgTargetWidthMm}
                   height={bgTargetHeightMm}
-                  onWidth={setBgTargetWidthMm}
-                  onHeight={setBgTargetHeightMm}
+                  onWidth={(v) => setBgField('bgTargetWidthMm', v)}
+                  onHeight={(v) => setBgField('bgTargetHeightMm', v)}
                   // Live target ratio (starts at the PDF's detected ratio) so the
                   // lock follows the orientation after a swap or rotation.
                   aspect={bgTargetWidthMm / bgTargetHeightMm}
@@ -2366,8 +2524,8 @@ export default function App() {
                   onToggleLock={() => setLockAspect((v) => !v)}
                   onSwap={() => {
                     const w = bgTargetWidthMm
-                    setBgTargetWidthMm(bgTargetHeightMm)
-                    setBgTargetHeightMm(w)
+                    setBgField('bgTargetWidthMm', bgTargetHeightMm)
+                    setBgField('bgTargetHeightMm', w)
                   }}
                 />
                 <div className="flex items-center gap-3">
@@ -2390,8 +2548,8 @@ export default function App() {
                   heightLabel="Înălțime țintă (mm)"
                   width={genBgWidthMm}
                   height={genBgHeightMm}
-                  onWidth={setGenBgWidthMm}
-                  onHeight={setGenBgHeightMm}
+                  onWidth={(v) => setBgField('genBgWidthMm', v)}
+                  onHeight={(v) => setBgField('genBgHeightMm', v)}
                   // Live target ratio (starts at the image's aspect) so the lock
                   // follows the orientation after a swap or rotation.
                   aspect={genBgWidthMm / genBgHeightMm}
@@ -2399,8 +2557,8 @@ export default function App() {
                   onToggleLock={() => setLockAspect((v) => !v)}
                   onSwap={() => {
                     const w = genBgWidthMm
-                    setGenBgWidthMm(genBgHeightMm)
-                    setGenBgHeightMm(w)
+                    setBgField('genBgWidthMm', genBgHeightMm)
+                    setBgField('genBgHeightMm', w)
                   }}
                 />
                 <div className="flex items-center gap-3">
@@ -2479,21 +2637,21 @@ export default function App() {
                     label="Formă"
                     value={shapeKind}
                     options={SHAPE_OPTIONS}
-                    onChange={setShapeKind}
+                    onChange={(v) => setContourField('shapeKind', v)}
                   />
                   {shapeKind === 'rounded-rectangle' && (
                     <>
-                      <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                      <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
                       <SelectField
                         label="Orientare"
                         value={shapeCornerOrientation}
                         options={CORNER_ORIENTATION_OPTIONS}
-                        onChange={setShapeCornerOrientation}
+                        onChange={(v) => setContourField('shapeCornerOrientation', v)}
                       />
                     </>
                   )}
                   {shapeKind === 'beveled-rectangle' && (
-                    <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={setShapeCornerRadiusMm} />
+                    <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
                   )}
                 </div>
                 {!background && (
@@ -2523,8 +2681,8 @@ export default function App() {
                       // the card so a preset shape keeps the user's chosen size. The
                       // offset stays auto-centered (see the effect below) so the
                       // resized shape doesn't jump to the corner.
-                      onWidth={(v) => { contourShapeTargetAutoRef.current = false; setContourTargetWidthMm(v) }}
-                      onHeight={(v) => { contourShapeTargetAutoRef.current = false; setContourTargetHeightMm(v) }}
+                      onWidth={(v) => { contourShapeTargetAutoRef.current = false; setContourField('contourTargetWidthMm', v) }}
+                      onHeight={(v) => { contourShapeTargetAutoRef.current = false; setContourField('contourTargetHeightMm', v) }}
                       // Live target ratio (starts at the contour's detected ratio)
                       // so the lock follows the orientation after a swap or rotation.
                       aspect={contourTargetWidthMm / contourTargetHeightMm}
@@ -2533,8 +2691,8 @@ export default function App() {
                       onSwap={() => {
                         contourShapeTargetAutoRef.current = false
                         const w = contourTargetWidthMm
-                        setContourTargetWidthMm(contourTargetHeightMm)
-                        setContourTargetHeightMm(w)
+                        setContourField('contourTargetWidthMm', contourTargetHeightMm)
+                        setContourField('contourTargetHeightMm', w)
                       }}
                     />
                     <div className="flex items-center gap-3">
@@ -2558,12 +2716,12 @@ export default function App() {
                         value={clampedContourOffsetXMm}
                         // A nudge sets a relative position that's then preserved
                         // proportionally across later resizes (see the effect above).
-                        onChange={(v) => setContourOffsetXMm(Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
+                        onChange={(v) => setContourField('contourOffsetXMm', Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
                       />
                       <NumberField
                         label={`Decalaj Y contur (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetYMm}
-                        onChange={(v) => setContourOffsetYMm(Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
+                        onChange={(v) => setContourField('contourOffsetYMm', Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
                       />
                     </div>
                     {/* Snap the contour to the centre of its available room on each
@@ -2573,7 +2731,7 @@ export default function App() {
                       <span className="text-sm text-gray-600 dark:text-gray-400">Centrează:</span>
                       <button
                         type="button"
-                        onClick={() => setContourOffsetXMm((contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
+                        onClick={() => setContourField('contourOffsetXMm', (contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
                         disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
                         title="Centrează conturul pe orizontală"
                         className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -2582,7 +2740,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setContourOffsetYMm((contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
+                        onClick={() => setContourField('contourOffsetYMm', (contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
                         disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
                         title="Centrează conturul pe verticală"
                         className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -2597,12 +2755,12 @@ export default function App() {
                   </p>
                 )}
                 <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={setContourOpacity} step={0.1} min={0} max={1} />
+                  <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={(v) => setContourField('contourOpacity', v)} step={0.1} min={0} max={1} />
                   <SelectField
                     label="Mod combinare contur"
                     value={contourBlendMode}
                     options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
-                    onChange={setContourBlendMode}
+                    onChange={(v) => setContourField('contourBlendMode', v)}
                   />
                 </div>
                 {/* Preview-only aid: dims the background outside the cut so the
@@ -2610,7 +2768,7 @@ export default function App() {
                 <CheckboxField
                   label="Întunecă exteriorul conturului (doar previzualizare)"
                   checked={dimContourExterior}
-                  onChange={setDimContourExterior}
+                  onChange={(v) => setContourField('dimContourExterior', v)}
                 />
 
               </>
@@ -2627,9 +2785,9 @@ export default function App() {
               onChange={(v) => handleSampleTextChange(v, codeSeparator)}
             />
             <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
-              <NumberField label="Margine (mm)" value={safeMarginMm} onChange={setSafeMarginMm} />
-              <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={setBackgroundPaddingMm} />
-              <NumberField label="Distanțăre contur (mm)" value={contourInsetMm} onChange={setContourInsetMm} min={0} step={0.5} />
+              <NumberField label="Margine (mm)" value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
+              <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
+              <NumberField label="Distanțăre contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
             </div>
             <p className="text-sm text-gray-500 dark:text-gray-400">
               „Distanțare contur” trage conturul de tăiere spre interior doar pentru verificare:
@@ -2766,7 +2924,7 @@ export default function App() {
                   label="Culoare text"
                   value={selected.color}
                   onChange={(v) => {
-                    setAutoTextColor(false)
+                    setStyleField('autoTextColor', false)
                     updateWord(selectedIndex, { color: v ?? '0:0:0:1' })
                   }}
                 />
@@ -2856,11 +3014,11 @@ export default function App() {
           {step === 'date' && (
           <CodeSourceSection
             correctOverflow={correctOverflow}
-            onCorrectOverflowChange={setCorrectOverflow}
+            onCorrectOverflowChange={(v) => setStyleField('correctOverflow', v)}
             minFontSizePt={minFontSizePt}
-            onMinFontSizeChange={setMinFontSizePt}
+            onMinFontSizeChange={(v) => setStyleField('minFontSizePt', v)}
             overflowCorrectionMode={overflowCorrectionMode}
-            onOverflowCorrectionModeChange={setOverflowCorrectionMode}
+            onOverflowCorrectionModeChange={(v) => setStyleField('overflowCorrectionMode', v)}
             dataMode={codeDataMode}
             onDataModeChange={handleCodeDataModeChange}
             onCsvUpload={(f) => void handleCsvUpload(f)}
@@ -2978,7 +3136,7 @@ export default function App() {
               {/* "Contur Dreptunghi" emits plain rectangles instead of the optimized grid
                   lines — only for a rectangle contour in a contour-producing mode. */}
               {needsContourInput && contourSource === 'shape' && shapeKind === 'rectangle' && (
-                <CheckboxField label="Contur Dreptunghi" checked={rectangleContour} onChange={setRectangleContour} />
+                <CheckboxField label="Contur Dreptunghi" checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
               )}
               <CheckboxField label="Contururi de depanare" checked={pageOptions.debug} onChange={(v) => setPageOption('debug', v)} />
               {needsContourInput && (
