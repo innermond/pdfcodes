@@ -5,7 +5,7 @@ use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
 use crate::generate::image_bg::build_image_background_pdf;
-use crate::generate::shapes::{build_shape_pdf, build_simple_background_pdf, ShapeKind};
+use crate::generate::shapes::{build_polygon_pdf, build_shape_pdf, build_simple_background_pdf, ShapeKind};
 use crate::geometry::CardLayout;
 use crate::options::Options;
 use lopdf::{Document, Object};
@@ -631,6 +631,36 @@ pub fn generate_shape_pdf(
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
     build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, corner_concave, stroke, sides, star)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+// Generate a single-page cut PDF, sized `width_mm` x `height_mm`, that strokes the
+// offset contour outline supplied as flattened closed polygons. `coords` is a flat
+// [x0, y0, x1, y1, …] list in PDF points (y-up, already placed within the box) and
+// `subpath_lens` gives each closed subpath's vertex count — the same packing the
+// keep-region uses. `stroke_color` is "#RRGGBB" or "c:m:y:k" (empty ⇒ black).
+// Backs the "Redesenează" contour offset (see contourOffset.ts): the offset outline
+// is generated the same way for both contour sources, replacing the base contour.
+#[wasm_bindgen]
+pub fn generate_polygon_pdf(
+    width_mm: f32,
+    height_mm: f32,
+    coords: Vec<f32>,
+    subpath_lens: Vec<u32>,
+    stroke_color: String,
+) -> Result<Vec<u8>, JsError> {
+    let stroke = if stroke_color.trim().is_empty() {
+        crate::color::TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)
+    } else {
+        crate::color::parse_color(&stroke_color).map_err(|e| JsError::new(&e))?
+    };
+    let polygons = rebuild_keep_polygons(&coords, &subpath_lens);
+    if polygons.is_empty() {
+        return Err(JsError::new("generate_polygon_pdf: no closed polygons"));
+    }
+    let width = width_mm * crate::geometry::MM;
+    let height = height_mm * crate::geometry::MM;
+    build_polygon_pdf(width, height, &polygons, stroke)
         .map_err(|e| JsError::new(&e.to_string()))
 }
 

@@ -88,6 +88,48 @@ export function rotate(p: Pt, cx: number, cy: number, deg: number): Pt {
   return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos]
 }
 
+// Flatten the contour outline into closed polygons in the contour's own box
+// space: coordinates in `width` x `height` units (mm or points — the caller's
+// choice), SVG y-down, origin at the box's top-left. A preset shape is built with
+// `contourMaskPathD` (rotation baked in); an uploaded contour uses its traced
+// interior mask path (0..1) scaled into the box; with neither, the box rectangle
+// is returned. Shared by `computeContourKeepRegion` and the "Redesenează" offset
+// stage (contourOffset.ts) so the tested/offset outline matches the rendered cut.
+export function contourLocalPolygons(params: {
+  width: number
+  height: number
+  cutShape: ContourCutShape | null
+  interiorMaskPath: string | null
+}): Pt[][] {
+  const { width: iw, height: ih } = params
+  if (params.cutShape) {
+    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star } = params.cutShape
+    const rot = ((rotation % 360) + 360) % 360
+    const cx = iw / 2
+    const cy = ih / 2
+    const swapped = rot === 90 || rot === 270
+    const boxW = swapped ? ih : iw
+    const boxH = swapped ? iw : ih
+    const x0 = cx - boxW / 2
+    const y0 = cy - boxH / 2
+    const d = contourMaskPathD(
+      kind,
+      // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
+      { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
+      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
+    )
+    return flattenPathD(d).map((sp) => sp.map((p) => rotate(p, cx, cy, rot)))
+  }
+  if (params.interiorMaskPath) {
+    // Fractional (0..1) coords scaled into the contour box.
+    return flattenPathD(params.interiorMaskPath).map((sp) =>
+      sp.map(([fx, fy]): Pt => [fx * iw, fy * ih]),
+    )
+  }
+  // No fillable shape (open outline, still computing): keep the bounding box.
+  return [[[0, 0], [iw, 0], [iw, ih], [0, ih]]]
+}
+
 export function computeContourKeepRegion(params: {
   cardWidthMm: number
   cardHeightMm: number
@@ -112,34 +154,10 @@ export function computeContourKeepRegion(params: {
   const ih = contourHeightMm * MM
   const iy = cardHeightPt - ih - offsetYMm * MM
 
-  // Build the keep region in SVG card space (y-down), then flip y below.
-  let subpaths: Pt[][]
-  if (params.cutShape) {
-    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star } = params.cutShape
-    const rot = ((rotation % 360) + 360) % 360
-    const cx = ix + iw / 2
-    const cy = iy + ih / 2
-    const swapped = rot === 90 || rot === 270
-    const boxW = swapped ? ih : iw
-    const boxH = swapped ? iw : ih
-    const x0 = cx - boxW / 2
-    const y0 = cy - boxH / 2
-    const d = contourMaskPathD(
-      kind,
-      // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
-      { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
-      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
-    )
-    subpaths = flattenPathD(d).map((sp) => sp.map((p) => rotate(p, cx, cy, rot)))
-  } else if (params.interiorMaskPath) {
-    // Fractional (0..1) coords scaled into the contour image rect.
-    subpaths = flattenPathD(params.interiorMaskPath).map((sp) =>
-      sp.map(([fx, fy]): Pt => [ix + fx * iw, iy + fy * ih]),
-    )
-  } else {
-    // No fillable shape (open outline, still computing): keep the bounding box.
-    subpaths = [[[ix, iy], [ix + iw, iy], [ix + iw, iy + ih], [ix, iy + ih]]]
-  }
+  // Build the keep region in the contour box (SVG y-down), translate to the card
+  // and flip y below.
+  const subpaths = contourLocalPolygons({ width: iw, height: ih, cutShape: params.cutShape, interiorMaskPath: params.interiorMaskPath })
+    .map((sp) => sp.map(([lx, ly]): Pt => [ix + lx, iy + ly]))
 
   // Flip to PDF card space (y-up) and pack. Drop degenerate subpaths.
   const coords: number[] = []

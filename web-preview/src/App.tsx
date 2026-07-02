@@ -11,10 +11,11 @@ import { fetchGoogleFont } from './lib/googleFonts'
 import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
 import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
-import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
+import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
-import { computeContourKeepRegion } from './lib/contourKeepRegion'
+import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
+import { offsetPolygons, polygonsBBox, polygonsToPathD } from './lib/contourOffset'
 import { polygonAspectExtent } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter } from './lib/csvSerialize'
@@ -361,6 +362,10 @@ interface ContourConfig {
   contourTargetWidthMm: number
   contourTargetHeightMm: number
   contourRotation: number
+  // "Redesenează": equidistant offset of the cut outline (mm, signed). Positive
+  // grows it outward (bleed), negative shrinks it inward (safety margin), the
+  // same amount everywhere along the outline — applied to both contour sources.
+  contourRedrawMm: number
 }
 const defaultContourConfig: ContourConfig = {
   contourSource: 'upload',
@@ -380,6 +385,7 @@ const defaultContourConfig: ContourConfig = {
   contourTargetWidthMm: NaN,
   contourTargetHeightMm: NaN,
   contourRotation: 0,
+  contourRedrawMm: 0,
 }
 
 // Data-step user config, grouped into one object (mirrors BgConfig/ContourConfig).
@@ -522,7 +528,7 @@ export default function App() {
     contourSource, contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
     shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
-    contourTargetWidthMm, contourTargetHeightMm, contourRotation,
+    contourTargetWidthMm, contourTargetHeightMm, contourRotation, contourRedrawMm,
   } = contourConfig
   // Accepts a plain value or an updater fn (like a raw setState). None of the
   // config fields are functions, so the typeof check safely tells them apart —
@@ -543,6 +549,17 @@ export default function App() {
   // (preset shapes use the precise `contourCutShape` instead). Recomputed from
   // the rendered outline below; null falls back to the bounding box.
   const [contourInteriorMaskPath, setContourInteriorMaskPath] = useState<string | null>(null)
+  // "Redesenează" (equidistant offset) products. When `contourRedrawMm` is non-zero
+  // the base contour outline is offset and re-emitted as a fresh cut PDF
+  // (`redrawnContourFile` + its rendered `redrawnContour`), a normalized preview mask
+  // (`redrawnMaskPath`, 0..1 y-down), and the offset footprint / placement delta
+  // (`redrawnFootprint`). All null when the offset is 0 (base contour unchanged).
+  const [redrawnContourFile, setRedrawnContourFile] = useState<File | null>(null)
+  const [redrawnContour, setRedrawnContour] = useState<PdfBackground | null>(null)
+  const [redrawnMaskPath, setRedrawnMaskPath] = useState<string | null>(null)
+  const [redrawnFootprint, setRedrawnFootprint] = useState<
+    { widthMm: number; heightMm: number; offsetDeltaXMm: number; offsetDeltaYMm: number } | null
+  >(null)
   const [shapeError, setShapeError] = useState<string | null>(null)
   // Whether the contour is selected for direct manipulation (drag / arrow-key nudge in
   // the preview). Mutually exclusive with word selection (a word is always selectedIndex,
@@ -853,6 +870,34 @@ export default function App() {
     ],
   )
 
+  // Whether the "Redesenează" offset is active and its products (set by the effect
+  // below) are ready. Until then the base contour is shown/used, so a mid-computation
+  // nudge never renders or cuts with stale geometry.
+  const contourRedrawActive = contourRedrawMm !== 0 && redrawnContour != null && redrawnFootprint != null
+
+  // Active contour = the redrawn (offset) contour when the redraw is live, else the
+  // base contour. Every downstream consumer (preview, keep-region, generation) reads
+  // the `active*` values so the offset reaches the real cut, not just the preview.
+  const activeContourFile = contourRedrawActive ? redrawnContourFile : contourBackgroundFile
+  const activeContourBackground = contourRedrawActive ? redrawnContour : contourBackground
+  const activeContourWidthMm = contourRedrawActive ? redrawnFootprint!.widthMm : effectiveContourWidthMm
+  const activeContourHeightMm = contourRedrawActive ? redrawnFootprint!.heightMm : effectiveContourHeightMm
+  // The redrawn contour renders through the interior-mask path (with rotation baked),
+  // so its cut-shape is null and its rotation is 0 regardless of the original source.
+  const activeContourCutShape = contourRedrawActive ? null : contourCutShape
+  const activeInteriorMaskPath = contourRedrawActive ? redrawnMaskPath : contourInteriorMaskPath
+  const activeContourRotation = contourRedrawActive ? 0 : contourRotation
+  const activeContourTrimToPath = contourRedrawActive ? false : contourTrimToPath
+  // The redrawn cut PDF is single-page, so its page pick is always 1.
+  const activeContourPageNumber = contourRedrawActive ? 1 : contourPageNumber
+  // Placement: shift the base offset by the offset box's delta, then clamp to the card.
+  const activeContourOffsetXMm = contourRedrawActive
+    ? Math.min(Math.max(0, clampedContourOffsetXMm + redrawnFootprint!.offsetDeltaXMm), Math.max(0, effectiveCardWidthMm - activeContourWidthMm))
+    : clampedContourOffsetXMm
+  const activeContourOffsetYMm = contourRedrawActive
+    ? Math.min(Math.max(0, clampedContourOffsetYMm + redrawnFootprint!.offsetDeltaYMm), Math.max(0, effectiveCardHeightMm - activeContourHeightMm))
+    : clampedContourOffsetYMm
+
   // The cut's "keep" region in card coordinates (PDF points, y-up), handed to the
   // generator so Step 5's overflow warning flags codes the cut would slice instead
   // of testing against the page. Present whenever a contour is loaded; null (no
@@ -864,19 +909,19 @@ export default function App() {
         ? computeContourKeepRegion({
             cardWidthMm: effectiveCardWidthMm,
             cardHeightMm: effectiveCardHeightMm,
-            contourWidthMm: effectiveContourWidthMm,
-            contourHeightMm: effectiveContourHeightMm,
-            offsetXMm: clampedContourOffsetXMm,
-            offsetYMm: clampedContourOffsetYMm,
-            cutShape: contourCutShape,
-            interiorMaskPath: contourInteriorMaskPath,
+            contourWidthMm: activeContourWidthMm,
+            contourHeightMm: activeContourHeightMm,
+            offsetXMm: activeContourOffsetXMm,
+            offsetYMm: activeContourOffsetYMm,
+            cutShape: activeContourCutShape,
+            interiorMaskPath: activeInteriorMaskPath,
           })
         : null,
     [
       contourBackground, effectiveCardWidthMm, effectiveCardHeightMm,
-      effectiveContourWidthMm, effectiveContourHeightMm,
-      clampedContourOffsetXMm, clampedContourOffsetYMm,
-      contourCutShape, contourInteriorMaskPath,
+      activeContourWidthMm, activeContourHeightMm,
+      activeContourOffsetXMm, activeContourOffsetYMm,
+      activeContourCutShape, activeInteriorMaskPath,
     ],
   )
 
@@ -910,6 +955,65 @@ export default function App() {
       .catch(() => { if (!cancelled) setContourInteriorMaskPath(null) })
     return () => { cancelled = true }
   }, [contourSource, contourBackgroundFile, contourBackground, contourPageNumber, contourRotation, contourTrimToPath])
+
+  // "Redesenează": equidistant-offset the base contour outline by `contourRedrawMm`
+  // and re-emit it as a fresh cut PDF, a preview mask, and a footprint — the same way
+  // for both contour sources (the base outline `contourLocalPolygons` returns already
+  // bakes rotation, so the redrawn contour is fully oriented and generated at
+  // rotation 0). When the offset is 0 everything reverts to the base contour (no-op).
+  useEffect(() => {
+    const Wc = effectiveContourWidthMm
+    const Hc = effectiveContourHeightMm
+    // Clamp an inward offset so it can't collapse/invert the shape into garbage cut
+    // geometry (a shrink can only go to just under half the smaller side).
+    const dist = Math.max(-0.49 * Math.min(Wc, Hc), contourRedrawMm)
+    if (!contourBackground || !(Wc > 0) || !(Hc > 0) || !dist) {
+      setRedrawnContourFile(null); setRedrawnContour(null); setRedrawnMaskPath(null); setRedrawnFootprint(null)
+      return
+    }
+    // Base outline in the contour's own box (mm, SVG y-down), then offset it. 1 local
+    // unit = 1 card mm on both axes, so `dist` mm is a true equidistant offset.
+    const base = contourLocalPolygons({ width: Wc, height: Hc, cutShape: contourCutShape, interiorMaskPath: contourInteriorMaskPath })
+    const offset = offsetPolygons(base, dist)
+    const bb = polygonsBBox(offset)
+    if (!bb || bb.maxX - bb.minX <= 0 || bb.maxY - bb.minY <= 0) {
+      setRedrawnContourFile(null); setRedrawnContour(null); setRedrawnMaskPath(null); setRedrawnFootprint(null)
+      return
+    }
+    const Wf = bb.maxX - bb.minX
+    const Hf = bb.maxY - bb.minY
+    // Translate the offset outline so its box starts at (0,0). For the cut PDF, flip
+    // to PDF points (y-up); for the mask, normalize to 0..1 (y-down).
+    const localZeroed = offset.map((sp) => sp.map(([x, y]): Pt => [x - bb.minX, y - bb.minY]))
+    const coords: number[] = []
+    const lens: number[] = []
+    for (const sp of localZeroed) {
+      if (sp.length < 3) continue
+      for (const [x, y] of sp) coords.push(x * MM, (Hf - y) * MM)
+      lens.push(sp.length)
+    }
+    const maskD = polygonsToPathD(localZeroed.map((sp) => sp.map(([x, y]): Pt => [x / Wf, y / Hf])))
+    // Placement delta so the offset box lands where the base box was: its left edge is
+    // `bb.minX` from the base left, and its bottom (y-up) is `Hc - bb.maxY` from the base
+    // bottom (local y-down grows downward from the base top).
+    const footprint = { widthMm: Wf, heightMm: Hf, offsetDeltaXMm: bb.minX, offsetDeltaYMm: Hc - bb.maxY }
+
+    let cancelled = false
+    ensureWasmInit()
+      .then(() => {
+        if (cancelled || coords.length === 0) return null
+        const bytes = generate_polygon_pdf(Wf, Hf, new Float32Array(coords), new Uint32Array(lens), '0:1:0:0')
+        const file = new File([bytes.buffer as ArrayBuffer], 'contur-redesenat.pdf', { type: 'application/pdf' })
+        if (cancelled) return null
+        setRedrawnContourFile(file)
+        setRedrawnMaskPath(maskD || null)
+        setRedrawnFootprint(footprint)
+        return renderPdfBackground(file, 1, 0)
+      })
+      .then((bg) => { if (!cancelled && bg) setRedrawnContour(bg) })
+      .catch((err) => { if (!cancelled) setShapeError(err instanceof Error ? err.message : String(err)) })
+    return () => { cancelled = true }
+  }, [contourRedrawMm, effectiveContourWidthMm, effectiveContourHeightMm, contourBackground, contourCutShape, contourInteriorMaskPath])
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -1748,6 +1852,7 @@ export default function App() {
     setContourField('contourTargetWidthMm', NaN)
     setContourField('contourTargetHeightMm', NaN)
     setContourField('contourRotation', 0)
+    setContourField('contourRedrawMm', 0)
     // A freshly selected preset shape starts full-card (auto-tracks the card).
     // Drop the remembered offset bounds so the new contour isn't rescaled
     // against the previous source's slack.
@@ -1966,10 +2071,12 @@ export default function App() {
   // card, no circles) when a cut is produced and its size is known.
   const cuttableWidthMm = pageOptions.hostWidthMm - 2 * pageOptions.circleDiameterMm
   const cuttableHeightMm = pageOptions.hostHeightMm - 2 * pageOptions.circleDiameterMm
-  // Contour box in host orientation (a 90°/270° cut rotation swaps its sides).
-  const contourRotatedQuarter = ((contourRotation % 180) + 180) % 180 === 90
-  const contourFitWidthMm = contourRotatedQuarter ? effectiveContourHeightMm : effectiveContourWidthMm
-  const contourFitHeightMm = contourRotatedQuarter ? effectiveContourWidthMm : effectiveContourHeightMm
+  // Contour box in host orientation (a 90°/270° cut rotation swaps its sides). The
+  // redrawn (offset) contour already has rotation baked into its footprint, so it
+  // needs no swap — its active size is the host-oriented box.
+  const contourRotatedQuarter = ((contourRotation % 180) + 180) % 180 === 90 && !contourRedrawActive
+  const contourFitWidthMm = contourRotatedQuarter ? activeContourHeightMm : activeContourWidthMm
+  const contourFitHeightMm = contourRotatedQuarter ? activeContourWidthMm : activeContourHeightMm
   const cutExceedsSheet =
     needsContourInput &&
     !pageOptions.noCut &&
@@ -2048,17 +2155,19 @@ export default function App() {
       // The contour PDF is generated at the effective (margin-clamped, true) size
       // for shapes, so the override = that size → scale 1; uploads still scale to
       // their target. Either way the override is the effective contour size.
-      const contourWidthOverride = effectiveContourWidthMm > 0 ? effectiveContourWidthMm : null
-      const contourHeightOverride = effectiveContourHeightMm > 0 ? effectiveContourHeightMm : null
+      // With "Redesenează" active the contour is the offset outline (a freshly
+      // generated cut PDF), so every contour input below reads the `active*` values.
+      const contourWidthOverride = activeContourWidthMm > 0 ? activeContourWidthMm : null
+      const contourHeightOverride = activeContourHeightMm > 0 ? activeContourHeightMm : null
       // "Combină paginile" (combine) overlays the contour onto the print pages as
       // a view-only (non-printing) layer. It is irrelevant in no-cut mode (the
       // checkbox is hidden there), so gate it on `!noCut`. Require a loaded contour:
       // the overlay needs the contour bytes (and `build_overlay` errors without
       // them), so this also keeps a stale combine flag from failing generation.
-      const combine = pageOptions.combine === true && !pageOptions.noCut && contourBackgroundFile != null
+      const combine = pageOptions.combine === true && !pageOptions.noCut && activeContourFile != null
       // "Minimal": crop the print page/cells down to the contour box. Needs a loaded
       // contour (its effective size is the crop window); a no-op otherwise.
-      const minimal = pageOptions.minimal === true && contourBackgroundFile != null
+      const minimal = pageOptions.minimal === true && activeContourFile != null
       // Page picks from multi-page uploads. The print background uses
       // `backgroundPageNumber`; for the combine overlay the contour PDF's page is
       // also sent on the print options. The contour job loads the contour PDF as
@@ -2068,21 +2177,22 @@ export default function App() {
       // "canvas" so the no-cut cut page is sized to the background (a smaller,
       // offset contour then cuts in the right place); otherwise leave it so the
       // contour keeps its own page size (unchanged behaviour).
-      const contourOffsetActive = clampedContourOffsetXMm !== 0 || clampedContourOffsetYMm !== 0
+      const contourOffsetActive = activeContourOffsetXMm !== 0 || activeContourOffsetYMm !== 0
       const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? contourPageNumber : undefined, (combine || minimal) ? clampedContourOffsetXMm : undefined, (combine || minimal) ? clampedContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? contourRotation : undefined, minimal ? effectiveContourWidthMm : undefined, minimal ? effectiveContourHeightMm : undefined, contourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
-      // Dreptunghi" forces plain tiled rectangles instead.
-      const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && !rectangleContour
+      // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
+      // is an arbitrary polygon PDF, never the grid.
+      const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && !rectangleContour && !contourRedrawActive
       // In minimal mode the cut page is the contour's own box at origin (matching the
       // cropped print page), so drop the background canvas and zero the offset.
-      const cutOffsetXMm = minimal ? 0 : clampedContourOffsetXMm
-      const cutOffsetYMm = minimal ? 0 : clampedContourOffsetYMm
+      const cutOffsetXMm = minimal ? 0 : activeContourOffsetXMm
+      const cutOffsetYMm = minimal ? 0 : activeContourOffsetYMm
       const cutCanvasWMm = minimal ? undefined : contourCanvasWMm
       const cutCanvasHMm = minimal ? undefined : contourCanvasHMm
       const contourOptions = needsContourInput
@@ -2091,12 +2201,12 @@ export default function App() {
         // background slots: cardWidth/Height (7th/8th) and backgroundRotation
         // (15th). The 10th (contourPageNumber, only for the combine overlay) is
         // unused here — undefined so the offset/canvas args land in their slots.
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, contourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, contourRotation, undefined, undefined, undefined, undefined, undefined, contourTrimToPath), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, activeContourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, activeContourRotation, undefined, undefined, undefined, undefined, undefined, activeContourTrimToPath), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
       const contour =
-        (needsContourInput || combine) && contourBackgroundFile ? await contourBackgroundFile.arrayBuffer() : null
+        (needsContourInput || combine) && activeContourFile ? await activeContourFile.arrayBuffer() : null
       const fontBufs = await Promise.all(fontResult.files.map((f) => f.arrayBuffer()))
       const mode: 'print' | 'contour' | 'both' =
         needsPrintInput && needsContourInput ? 'both' : needsPrintInput ? 'print' : 'contour'
@@ -2175,30 +2285,30 @@ export default function App() {
 
       const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
       const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
-      const sampleCombine = contourBackgroundFile != null
+      const sampleCombine = activeContourFile != null
       // The contour PDF is generated at the effective (margin-clamped, true) size
       // for shapes, so the override = that size → scale 1; uploads still scale to
-      // their target. Either way the override is the effective contour size.
-      const contourWidthOverride = effectiveContourWidthMm > 0 ? effectiveContourWidthMm : null
-      const contourHeightOverride = effectiveContourHeightMm > 0 ? effectiveContourHeightMm : null
+      // their target. With "Redesenează" active the override is the offset contour.
+      const contourWidthOverride = activeContourWidthMm > 0 ? activeContourWidthMm : null
+      const contourHeightOverride = activeContourHeightMm > 0 ? activeContourHeightMm : null
       // Force a single isolated card (no-cut) with the contour overlaid.
       const samplePageOptions = { ...pageOptions, noCut: true, combine: sampleCombine }
       // Mirror Minimal so the proof reflects the cropped output (the contour offset is
       // already sent for the overlay; add the contour box as the crop window).
-      const sampleMinimal = pageOptions.minimal === true && contourBackgroundFile != null
+      const sampleMinimal = pageOptions.minimal === true && activeContourFile != null
       const printOptions = buildJsOptions(
         words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, samplePageOptions, false,
         bgWidthOverride, bgHeightOverride, backgroundPageNumber,
-        sampleCombine ? contourPageNumber : undefined,
-        (sampleCombine || sampleMinimal) ? clampedContourOffsetXMm : undefined,
-        (sampleCombine || sampleMinimal) ? clampedContourOffsetYMm : undefined,
+        sampleCombine ? activeContourPageNumber : undefined,
+        (sampleCombine || sampleMinimal) ? activeContourOffsetXMm : undefined,
+        (sampleCombine || sampleMinimal) ? activeContourOffsetYMm : undefined,
         undefined, undefined, bgRotation,
         sampleCombine ? contourWidthOverride : undefined,
         sampleCombine ? contourHeightOverride : undefined,
-        sampleCombine ? contourRotation : undefined,
-        sampleMinimal ? effectiveContourWidthMm : undefined,
-        sampleMinimal ? effectiveContourHeightMm : undefined,
-        contourTrimToPath,
+        sampleCombine ? activeContourRotation : undefined,
+        sampleMinimal ? activeContourWidthMm : undefined,
+        sampleMinimal ? activeContourHeightMm : undefined,
+        activeContourTrimToPath,
         contourKeepRegion,
         correctOverflow,
         minFontSizePt,
@@ -2208,7 +2318,7 @@ export default function App() {
 
       await ensureWasmInit()
       const bgBytes = new Uint8Array(await backgroundFile.arrayBuffer())
-      const contourBytes = sampleCombine ? new Uint8Array(await contourBackgroundFile!.arrayBuffer()) : undefined
+      const contourBytes = sampleCombine ? new Uint8Array(await activeContourFile!.arrayBuffer()) : undefined
       const fontBytes = await Promise.all(fontResult.files.map(async (f) => new Uint8Array(await f.arrayBuffer())))
 
       const out = generate_with_options(row, bgBytes, contourBytes, fontBytes, printOptions)
@@ -2706,9 +2816,17 @@ export default function App() {
             {contourBackgroundError && <p className="text-sm text-red-600 dark:text-red-400">{contourBackgroundError}</p>}
             {contourBackground && (
               <>
+                {/* Design size — the width/height controls below. The "Redesenează"
+                    offset never changes this; it only affects the resulting cut,
+                    reported on its own line so the size controls stay stable. */}
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   Dimensiune contur: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
+                {contourRedrawActive && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    După redesenare ({contourRedrawMm > 0 ? '+' : ''}{contourRedrawMm} mm): tăiere {activeContourWidthMm.toFixed(1)} × {activeContourHeightMm.toFixed(1)} mm
+                  </p>
+                )}
                 {/* Resize / switch dimensions / rotate apply to both the uploaded
                     contour PDF and the generated preset shape (treated alike). */}
                 {(contourSource === 'upload' || contourSource === 'shape') && (
@@ -2759,6 +2877,18 @@ export default function App() {
                     </div>
                   </>
                 )}
+                {/* "Redesenează": equidistant offset of the cut outline, applied to
+                    both sources. Positive grows it outward (bleed), negative shrinks
+                    it inward (safety margin). */}
+                <NumberField
+                  label="Redesenează (decalaj mm, + în afară / − în interior)"
+                  value={contourRedrawMm}
+                  step={0.5}
+                  onChange={(v) => setContourField('contourRedrawMm', isFinite(v) ? v : 0)}
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Decalează întregul contur cu aceeași distanță pe tot conturul (die-line). 0 = neschimbat.
+                </p>
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
                   <>
                     <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
@@ -3398,16 +3528,16 @@ export default function App() {
                       backgroundImageUrl={background.imageUrl}
                       cardWidthPt={effectiveCardWidthMm * MM}
                       cardHeightPt={effectiveCardHeightMm * MM}
-                      contourImageUrl={contourBackground?.imageUrl ?? null}
-                      contourWidthPt={effectiveContourWidthMm * MM}
-                      contourHeightPt={effectiveContourHeightMm * MM}
-                      contourOffsetXPt={clampedContourOffsetXMm * MM}
-                      contourOffsetYPt={clampedContourOffsetYMm * MM}
+                      contourImageUrl={activeContourBackground?.imageUrl ?? null}
+                      contourWidthPt={activeContourWidthMm * MM}
+                      contourHeightPt={activeContourHeightMm * MM}
+                      contourOffsetXPt={activeContourOffsetXMm * MM}
+                      contourOffsetYPt={activeContourOffsetYMm * MM}
                       contourOpacity={contourOpacity}
                       contourBlendMode={contourBlendMode}
                       dimExterior={dimContourExterior}
-                      contourCutShape={contourCutShape}
-                      contourInteriorMaskPath={contourInteriorMaskPath}
+                      contourCutShape={activeContourCutShape}
+                      contourInteriorMaskPath={activeInteriorMaskPath}
                       contourSelected={contourSelected && contourBackground != null}
                       onContourSelect={() => setContourSelected(true)}
                       onContourOffsetChange={handleContourOffsetChange}

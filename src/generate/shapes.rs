@@ -357,6 +357,41 @@ pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32
     build_single_page_pdf(card_w, card_h, operations)
 }
 
+// Build a minimal one-page PDF whose MediaBox is `width` x `height` (in PDF
+// points) and whose content strokes each closed polygon in `polygons` as its own
+// hairline path (`m … l … h S`). Points are in PDF points, y-up, already placed
+// within the box. Used as the generated cut PDF for the "Redesenează" contour
+// offset (see `offsetPolygons` in web-preview/src/lib/contourOffset.ts), which
+// produces the offset outline as flattened polygons regardless of the original
+// contour source.
+pub fn build_polygon_pdf(width: f32, height: f32, polygons: &[Vec<(f32, f32)>], stroke: TextColor) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let stroke_op = match stroke {
+        TextColor::Rgb(r, g, b) => Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]),
+        TextColor::Cmyk(c, m, y, k) => Operation::new("K", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]),
+    };
+    // Line width 0 is a PDF hairline (thinnest device line), the cut-line width
+    // cutters/plotters expect — same as `build_shape_pdf`.
+    let mut operations = vec![
+        Operation::new("w", vec![Object::Real(0.0)]),
+        stroke_op,
+    ];
+    for poly in polygons {
+        if poly.len() < 2 {
+            continue;
+        }
+        // Each polygon is stroked as its own closed path so a downstream cutter
+        // treats it as one distinct toolpath.
+        for (i, &(px, py)) in poly.iter().enumerate() {
+            let op = if i == 0 { "m" } else { "l" };
+            operations.push(Operation::new(op, vec![Object::Real(px), Object::Real(py)]));
+        }
+        operations.push(Operation::new("h", vec![]));
+        operations.push(Operation::new("S", vec![]));
+    }
+
+    build_single_page_pdf(width, height, operations)
+}
+
 // Build a minimal one-page background PDF sized `card_w` x `card_h` (in PDF
 // points). When `fill` is given the whole page is filled with that color;
 // otherwise the page is left blank. Used as a generated stand-in for a
@@ -449,6 +484,25 @@ mod tests {
         assert!(ops.iter().all(|op| op.operator != "f"), "ellipse is not filled");
 
         // The requested CMYK stroke color is emitted via the `K` operator.
+        let k = ops.iter().find(|op| op.operator == "K").expect("stroke color");
+        assert_eq!(nums(&k.operands), vec![0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn polygon_pdf_strokes_each_closed_subpath() {
+        // Two triangles in a 120x80pt box, stroked (not filled) with the CMYK color.
+        let polys = vec![
+            vec![(0.0, 0.0), (60.0, 0.0), (30.0, 40.0)],
+            vec![(60.0, 40.0), (120.0, 40.0), (90.0, 80.0)],
+        ];
+        let pdf = build_polygon_pdf(120.0, 80.0, &polys, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0)).unwrap();
+        assert_eq!(media_box(&pdf), vec![0.0, 0.0, 120.0, 80.0]);
+
+        let ops = page_operations(&pdf);
+        assert_eq!(ops.iter().filter(|op| op.operator == "m").count(), 2, "one moveto per subpath");
+        assert_eq!(ops.iter().filter(|op| op.operator == "l").count(), 4, "two lineto per triangle");
+        assert_eq!(ops.iter().filter(|op| op.operator == "S").count(), 2, "each subpath stroked on its own");
+        assert!(ops.iter().all(|op| op.operator != "f"), "cut lines are stroked, not filled");
         let k = ops.iter().find(|op| op.operator == "K").expect("stroke color");
         assert_eq!(nums(&k.operands), vec![0.0, 0.0, 0.0, 1.0]);
     }
