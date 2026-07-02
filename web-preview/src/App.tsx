@@ -255,6 +255,11 @@ interface BgConfig {
   // User-applied rotation of the uploaded/generated background (0/90/180/270,
   // clockwise), baked into both the preview and the generated output.
   bgRotation: number
+  // Mirror the generated image background horizontally / vertically. Only applies
+  // to the "Fundal imagine" source (file / URL / clipboard); baked into the image
+  // PDF so preview and output match.
+  bgFlipX: boolean
+  bgFlipY: boolean
 }
 
 const defaultBgConfig: BgConfig = {
@@ -270,6 +275,8 @@ const defaultBgConfig: BgConfig = {
   bgTargetWidthMm: NaN,
   bgTargetHeightMm: NaN,
   bgRotation: 0,
+  bgFlipX: false,
+  bgFlipY: false,
 }
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
@@ -506,7 +513,7 @@ export default function App() {
     backgroundSource, backgroundPageNumber,
     simpleBgWidthMm, simpleBgHeightMm, simpleBgColor,
     genBgWidthMm, genBgHeightMm, genBgImageSource, genBgImageUrl,
-    bgTargetWidthMm, bgTargetHeightMm, bgRotation,
+    bgTargetWidthMm, bgTargetHeightMm, bgRotation, bgFlipX, bgFlipY,
   } = bgConfig
   function setBgField<K extends keyof BgConfig>(key: K, value: BgConfig[K]) {
     setBgConfig((prev) => ({ ...prev, [key]: value }))
@@ -1460,6 +1467,8 @@ export default function App() {
     setBgField('bgTargetWidthMm', NaN)
     setBgField('bgTargetHeightMm', NaN)
     setBgField('bgRotation', 0)
+    setBgField('bgFlipX', false)
+    setBgField('bgFlipY', false)
     setBgField('backgroundPageNumber', 1)
     setBackgroundPageCount(1)
     if (!file) return
@@ -1485,7 +1494,7 @@ export default function App() {
     const page = Math.min(Math.max(1, Math.round(pageNumber)), backgroundPageCount)
     setBgField('backgroundPageNumber', page)
     setBackgroundError(null)
-    renderPdfBackground(backgroundFile, page, bgRotation)
+    renderPdfBackground(backgroundFile, page, bgRotation, 2, bgFlipX, bgFlipY)
       .then((bg) => {
         setBackground(bg)
         setBgField('bgTargetWidthMm', bg.widthPt / MM)
@@ -1513,7 +1522,24 @@ export default function App() {
       setBgField('bgTargetHeightMm', w)
     }
     setBackgroundError(null)
-    renderPdfBackground(backgroundFile, backgroundPageNumber, next)
+    // A generated image background bakes the flip into its PDF, so only the uploaded
+    // source flips at render time (passing it for `generate` would double-flip).
+    const fx = backgroundSource === 'upload' ? bgFlipX : false
+    const fy = backgroundSource === 'upload' ? bgFlipY : false
+    renderPdfBackground(backgroundFile, backgroundPageNumber, next, 2, fx, fy)
+      .then(setBackground)
+      .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Toggle a mirror axis for an uploaded PDF background and re-render the preview
+  // (the generated-image source instead re-bakes the flip in its build effect).
+  function flipUploadBackground(axis: 'x' | 'y', value: boolean) {
+    const nextX = axis === 'x' ? value : bgFlipX
+    const nextY = axis === 'y' ? value : bgFlipY
+    setBgField(axis === 'x' ? 'bgFlipX' : 'bgFlipY', value)
+    if (!backgroundFile) return
+    setBackgroundError(null)
+    renderPdfBackground(backgroundFile, backgroundPageNumber, bgRotation, 2, nextX, nextY)
       .then(setBackground)
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -1592,7 +1618,10 @@ export default function App() {
     setGenBgImageFile(file)
     setBgField('bgRotation', 0)
     if (!file) return
-    createImageBitmap(file)
+    // `imageOrientation: 'from-image'` applies the JPEG's EXIF orientation so the
+    // measured aspect matches the oriented image the generator bakes in (see
+    // `build_image_background_pdf` / `apply_orientation` in src/generate/image_bg.rs).
+    createImageBitmap(file, { imageOrientation: 'from-image' })
       .then((bmp) => {
         const a = bmp.width / bmp.height
         if (typeof bmp.close === 'function') bmp.close()
@@ -1687,13 +1716,15 @@ export default function App() {
         // generation) and `bgRotation` the rotation — exactly like an uploaded PDF,
         // so both sources share the same rotate/scale/override machinery and the
         // build no longer rebuilds on dimension/rotation changes.
-        const bmp = await createImageBitmap(genBgImageFile)
+        // Match the generator's EXIF-oriented decode (see handleGenBgImageChange).
+        const bmp = await createImageBitmap(genBgImageFile, { imageOrientation: 'from-image' })
         const aspect = bmp.width / bmp.height
         if (typeof bmp.close === 'function') bmp.close()
         const refW = 100
         const refH = aspect > 0 ? 100 / aspect : 100
         const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
-        const bytes = generate_image_background_pdf(imageBytes, refW, refH)
+        // Flip X/Y is baked into the image PDF so preview and output match.
+        const bytes = generate_image_background_pdf(imageBytes, refW, refH, bgFlipX, bgFlipY)
         if (cancelled) return null
         const file = new File([bytes.buffer as ArrayBuffer], 'fundal-imagine.pdf', { type: 'application/pdf' })
         setBackgroundFile(file)
@@ -1724,7 +1755,7 @@ export default function App() {
       cancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backgroundSource, genBgImageFile])
+  }, [backgroundSource, genBgImageFile, bgFlipX, bgFlipY])
 
   // Default the code/text color to one that contrasts the simple background so
   // codes are visible. Stays in effect (also recoloring newly added words) only
@@ -2148,6 +2179,10 @@ export default function App() {
     try {
       const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
       const bgHeightOverride = isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0 ? cardTargetHeightMm : null
+      // Only the uploaded PDF flips at output time; the generated-image source
+      // already bakes the flip into its PDF, so passing it here would double-flip.
+      const bgOutFlipX = backgroundSource === 'upload' ? bgFlipX : false
+      const bgOutFlipY = backgroundSource === 'upload' ? bgFlipY : false
       // Contour resize/rotate (uploaded PDF or preset shape alike). For the
       // standalone cut the contour PDF *is* the background, so these feed
       // cardWidth/Height + backgroundRotation; for the combine overlay they ride
@@ -2183,7 +2218,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
@@ -2314,6 +2349,8 @@ export default function App() {
         minFontSizePt,
         overflowCorrectionMode === 'column',
         contourInsetMm,
+        backgroundSource === 'upload' ? bgFlipX : false,
+        backgroundSource === 'upload' ? bgFlipY : false,
       )
 
       await ensureWasmInit()
@@ -2675,7 +2712,7 @@ export default function App() {
                     setBgField('bgTargetHeightMm', w)
                   }}
                 />
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                   <button
                     type="button"
                     onClick={rotateBackground}
@@ -2685,6 +2722,8 @@ export default function App() {
                     ↻ Rotește 90°
                   </button>
                   <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                  <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => flipUploadBackground('x', v)} />
+                  <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => flipUploadBackground('y', v)} />
                 </div>
               </>
             )}
@@ -2708,7 +2747,7 @@ export default function App() {
                     setBgField('genBgHeightMm', w)
                   }}
                 />
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                   <button
                     type="button"
                     onClick={rotateBackground}
@@ -2718,6 +2757,8 @@ export default function App() {
                     ↻ Rotește 90°
                   </button>
                   <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                  <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => setBgField('bgFlipX', v)} />
+                  <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => setBgField('bgFlipY', v)} />
                 </div>
               </>
             )}

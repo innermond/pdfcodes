@@ -22,9 +22,14 @@ export interface PdfBackground {
 // The default of 2 suits the on-screen preview; callers that trace the raster into
 // a vector (the dim-exterior contour mask) pass a higher value so curved outlines
 // are finely sampled. The reported `widthPt`/`heightPt` are scale-independent.
-export async function renderPdfBackground(file: File, pageNumber = 1, rotation = 0, renderScale = 2): Promise<PdfBackground> {
+export async function renderPdfBackground(file: File, pageNumber = 1, rotation = 0, renderScale = 2, flipX = false, flipY = false): Promise<PdfBackground> {
   const data = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data }).promise
+  // `isImageDecoderSupported: false` forces pdf.js to use its own JPEG decoder
+  // instead of the browser's WebCodecs `ImageDecoder` (the default on Firefox/Safari).
+  // The browser decoder honors an embedded JPEG's EXIF orientation, which a compliant
+  // PDF renderer (and our generated output) ignores — so a stray orientation tag would
+  // rotate the preview and mismatch the produced PDF. Ignoring EXIF keeps them in sync.
+  const pdf = await pdfjsLib.getDocument({ data, isImageDecoderSupported: false }).promise
   const pageCount = pdf.numPages
   const safePage = Math.min(Math.max(1, Math.floor(pageNumber)), pageCount)
   const page = await pdf.getPage(safePage)
@@ -33,21 +38,29 @@ export async function renderPdfBackground(file: File, pageNumber = 1, rotation =
   // rendered image and the reported width/height reflect the displayed orientation
   // (the generator combines them identically, keeping preview and output in sync).
   const totalRotation = (((page.rotate + rotation) % 360) + 360) % 360
-  const baseViewport = page.getViewport({ scale: 1, rotation: totalRotation })
+  const baseViewport = page.getViewport({ scale: 1, rotation: totalRotation, })
 
-  const renderViewport = page.getViewport({ scale: renderScale, rotation: totalRotation })
+  const renderViewport = page.getViewport({ scale: renderScale, rotation: totalRotation, })
   const canvas = document.createElement('canvas')
   canvas.width = renderViewport.width
   canvas.height = renderViewport.height
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('Canvas 2D context indisponibil')
 
+  // Mirror the rendered raster in device space when requested. Applied as an extra
+  // transform on top of the viewport, so it flips the already-rotated output — the
+  // same axes the generator flips (see the flip `cm` in src/generate/mod.rs),
+  // keeping preview and output in sync. A mirror doesn't change width/height.
+  const transform = (flipX || flipY)
+    ? [flipX ? -1 : 1, 0, 0, flipY ? -1 : 1, flipX ? renderViewport.width : 0, flipY ? renderViewport.height : 0]
+    : undefined
+
   // Render onto a transparent canvas instead of pdf.js's default white fill.
   // A contour PDF is just a stroked outline (no fill), so a white background
   // would make it look filled and break every blend mode except multiply. For
   // a print background the card's own white SVG backdrop shows through, so the
   // result is unchanged.
-  await page.render({ canvasContext: ctx, viewport: renderViewport, background: 'rgba(0,0,0,0)' }).promise
+  await page.render({ canvasContext: ctx, viewport: renderViewport, background: 'rgba(0,0,0,0)', transform }).promise
 
   return {
     imageUrl: canvas.toDataURL('image/png'),

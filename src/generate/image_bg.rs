@@ -1,3 +1,4 @@
+use image::ImageDecoder; // brings the `orientation()` method into scope
 use lopdf::{content::Content, content::Operation, Dictionary, Document, Object, Stream};
 
 // Build a minimal one-page PDF sized `card_w` x `card_h` (in PDF points,
@@ -11,10 +12,28 @@ pub fn build_image_background_pdf(
     image_bytes: &[u8],
     card_w: f32,
     card_h: f32,
+    // Mirror the image horizontally / vertically (baked into the draw matrix so
+    // the preview and generated output stay identical). Applied after EXIF
+    // orientation, before any downstream page rotation.
+    flip_x: bool,
+    flip_y: bool,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Format is detected from the magic bytes; only the png + jpeg codecs are
     // compiled in (see Cargo.toml), so other formats fail here with an error.
-    let img = image::load_from_memory(image_bytes)?;
+    //
+    // Apply the image's EXIF orientation (phone cameras store the sensor rotation
+    // there; the raw pixel grid is otherwise sideways). Unlike an image embedded in
+    // an uploaded PDF — whose orientation the PDF structure already defines, so the
+    // embedded JPEG's EXIF is ignored — a bare uploaded JPEG's EXIF *is* its
+    // orientation, so we bake it into the pixels here. The JS preview requests the
+    // same via `createImageBitmap(file, { imageOrientation: 'from-image' })`, keeping
+    // the generated card size and the preview in sync.
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(image_bytes))
+        .with_guessed_format()?
+        .into_decoder()?;
+    let orientation = decoder.orientation()?;
+    let mut img = image::DynamicImage::from_decoder(decoder)?;
+    img.apply_orientation(orientation);
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
         return Err("image has zero dimensions".into());
@@ -41,7 +60,7 @@ pub fn build_image_background_pdf(
     let mut image_stream = Stream::new(xobj_dict, samples);
     image_stream.compress()?;
 
-    build_single_page_image_pdf(card_w, card_h, image_stream)
+    build_single_page_image_pdf(card_w, card_h, image_stream, flip_x, flip_y)
 }
 
 // Composite any image over a white background and return tightly packed RGB8
@@ -70,6 +89,8 @@ fn build_single_page_image_pdf(
     card_w: f32,
     card_h: f32,
     image_stream: Stream,
+    flip_x: bool,
+    flip_y: bool,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
@@ -78,18 +99,24 @@ fn build_single_page_image_pdf(
 
     // The `cm` maps the image's 1x1 unit space onto the full MediaBox, so the
     // image stretches to exactly fill the card (same model as `simple`/uploaded
-    // backgrounds, which define the card size by their page box).
+    // backgrounds, which define the card size by their page box). A flip negates
+    // the corresponding axis scale and shifts the origin by the card size so the
+    // mirrored image still lands inside the MediaBox.
+    let sx = if flip_x { -card_w } else { card_w };
+    let ex = if flip_x { card_w } else { 0.0 };
+    let sy = if flip_y { -card_h } else { card_h };
+    let ey = if flip_y { card_h } else { 0.0 };
     let operations = vec![
         Operation::new("q", vec![]),
         Operation::new(
             "cm",
             vec![
-                Object::Real(card_w),
+                Object::Real(sx),
                 Object::Real(0.0),
                 Object::Real(0.0),
-                Object::Real(card_h),
-                Object::Real(0.0),
-                Object::Real(0.0),
+                Object::Real(sy),
+                Object::Real(ex),
+                Object::Real(ey),
             ],
         ),
         Operation::new("Do", vec![Object::Name(b"Im0".to_vec())]),
@@ -181,7 +208,7 @@ mod tests {
         let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
 
         let (card_w, card_h) = (86.0 * MM, 54.0 * MM);
-        let pdf = build_image_background_pdf(&png, card_w, card_h).expect("should build");
+        let pdf = build_image_background_pdf(&png, card_w, card_h, false, false).expect("should build");
         assert!(pdf.starts_with(b"%PDF"));
 
         let (doc, page_id) = page_and_image(&pdf);
@@ -200,11 +227,36 @@ mod tests {
     }
 
     #[test]
+    fn flip_negates_the_draw_matrix_axes() {
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
+        let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
+        let (card_w, card_h) = (80.0, 50.0);
+
+        let cm = |flip_x: bool, flip_y: bool| -> Vec<f32> {
+            let pdf = build_image_background_pdf(&png, card_w, card_h, flip_x, flip_y).unwrap();
+            let doc = Document::load_mem(&pdf).unwrap();
+            let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+            let ops = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap().operations;
+            let cm = ops.iter().find(|op| op.operator == "cm").expect("cm op");
+            cm.operands.iter().map(num).collect()
+        };
+
+        // No flip: identity-scale-to-card, origin at (0,0).
+        assert_eq!(cm(false, false), vec![card_w, 0.0, 0.0, card_h, 0.0, 0.0]);
+        // Flip X: negate x-scale, shift origin right by the card width.
+        assert_eq!(cm(true, false), vec![-card_w, 0.0, 0.0, card_h, card_w, 0.0]);
+        // Flip Y: negate y-scale, shift origin up by the card height.
+        assert_eq!(cm(false, true), vec![card_w, 0.0, 0.0, -card_h, 0.0, card_h]);
+        // Both.
+        assert_eq!(cm(true, true), vec![-card_w, 0.0, 0.0, -card_h, card_w, card_h]);
+    }
+
+    #[test]
     fn grayscale_png_uses_devicegray() {
         let img = image::GrayImage::from_pixel(64, 64, image::Luma([128]));
         let png = encode(image::DynamicImage::ImageLuma8(img), image::ImageFormat::Png);
 
-        let pdf = build_image_background_pdf(&png, 100.0, 100.0).expect("should build");
+        let pdf = build_image_background_pdf(&png, 100.0, 100.0, false, false).expect("should build");
         let (doc, page_id) = page_and_image(&pdf);
         let im = image_stream(&doc, page_id);
         assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceGray");
@@ -215,7 +267,7 @@ mod tests {
         let img = image::RgbImage::from_pixel(32, 32, image::Rgb([200, 50, 50]));
         let jpeg = encode(image::DynamicImage::ImageRgb8(img), image::ImageFormat::Jpeg);
 
-        let pdf = build_image_background_pdf(&jpeg, 50.0, 50.0).expect("should build");
+        let pdf = build_image_background_pdf(&jpeg, 50.0, 50.0, false, false).expect("should build");
         let (doc, page_id) = page_and_image(&pdf);
         let im = image_stream(&doc, page_id);
         assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceRGB");
@@ -229,7 +281,7 @@ mod tests {
         let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([10, 20, 30, 0]));
         let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
 
-        let pdf = build_image_background_pdf(&png, 50.0, 50.0).expect("should build");
+        let pdf = build_image_background_pdf(&png, 50.0, 50.0, false, false).expect("should build");
         let (doc, page_id) = page_and_image(&pdf);
         let im = image_stream(&doc, page_id);
         assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceRGB");
@@ -239,6 +291,6 @@ mod tests {
 
     #[test]
     fn rejects_non_image_bytes() {
-        assert!(build_image_background_pdf(b"not an image at all", 50.0, 50.0).is_err());
+        assert!(build_image_background_pdf(b"not an image at all", 50.0, 50.0, false, false).is_err());
     }
 }

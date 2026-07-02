@@ -187,12 +187,23 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         _ => (raw_w, raw_h, Vec::new()),
     };
 
-    // Get background content bytes for XObject, with the page rotation baked in
-    // (wrapped in q/Q so the transform doesn't leak into anything appended later).
-    let bg_content_bytes_raw = if rotate_prefix.is_empty() {
+    // Mirror the (already-oriented) page within its orig_w x orig_h box. This `cm`
+    // sits *before* the rotation one in the stream, so it's the outer transform —
+    // it flips the rotated result, matching the pdf.js preview (which flips the
+    // rendered raster). Nothing to flip when neither axis is set.
+    let flip_prefix: Vec<u8> = match (opts.background_flip_x, opts.background_flip_y) {
+        (true, true) => format!("-1 0 0 -1 {orig_w:.4} {orig_h:.4} cm\n").into_bytes(),
+        (true, false) => format!("-1 0 0 1 {orig_w:.4} 0 cm\n").into_bytes(),
+        (false, true) => format!("1 0 0 -1 0 {orig_h:.4} cm\n").into_bytes(),
+        (false, false) => Vec::new(),
+    };
+
+    // Get background content bytes for XObject, with the page rotation + flip baked
+    // in (wrapped in q/Q so the transform doesn't leak into anything appended later).
+    let bg_content_bytes_raw = if rotate_prefix.is_empty() && flip_prefix.is_empty() {
         raw_page_content
     } else {
-        [b"q\n".to_vec(), rotate_prefix, raw_page_content, b"\nQ\n".to_vec()].concat()
+        [b"q\n".to_vec(), flip_prefix, rotate_prefix, raw_page_content, b"\nQ\n".to_vec()].concat()
     };
 
     // Apply user-specified card dimensions via a PDF `cm` scale transform.
@@ -600,6 +611,29 @@ mod tests {
         let pid2 = *doc2.get_pages().values().next().unwrap();
         let mb2 = doc2.get_object(pid2).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
         assert!((num(&mb2[2]) - 200.0).abs() < 0.5 && (num(&mb2[3]) - 100.0).abs() < 0.5, "90+90 should be 180 → 200x100");
+    }
+
+    #[test]
+    fn background_flip_bakes_a_mirror_into_the_output() {
+        // Flipping mirrors the background content, so each flip axis (and the
+        // combination) yields a distinct output; the MediaBox is unchanged.
+        let bg = rotated_page_pdf(200.0, 100.0, 0);
+        let make = |fx: bool, fy: bool| {
+            generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_flip_x: fx, background_flip_y: fy, no_cut: true, ..Options::default() }).unwrap().pdf
+        };
+        let plain = make(false, false);
+        let flip_x = make(true, false);
+        let flip_y = make(false, true);
+        assert_ne!(plain, flip_x, "flip X should change the background content");
+        assert_ne!(plain, flip_y, "flip Y should change the background content");
+        assert_ne!(flip_x, flip_y, "X and Y flips must differ");
+
+        // A mirror leaves the card dimensions untouched (200x100 stays 200x100).
+        let doc = Document::load_mem(&flip_x).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        assert!((num(&mb[2]) - 200.0).abs() < 0.5 && (num(&mb[3]) - 100.0).abs() < 0.5);
     }
 
     #[test]

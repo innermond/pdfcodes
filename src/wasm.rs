@@ -214,6 +214,8 @@ pub fn generate(
         background_page_number: 1,
         contour_page_number: 1,
         background_rotation: 0,
+        background_flip_x: false,
+        background_flip_y: false,
         no_cut: false,
         contour_offset_x_mm: 0.0,
         contour_offset_y_mm: 0.0,
@@ -300,6 +302,8 @@ struct JsOptions {
     background_page_number: Option<u32>,
     contour_page_number: Option<u32>,
     background_rotation: i64,
+    background_flip_x: bool,
+    background_flip_y: bool,
     no_cut: bool,
     contour_offset_x_mm: f32,
     contour_offset_y_mm: f32,
@@ -371,6 +375,8 @@ impl Default for JsOptions {
             background_page_number: None,
             contour_page_number: None,
             background_rotation: 0,
+            background_flip_x: false,
+            background_flip_y: false,
             no_cut: false,
             contour_offset_x_mm: base.contour_offset_x_mm,
             contour_offset_y_mm: base.contour_offset_y_mm,
@@ -553,6 +559,8 @@ pub fn generate_with_options(
         background_page_number: js_opts.background_page_number.unwrap_or(1),
         contour_page_number: js_opts.contour_page_number.unwrap_or(1),
         background_rotation: js_opts.background_rotation,
+        background_flip_x: js_opts.background_flip_x,
+        background_flip_y: js_opts.background_flip_y,
         no_cut: js_opts.no_cut,
         contour_offset_x_mm: js_opts.contour_offset_x_mm,
         contour_offset_y_mm: js_opts.contour_offset_y_mm,
@@ -696,12 +704,15 @@ pub fn generate_image_background_pdf(
     image_bytes: &[u8],
     card_width_mm: f32,
     card_height_mm: f32,
+    // Mirror the image horizontally / vertically (baked into the generated PDF).
+    flip_x: bool,
+    flip_y: bool,
 ) -> Result<Vec<u8>, JsError> {
     if !(card_width_mm > 0.0) || !(card_height_mm > 0.0) {
         return Err(JsError::new("card dimensions must be positive"));
     }
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
-    build_image_background_pdf(image_bytes, card_w, card_h)
+    build_image_background_pdf(image_bytes, card_w, card_h, flip_x, flip_y)
         .map_err(|e| JsError::new(&e.to_string()))
 }

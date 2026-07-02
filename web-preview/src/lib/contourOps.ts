@@ -79,7 +79,10 @@ export async function extractContourOps(
   trim = false,
 ): Promise<ContourOps | null> {
   const data = await file.arrayBuffer()
-  const pdf = await pdfjsLib.getDocument({ data }).promise
+  // Ignore embedded-JPEG EXIF orientation (use pdf.js's own decoder, not the browser's
+  // ImageDecoder) so the contour operators match the generated output — see the same
+  // option in pdfBackground.ts.
+  const pdf = await pdfjsLib.getDocument({ data, isImageDecoderSupported: false }).promise
   const pageCount = pdf.numPages
   const safePage = Math.min(Math.max(1, Math.floor(pageNumber)), pageCount)
   const page = await pdf.getPage(safePage)

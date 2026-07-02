@@ -278,6 +278,10 @@ export function buildJsOptions(
   // eroded by this much, so the fit/correction keeps them clear of the cut line.
   // 0 (or no contour) ⇒ test against the true cut path. See `contour_inset_mm`.
   contourInsetMm?: number,
+  // Mirror the print background horizontally / vertically (baked into the output,
+  // matching the pdf.js preview). See `background_flip_x`/`_y` in src/options.rs.
+  backgroundFlipX?: boolean,
+  backgroundFlipY?: boolean,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -334,6 +338,8 @@ export function buildJsOptions(
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
     ...(backgroundRotation != null && backgroundRotation !== 0 ? { backgroundRotation } : {}),
+    ...(backgroundFlipX ? { backgroundFlipX: true } : {}),
+    ...(backgroundFlipY ? { backgroundFlipY: true } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
     ...(contourOffsetXMm != null && contourOffsetXMm !== 0 ? { contourOffsetXMm } : {}),
     ...(contourOffsetYMm != null && contourOffsetYMm !== 0 ? { contourOffsetYMm } : {}),

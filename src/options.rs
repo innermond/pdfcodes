@@ -122,6 +122,11 @@ pub struct Options {
     // Extra clockwise rotation (degrees, multiple of 90) the user applied to the
     // print background, added to the page's own /Rotate before baking. Default 0.
     pub background_rotation: i64,
+    // Mirror the print background horizontally / vertically, applied (after any
+    // rotation) in the oriented page space and baked into the background content —
+    // the same axes the pdf.js preview flips. Default false.
+    pub background_flip_x: bool,
+    pub background_flip_y: bool,
     // "Non-decupare" (no-cut) mode: skip imposition entirely. Each card (or the
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
@@ -231,6 +236,8 @@ impl Default for Options {
             background_page_number: 1,
             contour_page_number: 1,
             background_rotation: 0,
+            background_flip_x: false,
+            background_flip_y: false,
             no_cut: false,
             contour_offset_x_mm: 0.0,
             contour_offset_y_mm: 0.0,
