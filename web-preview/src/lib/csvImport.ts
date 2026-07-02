@@ -24,19 +24,6 @@ export interface ParsedCsv {
 // its defaults so space- or pipe-separated files are recognised too.
 const DELIMITERS_TO_GUESS = [',', ';', '\t', '|', ' ']
 
-const DELIMITER_LABELS: Record<string, string> = {
-  ',': 'virgulă (,)',
-  ';': 'punct și virgulă (;)',
-  '\t': 'tab',
-  '|': 'bară verticală (|)',
-  ' ': 'spațiu',
-}
-
-// Friendly, Romanian-language name for a detected delimiter (the UI language).
-export function describeDelimiter(delimiter: string): string {
-  return DELIMITER_LABELS[delimiter] ?? `„${delimiter}”`
-}
-
 // Parse an uploaded CSV file. Resolves with the parsed rows plus metadata; only
 // rejects if the file genuinely cannot be read. Pass `forcedDelimiter` to
 // override auto-detection (e.g. when the user corrects a mis-guessed separator).
@@ -107,14 +94,4 @@ function collectWarnings(rows: string[][], errors: Papa.ParseError[]): string[] 
   }
 
   return warnings
-}
-
-// Re-serialise parsed rows into the clean, single-delimiter CSV text that the
-// rest of the pipeline (worker + wasm) expects: each record on its own line,
-// fields joined by `separator`. PapaParse has already unquoted and BOM-stripped
-// the input, so this output is normalised regardless of the original file's
-// quirks.
-export function serializeRows(rows: string[][], separator: string): string {
-  const sep = separator === '' ? ' ' : separator
-  return rows.map((row) => row.join(sep)).join('\n')
 }

@@ -12,19 +12,76 @@ import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFo
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
 import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
-import { downloadPresetBundle, loadPresetBundle } from './lib/presetBundle'
+import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion } from './lib/contourKeepRegion'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
-import { parseUploadedCsv, serializeRows, describeDelimiter } from './lib/csvImport'
-import { renderPdfBackground, solidColorBackground, type PdfBackground } from './lib/pdfBackground'
+import { serializeRows, describeDelimiter } from './lib/csvSerialize'
+import { solidColorBackground } from './lib/solidColorBackground'
+import type { PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
-import { computeContourVectorMaskPath } from './lib/contourVectorMask'
-import { renderContourVectorImage } from './lib/contourVectorImage'
 import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
 import { contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
+
+// --- Lazily-loaded heavy dependencies (per-step code splitting) ---------------
+// Each of these modules pulls in a large library that only a specific step
+// needs: pdfjs-dist (~600 KB) for the background/contour previews (Steps 1 & 2),
+// PapaParse for CSV upload (Step 3), and fflate for preset .zip bundles (Step 5
+// + presets). Importing them statically would bake the whole payload into the
+// initial bundle. Instead each wrapper below `import()`s its module on first use
+// and caches the module promise, so the library is fetched only when the user
+// actually reaches that step. The wrappers keep the exact signature and
+// (promise) return type of the originals, so every existing call site — which
+// already `.then()`/`await`s them — is unchanged.
+
+let pdfBackgroundMod: Promise<typeof import('./lib/pdfBackground')> | null = null
+function renderPdfBackground(
+  ...args: Parameters<typeof import('./lib/pdfBackground').renderPdfBackground>
+): ReturnType<typeof import('./lib/pdfBackground').renderPdfBackground> {
+  pdfBackgroundMod ??= import('./lib/pdfBackground')
+  return pdfBackgroundMod.then((m) => m.renderPdfBackground(...args))
+}
+
+let contourVectorMaskMod: Promise<typeof import('./lib/contourVectorMask')> | null = null
+function computeContourVectorMaskPath(
+  ...args: Parameters<typeof import('./lib/contourVectorMask').computeContourVectorMaskPath>
+): ReturnType<typeof import('./lib/contourVectorMask').computeContourVectorMaskPath> {
+  contourVectorMaskMod ??= import('./lib/contourVectorMask')
+  return contourVectorMaskMod.then((m) => m.computeContourVectorMaskPath(...args))
+}
+
+let contourVectorImageMod: Promise<typeof import('./lib/contourVectorImage')> | null = null
+function renderContourVectorImage(
+  ...args: Parameters<typeof import('./lib/contourVectorImage').renderContourVectorImage>
+): ReturnType<typeof import('./lib/contourVectorImage').renderContourVectorImage> {
+  contourVectorImageMod ??= import('./lib/contourVectorImage')
+  return contourVectorImageMod.then((m) => m.renderContourVectorImage(...args))
+}
+
+let csvImportMod: Promise<typeof import('./lib/csvImport')> | null = null
+function parseUploadedCsv(
+  ...args: Parameters<typeof import('./lib/csvImport').parseUploadedCsv>
+): ReturnType<typeof import('./lib/csvImport').parseUploadedCsv> {
+  csvImportMod ??= import('./lib/csvImport')
+  return csvImportMod.then((m) => m.parseUploadedCsv(...args))
+}
+
+let presetBundleMod: Promise<typeof import('./lib/presetBundle')> | null = null
+function downloadPresetBundle(
+  ...args: Parameters<typeof import('./lib/presetBundle').downloadPresetBundle>
+): ReturnType<typeof import('./lib/presetBundle').downloadPresetBundle> {
+  presetBundleMod ??= import('./lib/presetBundle')
+  return presetBundleMod.then((m) => m.downloadPresetBundle(...args))
+}
+function loadPresetBundle(
+  ...args: Parameters<typeof import('./lib/presetBundle').loadPresetBundle>
+): ReturnType<typeof import('./lib/presetBundle').loadPresetBundle> {
+  presetBundleMod ??= import('./lib/presetBundle')
+  return presetBundleMod.then((m) => m.loadPresetBundle(...args))
+}
+// -----------------------------------------------------------------------------
 
 type Mode = 'print' | 'contour' | 'both'
 
@@ -886,7 +943,7 @@ export default function App() {
     }
   }
 
-  function buildPresetBundleArgs(): [Preset, Parameters<typeof downloadPresetBundle>[2]] {
+  function buildPresetBundleArgs(): [Preset, PresetResources] {
     const preset: Preset = {
       version: 1,
       sampleText,

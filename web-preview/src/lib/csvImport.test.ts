@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { describeDelimiter, parseUploadedCsv, serializeRows } from './csvImport'
+import { parseUploadedCsv } from './csvImport'
+import { describeDelimiter, serializeRows } from './csvSerialize'
 
 // PapaParse accepts a raw string as well as a File; passing a string lets us
 // exercise the real delimiter-detection and warning logic without a DOM/File.
