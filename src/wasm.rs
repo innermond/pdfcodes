@@ -611,6 +611,10 @@ pub fn generate_shape_pdf(
     corner_radius_mm: f32,
     corner_orientation: String,
     stroke_color: String,
+    // Vertex count for "polygon" (ignored by the other shapes; clamped to ≥3).
+    sides: u32,
+    // Turn "polygon" into an N-pointed star (ignored by the other shapes).
+    star: bool,
 ) -> Result<Vec<u8>, JsError> {
     let shape: ShapeKind = shape.parse().map_err(|e: String| JsError::new(&e))?;
     let corner_concave = match corner_orientation.as_str() {
@@ -626,7 +630,7 @@ pub fn generate_shape_pdf(
     };
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
-    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, corner_concave, stroke)
+    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, corner_concave, stroke, sides, star)
         .map_err(|e| JsError::new(&e.to_string()))
 }
 

@@ -15,6 +15,7 @@ import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_sim
 import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion } from './lib/contourKeepRegion'
+import { polygonAspectExtent } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
@@ -127,6 +128,8 @@ interface Preset {
   shapeKind: ShapeKind
   shapeCornerRadiusMm: number
   shapeCornerOrientation: CornerOrientation
+  polygonSides?: number
+  polygonStar?: boolean
   rectangleContour: boolean
 }
 
@@ -222,7 +225,7 @@ type BackgroundSource = 'upload' | 'simple' | 'generate'
 // Where the "Fundal imagine" (generate) source gets its raster image from.
 type GenBgImageSource = 'file' | 'url' | 'clipboard'
 type ContourSource = 'upload' | 'shape'
-type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart'
+type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart' | 'polygon'
 
 // Grouped user-input config for the "Fundal" (background) step, folded into one
 // useState (see `setBgField`) instead of a dozen separate ones — following the
@@ -275,6 +278,7 @@ const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
   { value: 'rounded-rectangle', label: 'Dreptunghi cu colțuri rotunjite' },
   { value: 'beveled-rectangle', label: 'Dreptunghi cu colțuri teșite' },
   { value: 'heart', label: 'Inimă' },
+  { value: 'polygon', label: 'Poligon' },
 ]
 
 // Tight bounding box (in card-mm coords, measured from the card's bottom-left)
@@ -284,11 +288,24 @@ const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
 // every other shape fills the full card. Used to re-position codes relative to
 // the cut shape when the card is resized.
 function contourBoxMm(shape: ShapeKind, cardWMm: number, cardHMm: number) {
+  // Only the circle is inscribed in the min(w,h) circle (its tight box is that
+  // centered square). Every other shape — including the polygon, which fills its
+  // box like the ellipse so a non-square resize stretches it — fills the card.
   if (shape === 'circle') {
     const d = Math.min(cardWMm, cardHMm)
     return { x: (cardWMm - d) / 2, y: (cardHMm - d) / 2, w: d, h: d }
   }
   return { x: 0, y: 0, w: cardWMm, h: cardHMm }
+}
+
+// Default box for a preset polygon/star: its natural (regular) bounding box,
+// inscribed in the min(w,h) circle of the available space. Sizing the box to the
+// shape's own aspect makes it start out regular; the user can then resize it
+// (unlocking the aspect stretches the polygon, since it fills its box).
+function polygonNaturalBoxMm(sides: number, star: boolean, availWMm: number, availHMm: number) {
+  const { spanX, spanY } = polygonAspectExtent(sides, star)
+  const r = Math.min(availWMm, availHMm) / 2
+  return { w: spanX * r, h: spanY * r }
 }
 
 // Pick a page distinct from `chosenPage` within a `pageCount`-page PDF: prefer
@@ -329,6 +346,10 @@ interface ContourConfig {
   shapeKind: ShapeKind
   shapeCornerRadiusMm: number
   shapeCornerOrientation: CornerOrientation
+  // Vertex count for the 'polygon' shape (min 3; ignored by the other shapes).
+  polygonSides: number
+  // Turn the 'polygon' shape into an N-pointed star (ignored by the other shapes).
+  polygonStar: boolean
   // Draw a rectangle contour as plain tiled rectangles vs. the optimized grid.
   rectangleContour: boolean
   // Nudge the contour within the background (right/up positive, mm), clamped.
@@ -350,6 +371,8 @@ const defaultContourConfig: ContourConfig = {
   shapeKind: 'circle',
   shapeCornerRadiusMm: 3,
   shapeCornerOrientation: 'out',
+  polygonSides: 6,
+  polygonStar: false,
   rectangleContour: false,
   contourOffsetXMm: 0,
   contourOffsetYMm: 0,
@@ -497,7 +520,7 @@ export default function App() {
   const [contourConfig, setContourConfig] = useState<ContourConfig>(defaultContourConfig)
   const {
     contourSource, contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
-    shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, rectangleContour,
+    shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
     contourTargetWidthMm, contourTargetHeightMm, contourRotation,
   } = contourConfig
@@ -820,11 +843,13 @@ export default function App() {
             frac: { x: 0, y: 0, w: 1, h: 1 },
             rxFrac: shapeCornerRadiusMm / effectiveContourWidthMm,
             ryFrac: shapeCornerRadiusMm / effectiveContourHeightMm,
+            sides: polygonSides,
+            star: polygonStar,
           }
         : null,
     [
       contourSource, contourBackground, effectiveContourWidthMm, effectiveContourHeightMm,
-      shapeKind, shapeCornerOrientation, contourRotation, shapeCornerRadiusMm,
+      shapeKind, shapeCornerOrientation, contourRotation, shapeCornerRadiusMm, polygonSides, polygonStar,
     ],
   )
 
@@ -1137,6 +1162,8 @@ export default function App() {
       shapeKind,
       shapeCornerRadiusMm,
       shapeCornerOrientation,
+      polygonSides,
+      polygonStar,
       rectangleContour,
     }
 
@@ -1242,6 +1269,8 @@ export default function App() {
         if (typeof preset.shapeCornerRadiusMm === 'number') setContourField('shapeCornerRadiusMm', preset.shapeCornerRadiusMm)
         if (preset.shapeCornerOrientation === 'in' || preset.shapeCornerOrientation === 'out')
           setContourField('shapeCornerOrientation', preset.shapeCornerOrientation)
+        if (typeof preset.polygonSides === 'number') setContourField('polygonSides', preset.polygonSides)
+        if (typeof preset.polygonStar === 'boolean') setContourField('polygonStar', preset.polygonStar)
         if (typeof preset.rectangleContour === 'boolean') setContourField('rectangleContour', preset.rectangleContour)
 
         // Restore the print/contour background PDFs bundled in the archive, if any.
@@ -1798,7 +1827,7 @@ export default function App() {
     const strokeColor = '0:1:0:0'
     ensureWasmInit()
       .then(() => {
-        const bytes = generate_shape_pdf(genW, genH, shapeKind, 0, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor)
+        const bytes = generate_shape_pdf(genW, genH, shapeKind, 0, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor, Math.max(3, Math.round(polygonSides)), polygonStar)
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
@@ -1810,10 +1839,14 @@ export default function App() {
           setContourField('contourPageNumber', 1)
           setContourPageCount(1)
           setShapeError(null)
-          // Default the contour size to fill the available space the first time;
-          // a later user resize is preserved.
-          setContourField('contourTargetWidthMm', (v) => (isFinite(v) && v > 0 ? v : contourAvailWidthMm))
-          setContourField('contourTargetHeightMm', (v) => (isFinite(v) && v > 0 ? v : contourAvailHeightMm))
+          // Default the contour size the first time; a later user resize is kept.
+          // Circle → the inscribed min(w,h) square; polygon → its natural regular
+          // bounding box; every other shape fills the available card.
+          const box = shapeKind === 'polygon'
+            ? polygonNaturalBoxMm(polygonSides, polygonStar, contourAvailWidthMm, contourAvailHeightMm)
+            : contourBoxMm(shapeKind, contourAvailWidthMm, contourAvailHeightMm)
+          setContourField('contourTargetWidthMm', (v) => (isFinite(v) && v > 0 ? v : box.w))
+          setContourField('contourTargetHeightMm', (v) => (isFinite(v) && v > 0 ? v : box.h))
         }
       })
       .catch((err) => {
@@ -1822,15 +1855,19 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, contourRotation, background, backgroundSource, simpleBgColor, effectiveContourWidthMm, effectiveContourHeightMm, contourAvailWidthMm, contourAvailHeightMm])
+  }, [contourSource, shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, contourRotation, background, backgroundSource, simpleBgColor, effectiveContourWidthMm, effectiveContourHeightMm, contourAvailWidthMm, contourAvailHeightMm])
 
-  // Auto-track: while a shape fills the available space, keep its target equal to
-  // the full card as the BACKGROUND is resized.
+  // Auto-track: while a shape auto-fits, keep its target equal to the shape's
+  // tight box (min(w,h) square for a circle, the full card for shapes that fill
+  // it) as the BACKGROUND is resized or the shape is switched.
   useEffect(() => {
     if (contourSource !== 'shape' || !background || !contourShapeTargetAutoRef.current) return
-    setContourField('contourTargetWidthMm', effectiveCardWidthMm)
-    setContourField('contourTargetHeightMm', effectiveCardHeightMm)
-  }, [contourSource, background, effectiveCardWidthMm, effectiveCardHeightMm])
+    const box = shapeKind === 'polygon'
+      ? polygonNaturalBoxMm(polygonSides, polygonStar, effectiveCardWidthMm, effectiveCardHeightMm)
+      : contourBoxMm(shapeKind, effectiveCardWidthMm, effectiveCardHeightMm)
+    setContourField('contourTargetWidthMm', box.w)
+    setContourField('contourTargetHeightMm', box.h)
+  }, [contourSource, background, shapeKind, polygonSides, polygonStar, effectiveCardWidthMm, effectiveCardHeightMm])
 
   function setPageOption<K extends keyof PageOptions>(key: K, value: PageOptions[K]) {
     setPageOptions((prev) => ({ ...prev, [key]: value }))
@@ -2653,6 +2690,12 @@ export default function App() {
                   {shapeKind === 'beveled-rectangle' && (
                     <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
                   )}
+                  {shapeKind === 'polygon' && (
+                    <NumberField label="Număr laturi" value={polygonSides} onChange={(v) => setContourField('polygonSides', v)} min={3} step={1} />
+                  )}
+                  {shapeKind === 'polygon' && (
+                    <CheckboxField label="Stea (vârfuri spre interior)" checked={polygonStar} onChange={(v) => setContourField('polygonStar', v)} />
+                  )}
                 </div>
                 {!background && (
                   <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
@@ -2683,12 +2726,20 @@ export default function App() {
                       // resized shape doesn't jump to the corner.
                       onWidth={(v) => { contourShapeTargetAutoRef.current = false; setContourField('contourTargetWidthMm', v) }}
                       onHeight={(v) => { contourShapeTargetAutoRef.current = false; setContourField('contourTargetHeightMm', v) }}
-                      // Live target ratio (starts at the contour's detected ratio)
-                      // so the lock follows the orientation after a swap or rotation.
-                      aspect={contourTargetWidthMm / contourTargetHeightMm}
-                      locked={contourLockAspect}
+                      // A preset circle must stay 1:1 — resizing it non-proportionally
+                      // would just be an ellipse — so force the lock on (and disable the
+                      // toggle + swap). Other shapes use the live target ratio so the
+                      // lock follows the orientation after a swap or rotation.
+                      aspect={contourSource === 'shape' && shapeKind === 'circle' ? 1 : contourTargetWidthMm / contourTargetHeightMm}
+                      locked={(contourSource === 'shape' && shapeKind === 'circle') || contourLockAspect}
                       onToggleLock={() => setContourLockAspect((v) => !v)}
-                      onSwap={() => {
+                      lockToggleDisabled={contourSource === 'shape' && shapeKind === 'circle'}
+                      // A preset shape can't exceed the background: cap each target at
+                      // the available card size (the same bound the effective-size math
+                      // already enforces, now reflected in the inputs).
+                      maxWidth={contourSource === 'shape' ? contourAvailWidthMm : undefined}
+                      maxHeight={contourSource === 'shape' ? contourAvailHeightMm : undefined}
+                      onSwap={contourSource === 'shape' && shapeKind === 'circle' ? undefined : () => {
                         contourShapeTargetAutoRef.current = false
                         const w = contourTargetWidthMm
                         setContourField('contourTargetWidthMm', contourTargetHeightMm)

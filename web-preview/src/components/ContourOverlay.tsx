@@ -18,6 +18,7 @@ export function ContourOverlay({
   offsetXMm,
   offsetYMm,
   selected,
+  outlineRect = null,
   onSelect,
   onChange,
 }: {
@@ -32,6 +33,10 @@ export function ContourOverlay({
   offsetXMm: number
   offsetYMm: number
   selected: boolean
+  // Tight bounding rect of a preset shape's cut outline (card points). When given,
+  // the selection rectangle + hit area use it so they envelop the real shape (e.g.
+  // an inscribed polygon); null (uploaded contour) falls back to the box rect.
+  outlineRect?: { x: number; y: number; w: number; h: number } | null
   onSelect: () => void
   onChange: (xMm: number, yMm: number) => void
 }) {
@@ -115,25 +120,32 @@ export function ContourOverlay({
     window.addEventListener('pointerup', handleUp)
   }
 
+  // Selection rect: a preset shape's tight bounding rect (envelops the drawn
+  // shape) when known, else the contour image box.
+  const sx = outlineRect ? outlineRect.x : ix
+  const sy = outlineRect ? outlineRect.y : iy
+  const sw = outlineRect ? outlineRect.w : iw
+  const sh = outlineRect ? outlineRect.h : ih
+
   return (
     <>
       {(selected || hovered) && (
         // "Marching ants" outline matching the selected word's look: a white dashed
         // track with dark dashes filling its gaps, both crawling in lockstep.
         <g pointerEvents="none">
-          <rect x={ix} y={iy} width={iw} height={ih} fill="none" stroke="#ffffff" strokeWidth={0.75} strokeDasharray="4 4" vectorEffect="non-scaling-stroke">
+          <rect x={sx} y={sy} width={sw} height={sh} fill="none" stroke="#ffffff" strokeWidth={0.75} strokeDasharray="4 4" vectorEffect="non-scaling-stroke">
             <animate attributeName="stroke-dashoffset" values="0;8" dur="0.5s" repeatCount="indefinite" />
           </rect>
-          <rect x={ix} y={iy} width={iw} height={ih} fill="none" stroke="#1e3a8a" strokeWidth={0.75} strokeDasharray="4 4" vectorEffect="non-scaling-stroke">
+          <rect x={sx} y={sy} width={sw} height={sh} fill="none" stroke="#1e3a8a" strokeWidth={0.75} strokeDasharray="4 4" vectorEffect="non-scaling-stroke">
             <animate attributeName="stroke-dashoffset" values="4;12" dur="0.5s" repeatCount="indefinite" />
           </rect>
         </g>
       )}
       <rect
-        x={ix}
-        y={iy}
-        width={iw}
-        height={ih}
+        x={sx}
+        y={sy}
+        width={sw}
+        height={sh}
         fill="transparent"
         pointerEvents="all"
         className="cursor-move"

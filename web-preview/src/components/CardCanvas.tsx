@@ -2,6 +2,7 @@ import { useId, useRef } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
 import { MM, type BlendMode, type WordStyle } from '../lib/options'
 import { contourMaskPathD } from '../lib/contourMask'
+import { flattenPathD, rotate } from '../lib/contourKeepRegion'
 import { WordOverlay } from './WordOverlay'
 import { ContourOverlay } from './ContourOverlay'
 
@@ -18,6 +19,9 @@ export type ContourCutShape = {
   frac: { x: number; y: number; w: number; h: number }
   rxFrac: number
   ryFrac: number
+  // Vertex count + star flag for the 'polygon' kind (ignored by the other kinds).
+  sides?: number
+  star?: boolean
 }
 
 export function CardCanvas({
@@ -89,30 +93,51 @@ export function CardCanvas({
   const ih = contourHeightPt
   const iy = cardHeightPt - contourHeightPt - contourOffsetYPt
 
+  // The exact cut outline of a preset shape, as an SVG path `d` (+ rotation
+  // transform) in card points, plus its tight axis-aligned bounding rect. Reused
+  // for the dim/clip "keep" region AND to size the selection marching-ants, so the
+  // (still rectangular) selection envelops the real shape — e.g. a polygon, which
+  // is inscribed in its box and so is smaller than the contour's bounding rect.
+  const contourCutOutline = contourImageUrl && contourCutShape ? (() => {
+    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star } = contourCutShape
+    // The rendered contour image is the unrotated shape rotated `rot` clockwise
+    // and scaled into [ix,iy,iw,ih]. Reproduce that: build the shape in its
+    // unrotated footprint (dims swapped for 90/270) centered on the rect, then
+    // rotate it about the rect center to match the image.
+    const rot = ((rotation % 360) + 360) % 360
+    const cx = ix + iw / 2, cy = iy + ih / 2
+    const swapped = rot === 90 || rot === 270
+    const boxW = swapped ? ih : iw
+    const boxH = swapped ? iw : ih
+    const x0 = cx - boxW / 2, y0 = cy - boxH / 2
+    const d = contourMaskPathD(
+      kind,
+      // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
+      { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
+      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
+    )
+    // Tight bounding rect of the (rotated) outline: flatten the path, rotate its
+    // points to match the image, then take the extents. For shapes that fill their
+    // box this equals [ix,iy,iw,ih]; for a polygon it shrinks to the shape.
+    const pts = flattenPathD(d).flat().map((p) => rotate(p, cx, cy, rot))
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const [px, py] of pts) {
+      if (px < minX) minX = px
+      if (px > maxX) maxX = px
+      if (py < minY) minY = py
+      if (py > maxY) maxY = py
+    }
+    const rect = pts.length ? { x: minX, y: minY, w: maxX - minX, h: maxY - minY } : null
+    return { d, transform: rot ? `rotate(${rot} ${cx} ${cy})` : undefined, rect }
+  })() : null
+
   // The contour "keep" region: the cut interior, positioned to match exactly where
   // the contour image is drawn below (lines for x/y/w/h). Built whenever a contour is
   // present so it can serve both the "dim exterior" knockout (below, gated on
   // `dimExterior`) and the capture clip-path (a <clipPath> def, always available).
   const contourKeepShape = contourImageUrl ? (() => {
-    if (contourCutShape) {
-      const { frac, rxFrac, ryFrac, kind, orientation, rotation } = contourCutShape
-      // The rendered contour image is the unrotated shape rotated `rot` clockwise
-      // and scaled into [ix,iy,iw,ih]. Reproduce that: build the shape in its
-      // unrotated footprint (dims swapped for 90/270) centered on the rect, then
-      // rotate it about the rect center to match the image.
-      const rot = ((rotation % 360) + 360) % 360
-      const cx = ix + iw / 2, cy = iy + ih / 2
-      const swapped = rot === 90 || rot === 270
-      const boxW = swapped ? ih : iw
-      const boxH = swapped ? iw : ih
-      const x0 = cx - boxW / 2, y0 = cy - boxH / 2
-      const d = contourMaskPathD(
-        kind,
-        // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
-        { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
-        { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation },
-      )
-      return <path d={d} fill="black" transform={rot ? `rotate(${rot} ${cx} ${cy})` : undefined} />
+    if (contourCutOutline) {
+      return <path d={contourCutOutline.d} fill="black" transform={contourCutOutline.transform} />
     }
     // Uploaded contour: prefer the traced vector path (fractional coords scaled to
     // the same rect as the contour image, so it lines up and stays crisp at any
@@ -195,6 +220,7 @@ export function CardCanvas({
           offsetXMm={contourOffsetXPt / MM}
           offsetYMm={contourOffsetYPt / MM}
           selected={contourSelected}
+          outlineRect={contourCutOutline?.rect ?? null}
           onSelect={onContourSelect}
           onChange={onContourOffsetChange}
         />

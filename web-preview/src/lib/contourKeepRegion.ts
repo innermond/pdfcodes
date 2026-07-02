@@ -21,12 +21,12 @@ export interface ContourKeepRegion {
   lens: Uint32Array
 }
 
-type Pt = [number, number]
+export type Pt = [number, number]
 
 // Flatten an SVG path `d` (only the absolute M/L/C/Z commands our producers emit —
 // `contourMaskPathD` and `segsToPathD`) into closed subpaths of points, in the
 // path's own coordinate space. Cubic segments are subdivided into `steps` lines.
-function flattenPathD(d: string, steps = 24): Pt[][] {
+export function flattenPathD(d: string, steps = 24): Pt[][] {
   const tokens = d.match(/[MLCZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi)
   if (!tokens) return []
   const subpaths: Pt[][] = []
@@ -78,7 +78,7 @@ function flattenPathD(d: string, steps = 24): Pt[][] {
 
 // SVG `rotate(deg, cx, cy)` applied to a point (clockwise in the y-down card frame,
 // matching CardCanvas's rotation of the preset mask).
-function rotate(p: Pt, cx: number, cy: number, deg: number): Pt {
+export function rotate(p: Pt, cx: number, cy: number, deg: number): Pt {
   if (!deg) return p
   const a = (deg * Math.PI) / 180
   const cos = Math.cos(a)
@@ -115,7 +115,7 @@ export function computeContourKeepRegion(params: {
   // Build the keep region in SVG card space (y-down), then flip y below.
   let subpaths: Pt[][]
   if (params.cutShape) {
-    const { frac, rxFrac, ryFrac, kind, orientation, rotation } = params.cutShape
+    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star } = params.cutShape
     const rot = ((rotation % 360) + 360) % 360
     const cx = ix + iw / 2
     const cy = iy + ih / 2
@@ -128,7 +128,7 @@ export function computeContourKeepRegion(params: {
       kind,
       // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
       { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
-      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation },
+      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
     )
     subpaths = flattenPathD(d).map((sp) => sp.map((p) => rotate(p, cx, cy, rot)))
   } else if (params.interiorMaskPath) {

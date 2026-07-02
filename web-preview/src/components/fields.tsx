@@ -68,6 +68,9 @@ export function LinkedDimensions({
   aspect,
   locked,
   onToggleLock,
+  lockToggleDisabled = false,
+  maxWidth,
+  maxHeight,
   onSwap,
 }: {
   widthLabel: string
@@ -80,31 +83,63 @@ export function LinkedDimensions({
   aspect: number
   locked: boolean
   onToggleLock: () => void
-  /** When provided, shows a ⇄ button that swaps width and height (portrait ⇄ landscape). */
+  /** Forces the lock on and disables the toggle (e.g. a circle must stay 1:1). */
+  lockToggleDisabled?: boolean
+  /** Upper bounds (e.g. the background size the contour must fit in). Unlocked, each
+   *  side is clamped to its own max; locked, the pair scales down keeping aspect. */
+  maxWidth?: number
+  maxHeight?: number
   onSwap?: () => void
 }) {
   const round2 = (x: number) => Math.round(x * 100) / 100
   const canLink = Number.isFinite(aspect) && aspect > 0
+  const clampTo = (v: number, max: number | undefined) =>
+    max !== undefined && Number.isFinite(v) && v > max ? max : v
+  // Largest uniform down-scale (≤1) that fits (w, h) within both maxes.
+  const fitScale = (w: number, h: number) =>
+    Math.min(
+      maxWidth !== undefined && w > maxWidth ? maxWidth / w : 1,
+      maxHeight !== undefined && h > maxHeight ? maxHeight / h : 1,
+    )
+  const emitFromWidth = (w: number) => {
+    if (locked && canLink && Number.isFinite(w) && w > 0) {
+      const s = fitScale(w, w / aspect)
+      onWidth(round2(w * s))
+      onHeight(round2((w / aspect) * s))
+    } else {
+      onWidth(clampTo(w, maxWidth))
+    }
+  }
+  const emitFromHeight = (h: number) => {
+    if (locked && canLink && Number.isFinite(h) && h > 0) {
+      const s = fitScale(h * aspect, h)
+      onWidth(round2(h * aspect * s))
+      onHeight(round2(h * s))
+    } else {
+      onHeight(clampTo(h, maxHeight))
+    }
+  }
   return (
     <div className="flex flex-wrap items-end gap-3">
       <div className="min-w-40 flex-1">
-        <NumberField
-          label={widthLabel}
-          value={width}
-          onChange={(w) => {
-            onWidth(w)
-            if (locked && canLink && Number.isFinite(w) && w > 0) onHeight(round2(w / aspect))
-          }}
-        />
+        <NumberField label={widthLabel} value={width} max={maxWidth} onChange={emitFromWidth} />
       </div>
       <button
         type="button"
         onClick={onToggleLock}
+        disabled={lockToggleDisabled}
         aria-pressed={locked}
-        title={locked ? 'Proporții păstrate — apasă pentru dimensiuni libere' : 'Dimensiuni libere — apasă pentru a păstra proporțiile'}
+        title={
+          lockToggleDisabled
+            ? 'Proporții fixe (forma rămâne rotundă)'
+            : locked
+              ? 'Proporții păstrate — apasă pentru dimensiuni libere'
+              : 'Dimensiuni libere — apasă pentru a păstra proporțiile'
+        }
         aria-label={locked ? 'Păstrează proporțiile' : 'Dimensiuni libere'}
         className={
           'mb-1 rounded px-2 py-1 text-base transition ' +
+          (lockToggleDisabled ? 'cursor-not-allowed opacity-60 ' : '') +
           (locked
             ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
             : 'bg-gray-200 text-gray-500 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 dark:hover:bg-gray-600')
@@ -124,14 +159,7 @@ export function LinkedDimensions({
         </button>
       )}
       <div className="min-w-40 flex-1">
-        <NumberField
-          label={heightLabel}
-          value={height}
-          onChange={(h) => {
-            onHeight(h)
-            if (locked && canLink && Number.isFinite(h) && h > 0) onWidth(round2(h * aspect))
-          }}
-        />
+        <NumberField label={heightLabel} value={height} max={maxHeight} onChange={emitFromHeight} />
       </div>
     </div>
   )

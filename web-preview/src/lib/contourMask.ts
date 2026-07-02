@@ -11,7 +11,7 @@ const K = 0.5522847498
 const f = (n: number) => n.toFixed(3)
 
 type Box = { x: number; y: number; w: number; h: number }
-type Opts = { rx: number; ry: number; orientation: 'out' | 'in' }
+type Opts = { rx: number; ry: number; orientation: 'out' | 'in'; sides?: number; star?: boolean }
 
 // Ellipse (also used for circle, whose box is already square) as 4 cubic béziers.
 function ellipsePath(box: Box): string {
@@ -115,6 +115,69 @@ function heartPath(box: Box): string {
   ].join(' ')
 }
 
+// Inner-vertex depth for a star, as a fraction of the outer radius. Kept
+// identical to `star_inner_ratio` in src/generate/shapes.rs.
+function starInnerRatio(n: number): number {
+  const ratio = n >= 5 ? Math.cos((2 * Math.PI) / n) / Math.cos(Math.PI / n) : 0.5
+  return Math.min(0.95, Math.max(0.05, ratio))
+}
+
+// Vertices of a point-up regular polygon (or star) at circumradius 1, in math
+// coords (y-up, first vertex at the top). For a star an inner vertex (radius
+// `starInnerRatio`) is inserted between each pair of outer points. Mirrored by
+// polygon_stroke_ops in src/generate/shapes.rs.
+function polygonUnitVertices(sides: number, star: boolean): Array<[number, number]> {
+  const n = Math.max(3, Math.round(sides))
+  const step = (2 * Math.PI) / n
+  const rIn = star ? starInnerRatio(n) : 0
+  const verts: Array<[number, number]> = []
+  for (let i = 0; i < n; i++) {
+    const ao = Math.PI / 2 + i * step
+    verts.push([Math.cos(ao), Math.sin(ao)])
+    if (star) verts.push([rIn * Math.cos(ao + step / 2), rIn * Math.sin(ao + step / 2)])
+  }
+  return verts
+}
+
+function polygonUnitBBox(verts: Array<[number, number]>) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const [x, y] of verts) {
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+  }
+  return { minX, maxX, minY, maxY }
+}
+
+// Natural width:height (in circumradius units) of a point-up regular polygon /
+// star, so callers can size its box to that aspect for a "regular" look. A
+// non-square box then stretches the shape (see polygonPath, which fills the box).
+export function polygonAspectExtent(sides: number, star: boolean): { spanX: number; spanY: number } {
+  const b = polygonUnitBBox(polygonUnitVertices(sides, star))
+  return { spanX: b.maxX - b.minX, spanY: b.maxY - b.minY }
+}
+
+// Regular polygon / star scaled to *fill* the box (its bounding box maps onto the
+// box), so a non-square box stretches it — matching how the ellipse fills its
+// box. Mirrors polygon_stroke_ops in src/generate/shapes.rs: the unit vertices
+// are the same, and a point-up shape is symmetric about the vertical axis, so the
+// SVG (y-down) and PDF (y-up) vertex sets coincide.
+function polygonPath(box: Box, sides: number, star: boolean): string {
+  const verts = polygonUnitVertices(sides, star)
+  const { minX, maxX, minY, maxY } = polygonUnitBBox(verts)
+  const spanX = Math.max(1e-6, maxX - minX)
+  const spanY = Math.max(1e-6, maxY - minY)
+  const pts = verts.map(([vx, vy], i) => {
+    const x = box.x + ((vx - minX) / spanX) * box.w
+    // SVG y-down: the top vertex (vy = maxY) maps to box.y (top of the box).
+    const y = box.y + ((maxY - vy) / spanY) * box.h
+    return `${i === 0 ? 'M' : 'L'} ${f(x)} ${f(y)}`
+  })
+  pts.push('Z')
+  return pts.join(' ')
+}
+
 export function contourMaskPathD(kind: string, box: Box, opts: Opts): string {
   switch (kind) {
     case 'circle':
@@ -126,6 +189,8 @@ export function contourMaskPathD(kind: string, box: Box, opts: Opts): string {
       return beveledRectPath(box, opts.rx, opts.ry)
     case 'heart':
       return heartPath(box)
+    case 'polygon':
+      return polygonPath(box, opts.sides ?? 3, opts.star ?? false)
     case 'rectangle':
     default:
       return rectPath(box)
