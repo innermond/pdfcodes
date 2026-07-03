@@ -153,19 +153,45 @@ fn word_text_width(advance_per_pt: f32, char_spacing: f32, num_chars: f32, fs: f
     advance_per_pt * fs + char_spacing * (num_chars - 1.0).max(0.0)
 }
 
-fn resolve_x(align: TextAlign, text_x_mm: Option<f32>, card_w: f32, safe_margin: f32, text_width: f32) -> f32 {
+// `contour` is the contour's horizontal frame in points (left edge, width) used by the
+// `Contour*` alignments; card alignments ignore it. Every alignment is resolved from the
+// code's real `text_width` here (per code), so a too-wide code re-anchors to the frame
+// edge and overflows the *other* side instead of past the aligned edge.
+fn resolve_x(
+    align: TextAlign,
+    text_x_mm: Option<f32>,
+    card_w: f32,
+    safe_margin: f32,
+    text_width: f32,
+    contour: (f32, f32),
+    contour_inset: f32,
+) -> f32 {
     match text_x_mm {
-        // A finite explicit X wins (custom drag, or a JS-resolved contour alignment).
-        // A non-finite value (NaN) is the web app's "defer to `align`" sentinel — sent
-        // per word so an explicit X on one word doesn't force all of them (see the
-        // `textXMm` array in options.ts), while card left/center/right stay measured here.
+        // A finite explicit X wins (custom drag / a fixed position). A non-finite value
+        // (NaN) is the web app's "defer to `align`" sentinel — sent per word so an
+        // explicit X on one word doesn't force all of them (see the `textXMm` array in
+        // options.ts). Card *and* contour alignments are then measured per code here.
         Some(x_mm) if x_mm.is_finite() => x_mm * MM,
-        _ => match align {
-            TextAlign::Left => safe_margin,
-            TextAlign::Center => (card_w - text_width) / 2.0,
-            TextAlign::Right => card_w - text_width - safe_margin,
-        },
+        _ => {
+            let (c_left, c_width) = contour;
+            match align {
+                TextAlign::Left => safe_margin,
+                TextAlign::Center => (card_w - text_width) / 2.0,
+                TextAlign::Right => card_w - text_width - safe_margin,
+                TextAlign::ContourLeft => c_left + contour_inset,
+                TextAlign::ContourCenter => c_left + (c_width - text_width) / 2.0,
+                TextAlign::ContourRight => c_left + c_width - text_width - contour_inset,
+            }
+        }
     }
+}
+
+// The contour horizontal frame (left, width) in points from the options, falling back to
+// the card (0, card_w) when no contour rectangle was supplied.
+fn contour_frame(opts: &Options, card_w: f32) -> (f32, f32) {
+    let left = opts.contour_align_left_mm.map(|v| v * MM).unwrap_or(0.0);
+    let width = opts.contour_align_width_mm.map(|v| v * MM).unwrap_or(card_w);
+    (left, width)
 }
 
 // Would this code overflow at font size `fs`? Same predicate as the render loop:
@@ -182,9 +208,10 @@ fn word_overflows(
     safe_margin: f32,
     keep: &[Vec<(f32, f32)>],
     inset_pt: f32,
+    contour: (f32, f32),
 ) -> bool {
     let text_width = word_text_width(advance_per_pt, wf.char_spacing, num_chars, fs);
-    let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, text_width);
+    let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, text_width, contour, inset_pt);
     if !keep.is_empty() {
         let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * fs;
         let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * fs;
@@ -215,10 +242,11 @@ fn max_fitting_fs(
     safe_margin: f32,
     keep: &[Vec<(f32, f32)>],
     inset_pt: f32,
+    contour: (f32, f32),
 ) -> f32 {
     let floor = min_fs.min(configured);
     let mut fs = configured;
-    while fs > floor && word_overflows(ef, fs, advance_per_pt, wf, num_chars, text, card_w, safe_margin, keep, inset_pt) {
+    while fs > floor && word_overflows(ef, fs, advance_per_pt, wf, num_chars, text, card_w, safe_margin, keep, inset_pt, contour) {
         fs = (fs - CORRECT_STEP_PT).max(floor);
     }
     fs
@@ -252,7 +280,7 @@ fn compute_uniform_fs(
             let num_chars = text.chars().count() as f32;
             let fit = max_fitting_fs(
                 ef, wf.configured_fs, min_fs, advance_per_pt, &wf, num_chars, text,
-                card_w, safe_margin, &opts.contour_keep_polygons, inset_pt,
+                card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
             );
             if fit < uniform[idx] {
                 uniform[idx] = fit;
@@ -443,14 +471,14 @@ pub(crate) fn build_card_xobjects(
             } else if opts.correct_overflow {
                 max_fitting_fs(
                     ef, wf.configured_fs, opts.min_font_size_pt, advance_per_pt, &wf,
-                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt,
+                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
                 )
             } else {
                 wf.configured_fs
             };
 
             let text_width = word_text_width(advance_per_pt, char_spacing, num_chars, font_size);
-            let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width);
+            let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width, contour_frame(opts, card_w), inset_pt);
 
             let color = if opts.text_colors.is_empty() {
                 TextColor::Rgb(0.0, 0.0, 0.0)
@@ -465,7 +493,7 @@ pub(crate) fn build_card_xobjects(
             // Note if this field still doesn't fit at the (possibly corrected) size —
             // the cut contour when supplied, else the card/safe-margin extent. The row
             // is recorded once, after the loop.
-            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt) {
+            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
                 row_overflows = true;
             }
             let background = if opts.text_backgrounds.is_empty() {
@@ -753,15 +781,35 @@ mod tests {
 
     #[test]
     fn resolve_x_uses_finite_explicit_but_falls_back_to_align_on_nan() {
+        let no_contour = (0.0, 0.0);
         // Finite explicit X wins, in points.
-        assert_eq!(resolve_x(TextAlign::Center, Some(10.0), 100.0, 2.0, 20.0), 10.0 * MM);
+        assert_eq!(resolve_x(TextAlign::Center, Some(10.0), 100.0, 2.0, 20.0, no_contour, 0.0), 10.0 * MM);
         // NaN is the "defer to align" sentinel → same as None (here: centered).
-        let centered = resolve_x(TextAlign::Center, None, 100.0, 2.0, 20.0);
-        assert_eq!(resolve_x(TextAlign::Center, Some(f32::NAN), 100.0, 2.0, 20.0), centered);
+        let centered = resolve_x(TextAlign::Center, None, 100.0, 2.0, 20.0, no_contour, 0.0);
+        assert_eq!(resolve_x(TextAlign::Center, Some(f32::NAN), 100.0, 2.0, 20.0, no_contour, 0.0), centered);
         assert_eq!(centered, (100.0 - 20.0) / 2.0);
         // NaN + left/right still resolve against the card + margin.
-        assert_eq!(resolve_x(TextAlign::Left, Some(f32::NAN), 100.0, 2.0, 20.0), 2.0);
-        assert_eq!(resolve_x(TextAlign::Right, Some(f32::NAN), 100.0, 2.0, 20.0), 100.0 - 20.0 - 2.0);
+        assert_eq!(resolve_x(TextAlign::Left, Some(f32::NAN), 100.0, 2.0, 20.0, no_contour, 0.0), 2.0);
+        assert_eq!(resolve_x(TextAlign::Right, Some(f32::NAN), 100.0, 2.0, 20.0, no_contour, 0.0), 100.0 - 20.0 - 2.0);
+    }
+
+    #[test]
+    fn resolve_x_contour_variants_anchor_to_the_contour_frame_per_code() {
+        // Contour frame: left=30, width=40 (right edge = 70); inset = 3.
+        let contour = (30.0, 40.0);
+        let inset = 3.0;
+        // Right edge of a narrow code (width 10) sits at 70 − inset → x = 30+40−10−3 = 57.
+        assert_eq!(resolve_x(TextAlign::ContourRight, None, 100.0, 2.0, 10.0, contour, inset), 57.0);
+        // Left is width-independent: x = 30 + inset = 33.
+        assert_eq!(resolve_x(TextAlign::ContourLeft, None, 100.0, 2.0, 10.0, contour, inset), 33.0);
+        // Center: x = 30 + (40−10)/2 = 45.
+        assert_eq!(resolve_x(TextAlign::ContourCenter, None, 100.0, 2.0, 10.0, contour, inset), 45.0);
+        // Worst case: a code wider than the frame re-anchors left (x < contour left) while
+        // its right edge stays at 70 − inset — never past the contour's right edge.
+        let wide = 60.0;
+        let x = resolve_x(TextAlign::ContourRight, None, 100.0, 2.0, wide, contour, inset);
+        assert!(x < 30.0, "wide code overflows left, got x={x}");
+        assert_eq!(x + wide, 30.0 + 40.0 - inset, "right edge stays anchored to the contour edge minus inset");
     }
 
     #[test]
@@ -770,7 +818,7 @@ mod tests {
         let wf = centered_fit(12.0);
         let adv = advance_sum_per_pt(&ef.face, ef.units_per_em, "AB");
         // A very wide card: nothing needs shrinking.
-        let fs = max_fitting_fs(&ef, 12.0, 6.0, adv, &wf, 2.0, "AB", 1000.0, 0.0, &[], 0.0);
+        let fs = max_fitting_fs(&ef, 12.0, 6.0, adv, &wf, 2.0, "AB", 1000.0, 0.0, &[], 0.0, (0.0, 0.0));
         assert_eq!(fs, 12.0);
     }
 
@@ -783,12 +831,12 @@ mod tests {
         let num = text.chars().count() as f32;
         let card_w = 40.0 * MM; // narrow: 40pt text won't fit
 
-        let fs = max_fitting_fs(&ef, 40.0, 6.0, adv, &wf, num, text, card_w, 0.0, &[], 0.0);
+        let fs = max_fitting_fs(&ef, 40.0, 6.0, adv, &wf, num, text, card_w, 0.0, &[], 0.0, (0.0, 0.0));
         assert!(fs < 40.0 && fs >= 6.0, "should shrink into range, got {fs}");
-        assert!(!word_overflows(&ef, fs, adv, &wf, num, text, card_w, 0.0, &[], 0.0), "shrunk size must fit");
+        assert!(!word_overflows(&ef, fs, adv, &wf, num, text, card_w, 0.0, &[], 0.0, (0.0, 0.0)), "shrunk size must fit");
 
         // A high floor prevents shrinking enough — it stops at the minimum.
-        let fs2 = max_fitting_fs(&ef, 40.0, 39.0, adv, &wf, num, text, card_w, 0.0, &[], 0.0);
+        let fs2 = max_fitting_fs(&ef, 40.0, 39.0, adv, &wf, num, text, card_w, 0.0, &[], 0.0, (0.0, 0.0));
         assert_eq!(fs2, 39.0);
     }
 
@@ -819,7 +867,7 @@ mod tests {
             let adv = advance_sum_per_pt(&ef[0].face, ef[0].units_per_em, text);
             let num = text.chars().count() as f32;
             assert!(
-                !word_overflows(&ef[0], uniform[0], adv, &wf, num, text, card_w, 0.0, &[], 0.0),
+                !word_overflows(&ef[0], uniform[0], adv, &wf, num, text, card_w, 0.0, &[], 0.0, (0.0, 0.0)),
                 "uniform size must fit {text}",
             );
         }

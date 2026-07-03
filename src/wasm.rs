@@ -238,6 +238,8 @@ pub fn generate(
         min_font_size_pt: 6.0,
         overflow_correction_by_column: false,
         contour_inset_mm: 0.0,
+        contour_align_left_mm: None,
+        contour_align_width_mm: None,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -337,6 +339,10 @@ struct JsOptions {
     overflow_correction_by_column: bool,
     // Inward safety margin (mm) from the cut used by the fit check / corrector.
     contour_inset_mm: f32,
+    // Contour bounding-rect horizontal extent (card mm) for the `contour-*` alignments,
+    // resolved per code against the contour instead of the card. `None` ⇒ card frame.
+    contour_align_left_mm: Option<f32>,
+    contour_align_width_mm: Option<f32>,
 }
 
 impl Default for JsOptions {
@@ -406,6 +412,8 @@ impl Default for JsOptions {
             min_font_size_pt: base.min_font_size_pt,
             overflow_correction_by_column: base.overflow_correction_by_column,
             contour_inset_mm: base.contour_inset_mm,
+            contour_align_left_mm: base.contour_align_left_mm,
+            contour_align_width_mm: base.contour_align_width_mm,
         }
     }
 }
@@ -601,6 +609,8 @@ pub fn generate_with_options(
         min_font_size_pt: js_opts.min_font_size_pt,
         overflow_correction_by_column: js_opts.overflow_correction_by_column,
         contour_inset_mm: js_opts.contour_inset_mm,
+        contour_align_left_mm: js_opts.contour_align_left_mm,
+        contour_align_width_mm: js_opts.contour_align_width_mm,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

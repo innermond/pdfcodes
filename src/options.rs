@@ -194,6 +194,11 @@ pub struct Options {
     // eroded inward by this much), so the corrector never parks a code right on the
     // cut line. 0 = test against the true cut path. Only used when a contour exists.
     pub contour_inset_mm: f32,
+    // The contour's bounding rectangle horizontal extent in card mm (left edge, width),
+    // used to resolve the `ContourLeft/Center/Right` alignments per code against the
+    // contour instead of the card. `None` falls back to the card frame (0, card width).
+    pub contour_align_left_mm: Option<f32>,
+    pub contour_align_width_mm: Option<f32>,
 }
 
 impl Options {
@@ -268,6 +273,8 @@ impl Default for Options {
             min_font_size_pt: 6.0,
             overflow_correction_by_column: false,
             contour_inset_mm: 0.0,
+            contour_align_left_mm: None,
+            contour_align_width_mm: None,
         }
     }
 }

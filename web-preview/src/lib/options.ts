@@ -352,6 +352,10 @@ export function buildJsOptions(
   // Solid color ("#RRGGBB" or "c:m:y:k") painted behind the background to fill the
   // zones a pan vacates (and any transparent pixels); empty/null keeps them transparent.
   backgroundBackdropColor?: string | null,
+  // The contour bounding-rect horizontal extent (card mm) so the generator resolves the
+  // `contour-*` horizontal alignments per code against the contour. Null ⇒ card frame.
+  contourAlignLeftMm?: number | null,
+  contourAlignWidthMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -370,14 +374,16 @@ export function buildJsOptions(
     travelSpeedMmS: page.travelSpeedMmS,
     fontSizes: new Float32Array(words.map((w) => w.fontSizePt)),
     textYMm: new Float32Array(words.map((w) => w.yMm)),
-    // Per-word X: an explicit `xMm` (custom drag or a resolved `contour-*` alignment)
-    // or `NaN` = "defer to `align`" for card left/center/right, which the generator
-    // then measures itself (see `resolve_x` in src/generate/cards.rs). Sent per word so
-    // one explicit X never forces the others; the generator ignores `align` for finite X.
-    textXMm: new Float32Array(words.map((w) => (w.xMm ?? NaN))),
-    // Only the base card alignment reaches the generator; `contour-*` resolves to `xMm`
-    // above, so map it to its base (harmless — ignored when the word carries a finite X).
-    align: words.map((w) => baseAlign(w.align)),
+    // Per-word X: an explicit `xMm` (custom drag) or `NaN` = "defer to `align`", which the
+    // generator then measures *per code* (see `resolve_x` in src/generate/cards.rs). The
+    // `contour-*` horizontal modes always defer (NaN) so each generated code re-anchors to
+    // the contour edge by its own width — a fixed `xMm` from the sample would let wider
+    // codes overflow. Sent per word so one explicit X never forces the others.
+    textXMm: new Float32Array(words.map((w) => (w.align.startsWith('contour-') ? NaN : (w.xMm ?? NaN)))),
+    // The full horizontal alignment reaches the generator, incl. the `contour-*` modes it
+    // resolves against the contour rectangle (`contourAlign*Mm` below). Vertical `contour-*`
+    // is separate (resolved to `yMm` in `textYMm`), so it never appears here.
+    align: words.map((w) => w.align),
     // "Combină paginile" overlays the contour onto the print pages (view-only,
     // non-printing). It works in both grid (decupare) and no-cut mode.
     combine: page.combine,
@@ -415,6 +421,8 @@ export function buildJsOptions(
     ...(backgroundOffsetXMm != null && backgroundOffsetXMm !== 0 ? { backgroundOffsetXMm } : {}),
     ...(backgroundOffsetYMm != null && backgroundOffsetYMm !== 0 ? { backgroundOffsetYMm } : {}),
     ...(backgroundBackdropColor ? { backgroundBackdropColor } : {}),
+    ...(contourAlignLeftMm != null ? { contourAlignLeftMm } : {}),
+    ...(contourAlignWidthMm != null ? { contourAlignWidthMm } : {}),
     ...(backgroundFlipX ? { backgroundFlipX: true } : {}),
     ...(backgroundFlipY ? { backgroundFlipY: true } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
