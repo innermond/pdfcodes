@@ -6,6 +6,21 @@ pub enum TextColor {
     Cmyk(f32, f32, f32, f32),
 }
 
+impl TextColor {
+    // 8-bit sRGB triple, for compositing a raster image over this color. RGB is
+    // exact; CMYK uses the naive `(1-c)(1-k)` model — the web UI always sends RGB
+    // hex (see `colorToCss`), so CMYK here is only a fallback.
+    pub fn to_rgb8(self) -> [u8; 3] {
+        let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        match self {
+            TextColor::Rgb(r, g, b) => [to_u8(r), to_u8(g), to_u8(b)],
+            TextColor::Cmyk(c, m, y, k) => {
+                [to_u8((1.0 - c) * (1.0 - k)), to_u8((1.0 - m) * (1.0 - k)), to_u8((1.0 - y) * (1.0 - k))]
+            }
+        }
+    }
+}
+
 // Parse a color, either:
 // - "#RRGGBB" (or "RRGGBB") hex -> RGB
 // - "c:m:y:k" (4 colon-separated floats, 0.0-1.0) -> CMYK. A colon (rather

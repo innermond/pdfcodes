@@ -23,7 +23,7 @@ import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
 import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
-import { contrastColor } from './lib/cmyk'
+import { colorToCss, contrastColor } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
 
@@ -146,6 +146,29 @@ const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | und
 // (local PHP during dev). If unset, remote-URL background fetching is disabled.
 const IMAGE_PROXY = import.meta.env.VITE_IMAGE_PROXY as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
+
+// True if any pixel of the bitmap is non-opaque (alpha < 255). The bitmap is
+// drawn into a size-capped canvas first: downscaling never turns a fully-opaque
+// image translucent (averaging 255s stays 255), so this is cheap and free of
+// false positives. Mirrors the generator's own alpha check that decides whether
+// to embed an /SMask (src/generate/image_bg.rs).
+function bitmapHasTransparency(bmp: ImageBitmap): boolean {
+  const cap = 256
+  const scale = Math.min(1, cap / Math.max(bmp.width, bmp.height))
+  const w = Math.max(1, Math.round(bmp.width * scale))
+  const h = Math.max(1, Math.round(bmp.height * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return false
+  ctx.drawImage(bmp, 0, 0, w, h)
+  const { data } = ctx.getImageData(0, 0, w, h)
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) return true
+  }
+  return false
+}
 const SEPARATOR_DEFAULT = ','
 
 // Internal field separator used for *uploaded* CSVs. PapaParse splits the file
@@ -524,6 +547,15 @@ export default function App() {
   // binary/async boundary, not scalar config, so it stays outside BgConfig.
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
+  // Whether the loaded source image carries transparency (any non-opaque pixel).
+  // Drives the preview's checkerboard backdrop so transparent regions read as
+  // transparent, matching the /SMask the generator now embeds (src/generate/image_bg.rs).
+  const [genBgTransparent, setGenBgTransparent] = useState(false)
+  // Backdrop for a transparent image: `null` = the gray checkerboard (a preview-only
+  // transparency indicator; the exported PDF keeps its alpha via /SMask); a CMYK
+  // color string fills the transparent regions with that color, baked into both the
+  // preview and the exported PDF (see the backdrop arg to generate_image_background_pdf).
+  const [genBgBackdropColor, setGenBgBackdropColor] = useState<string | null>(null)
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
@@ -1617,14 +1649,21 @@ export default function App() {
   function handleGenBgImageChange(file: File | null) {
     setGenBgImageFile(file)
     setBgField('bgRotation', 0)
-    if (!file) return
+    if (!file) {
+      setGenBgTransparent(false)
+      return
+    }
     // `imageOrientation: 'from-image'` applies the JPEG's EXIF orientation so the
     // measured aspect matches the oriented image the generator bakes in (see
     // `build_image_background_pdf` / `apply_orientation` in src/generate/image_bg.rs).
     createImageBitmap(file, { imageOrientation: 'from-image' })
       .then((bmp) => {
         const a = bmp.width / bmp.height
+        // Detect transparency while the bitmap is live (drives the preview's
+        // checkerboard backdrop); orientation doesn't affect the alpha channel.
+        const transparent = bitmapHasTransparency(bmp)
         if (typeof bmp.close === 'function') bmp.close()
+        setGenBgTransparent(transparent)
         if (a > 0) setBgField('genBgHeightMm', Math.round((genBgWidthMm / a) * 100) / 100)
       })
       .catch(() => {})
@@ -1723,8 +1762,12 @@ export default function App() {
         const refW = 100
         const refH = aspect > 0 ? 100 / aspect : 100
         const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
-        // Flip X/Y is baked into the image PDF so preview and output match.
-        const bytes = generate_image_background_pdf(imageBytes, refW, refH, bgFlipX, bgFlipY)
+        // Flip X/Y is baked into the image PDF so preview and output match. A chosen
+        // backdrop color (converted to the #RRGGBB the generator parses, via the same
+        // `colorToCss` the preview uses) fills transparent pixels in the exported PDF;
+        // an empty string keeps the transparency (the generator embeds an /SMask).
+        const backdrop = genBgBackdropColor ? colorToCss(genBgBackdropColor) : ''
+        const bytes = generate_image_background_pdf(imageBytes, refW, refH, bgFlipX, bgFlipY, backdrop)
         if (cancelled) return null
         const file = new File([bytes.buffer as ArrayBuffer], 'fundal-imagine.pdf', { type: 'application/pdf' })
         setBackgroundFile(file)
@@ -1755,7 +1798,7 @@ export default function App() {
       cancelled = true
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backgroundSource, genBgImageFile, bgFlipX, bgFlipY])
+  }, [backgroundSource, genBgImageFile, bgFlipX, bgFlipY, genBgBackdropColor])
 
   // Default the code/text color to one that contrasts the simple background so
   // codes are visible. Stays in effect (also recoloring newly added words) only
@@ -2760,6 +2803,21 @@ export default function App() {
                   <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => setBgField('bgFlipX', v)} />
                   <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => setBgField('bgFlipY', v)} />
                 </div>
+                {genBgTransparent && (
+                  <>
+                    <ColorField
+                      label="Fundal zone transparente"
+                      value={genBgBackdropColor}
+                      onChange={setGenBgBackdropColor}
+                      allowNone
+                      noneLabel="carouri (transparent)"
+                      hideWhenNull
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Culoarea aleasă umple zonele transparente în PDF-ul exportat; „carouri” păstrează transparența.
+                    </p>
+                  </>
+                )}
               </>
             )}
           </Section>
@@ -3567,6 +3625,8 @@ export default function App() {
                   >
                     <CardCanvas
                       backgroundImageUrl={background.imageUrl}
+                      transparentBackdrop={backgroundSource === 'generate' && genBgTransparent}
+                      backdropColor={genBgBackdropColor}
                       cardWidthPt={effectiveCardWidthMm * MM}
                       cardHeightPt={effectiveCardHeightMm * MM}
                       contourImageUrl={activeContourBackground?.imageUrl ?? null}

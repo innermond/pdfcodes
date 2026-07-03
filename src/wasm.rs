@@ -707,12 +707,21 @@ pub fn generate_image_background_pdf(
     // Mirror the image horizontally / vertically (baked into the generated PDF).
     flip_x: bool,
     flip_y: bool,
+    // Solid backdrop composited under transparent pixels ("#RRGGBB" or "c:m:y:k").
+    // Empty / "none" / "-" keeps transparency (embeds an /SMask instead).
+    backdrop: String,
 ) -> Result<Vec<u8>, JsError> {
     if !(card_width_mm > 0.0) || !(card_height_mm > 0.0) {
         return Err(JsError::new("card dimensions must be positive"));
     }
+    let backdrop = if backdrop.trim().is_empty() {
+        None
+    } else {
+        parse_color_or_none(&backdrop).map_err(|e| JsError::new(&e))?
+    }
+    .map(|c| c.to_rgb8());
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
-    build_image_background_pdf(image_bytes, card_w, card_h, flip_x, flip_y)
+    build_image_background_pdf(image_bytes, card_w, card_h, flip_x, flip_y, backdrop)
         .map_err(|e| JsError::new(&e.to_string()))
 }

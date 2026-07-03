@@ -1,6 +1,7 @@
 import { useId, useRef } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
 import { MM, type BlendMode, type WordStyle } from '../lib/options'
+import { colorToCss } from '../lib/cmyk'
 import { contourMaskPathD } from '../lib/contourMask'
 import { flattenPathD, rotate } from '../lib/contourKeepRegion'
 import { WordOverlay } from './WordOverlay'
@@ -26,6 +27,8 @@ export type ContourCutShape = {
 
 export function CardCanvas({
   backgroundImageUrl,
+  transparentBackdrop = false,
+  backdropColor = null,
   cardWidthPt,
   cardHeightPt,
   contourImageUrl,
@@ -50,6 +53,15 @@ export function CardCanvas({
   onChangeWord,
 }: {
   backgroundImageUrl: string | null
+  // Draw a gray checkerboard behind the background image (instead of the card's
+  // white) so transparent regions of a generated image background read as
+  // transparent, the way graphics editors indicate an alpha channel.
+  transparentBackdrop?: boolean
+  // Solid backdrop fill (CMYK color string) shown behind a transparent image
+  // instead of the checkerboard; `null` keeps the checkerboard. Mirrors the fill
+  // the generator bakes into the exported PDF, and shows it instantly while the
+  // WASM rebuild is in flight.
+  backdropColor?: string | null
   cardWidthPt: number
   cardHeightPt: number
   contourImageUrl: string | null
@@ -85,6 +97,12 @@ export function CardCanvas({
   const svgRef = useRef<SVGSVGElement>(null)
   const maskId = useId()
   const clipId = useId()
+  const checkerId = useId()
+
+  // Checkerboard cell size in card (SVG) points. Fixed in user space, so cells
+  // scale with the responsively-sized card — a stable "transparent" look at any
+  // display width without depending on the current device scale.
+  const checkerCellPt = 6
 
   // The contour image's rect in card (SVG) points. Shared by the dim-exterior knockout
   // and the drag/selection overlay so they line up exactly with the drawn <image>.
@@ -174,6 +192,21 @@ export function CardCanvas({
       className="isolate w-full rounded border border-gray-200 bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700"
       style={{ aspectRatio: `${cardWidthPt} / ${cardHeightPt}` }}
     >
+      {transparentBackdrop && backdropColor && (
+        <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={colorToCss(backdropColor)} />
+      )}
+      {transparentBackdrop && !backdropColor && (
+        <>
+          <defs>
+            <pattern id={checkerId} width={checkerCellPt * 2} height={checkerCellPt * 2} patternUnits="userSpaceOnUse">
+              <rect x={0} y={0} width={checkerCellPt * 2} height={checkerCellPt * 2} fill="#e9e9e9" />
+              <rect x={0} y={0} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
+              <rect x={checkerCellPt} y={checkerCellPt} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
+            </pattern>
+          </defs>
+          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={`url(#${checkerId})`} />
+        </>
+      )}
       {backgroundImageUrl && (
         <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
       )}

@@ -4,10 +4,16 @@ use lopdf::{content::Content, content::Operation, Dictionary, Document, Object, 
 // Build a minimal one-page PDF sized `card_w` x `card_h` (in PDF points,
 // matching the print background's card size) that draws `image_bytes` (a PNG or
 // JPEG) stretched to fill the page. The image is embedded losslessly as a
-// FlateDecode Image XObject: a grayscale image stays DeviceGray, anything else
-// is composited over white (alpha dropped) into DeviceRGB. Used as a generated
-// print background built from a raster image (the "Crează fundal" feature); the
-// result is fed through the same pipeline as an uploaded background PDF.
+// FlateDecode Image XObject. Used as a generated print background built from a
+// raster image (the "Crează fundal" feature); the result is fed through the same
+// pipeline as an uploaded background PDF.
+//
+// Transparency handling depends on `backdrop`:
+// - `None` — a grayscale image stays DeviceGray; anything with real transparency
+//   keeps straight (unpremultiplied) DeviceRGB color plus a DeviceGray `/SMask`,
+//   so the exported PDF retains its alpha; fully-opaque color images are DeviceRGB.
+// - `Some([r, g, b])` — transparent pixels are composited over that color into an
+//   opaque DeviceRGB image with no `/SMask`, so the chosen backdrop is baked in.
 pub fn build_image_background_pdf(
     image_bytes: &[u8],
     card_w: f32,
@@ -17,6 +23,9 @@ pub fn build_image_background_pdf(
     // orientation, before any downstream page rotation.
     flip_x: bool,
     flip_y: bool,
+    // Optional solid RGB backdrop composited under the image (fills transparent
+    // regions); `None` preserves transparency via `/SMask`.
+    backdrop: Option<[u8; 3]>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // Format is detected from the magic bytes; only the png + jpeg codecs are
     // compiled in (see Cargo.toml), so other formats fail here with an error.
@@ -39,12 +48,27 @@ pub fn build_image_background_pdf(
         return Err("image has zero dimensions".into());
     }
 
-    // Choose the color space + raw 8-bit samples. Grayscale-without-alpha maps
-    // to DeviceGray (1 sample/px); everything else is flattened over white and
-    // emitted as DeviceRGB (3 samples/px).
-    let (color_space, samples): (&[u8], Vec<u8>) = match &img {
-        image::DynamicImage::ImageLuma8(buf) => (b"DeviceGray", buf.as_raw().clone()),
-        _ => (b"DeviceRGB", flatten_over_white(&img)),
+    // Choose the color space + raw 8-bit samples, and build a soft mask when the
+    // image carries real transparency and no backdrop is requested.
+    let (color_space, samples, smask): (&[u8], Vec<u8>, Option<Stream>) = if let Some(bg) = backdrop {
+        // Composite over the chosen color: transparent regions take that color, the
+        // result is opaque DeviceRGB, and no `/SMask` is emitted. Fully-opaque
+        // images composite to themselves, so this is a no-op for them.
+        (b"DeviceRGB", flatten_over(&img, bg), None)
+    } else if img.color().has_alpha() {
+        let (rgb, alpha, any_transparent) = split_rgb_alpha(&img);
+        // Straight (unpremultiplied) color + a DeviceGray alpha mask, so the export
+        // keeps its transparency. Fully-opaque alpha (all 255) needs no mask; the
+        // straight RGB then equals `flatten_over` white, so output stays unchanged.
+        let smask = if any_transparent { Some(build_smask_stream(w, h, alpha)?) } else { None };
+        (b"DeviceRGB", rgb, smask)
+    } else {
+        // No backdrop, no alpha channel: grayscale stays DeviceGray (1 sample/px);
+        // other opaque images are DeviceRGB.
+        match &img {
+            image::DynamicImage::ImageLuma8(buf) => (b"DeviceGray", buf.as_raw().clone(), None),
+            _ => (b"DeviceRGB", flatten_over(&img, [255, 255, 255]), None),
+        }
     };
 
     let mut xobj_dict = Dictionary::new();
@@ -60,24 +84,64 @@ pub fn build_image_background_pdf(
     let mut image_stream = Stream::new(xobj_dict, samples);
     image_stream.compress()?;
 
-    build_single_page_image_pdf(card_w, card_h, image_stream, flip_x, flip_y)
+    build_single_page_image_pdf(card_w, card_h, image_stream, smask, flip_x, flip_y)
 }
 
-// Composite any image over a white background and return tightly packed RGB8
-// samples (row-major, 3 bytes/px). Alpha is flattened so transparent regions
-// print white (cards print on white stock and the preview's SVG backdrop is
-// white); no `/SMask` is emitted.
-fn flatten_over_white(img: &image::DynamicImage) -> Vec<u8> {
+// Split an image into straight (unpremultiplied) RGB samples (row-major, 3
+// bytes/px) and a separate 8-bit alpha channel (1 byte/px), reporting whether
+// any pixel is non-opaque. The RGB keeps the raw color (no white compositing) so
+// it can pair with an `/SMask`; `any_transparent` lets the caller skip the mask
+// for fully-opaque images.
+fn split_rgb_alpha(img: &image::DynamicImage) -> (Vec<u8>, Vec<u8>, bool) {
+    let rgba = img.to_rgba8();
+    let px_count = (rgba.width() as usize) * (rgba.height() as usize);
+    let mut rgb = Vec::with_capacity(px_count * 3);
+    let mut alpha = Vec::with_capacity(px_count);
+    let mut any_transparent = false;
+    for px in rgba.pixels() {
+        let [r, g, b, a] = px.0;
+        rgb.push(r);
+        rgb.push(g);
+        rgb.push(b);
+        alpha.push(a);
+        if a != 255 {
+            any_transparent = true;
+        }
+    }
+    (rgb, alpha, any_transparent)
+}
+
+// Build a DeviceGray Image XObject stream holding `alpha` (1 sample/px, 8-bit),
+// suitable as another image's `/SMask`. Same `Width`/`Height` as the base image;
+// no `/Filter` is set so `compress()` stamps `/Filter /FlateDecode`.
+fn build_smask_stream(w: u32, h: u32, alpha: Vec<u8>) -> Result<Stream, Box<dyn std::error::Error>> {
+    let mut dict = Dictionary::new();
+    dict.set("Type", Object::Name(b"XObject".to_vec()));
+    dict.set("Subtype", Object::Name(b"Image".to_vec()));
+    dict.set("Width", Object::Integer(w as i64));
+    dict.set("Height", Object::Integer(h as i64));
+    dict.set("ColorSpace", Object::Name(b"DeviceGray".to_vec()));
+    dict.set("BitsPerComponent", Object::Integer(8));
+    let mut stream = Stream::new(dict, alpha);
+    stream.compress()?;
+    Ok(stream)
+}
+
+// Composite any image over a solid `bg` color and return tightly packed RGB8
+// samples (row-major, 3 bytes/px). Alpha is flattened so transparent regions take
+// the backdrop color; no `/SMask` is emitted. Passing `[255, 255, 255]` gives the
+// print-on-white default.
+fn flatten_over(img: &image::DynamicImage, bg: [u8; 3]) -> Vec<u8> {
     let rgba = img.to_rgba8();
     let mut out = Vec::with_capacity((rgba.width() as usize) * (rgba.height() as usize) * 3);
     for px in rgba.pixels() {
         let [r, g, b, a] = px.0;
         let a = a as u32;
-        // `c` over white: (c*a + 255*(255-a)) / 255, rounded toward zero.
-        let blend = |c: u8| (((c as u32) * a + 255 * (255 - a)) / 255) as u8;
-        out.push(blend(r));
-        out.push(blend(g));
-        out.push(blend(b));
+        // `c` over `bg`: (c*a + bg*(255-a)) / 255, rounded toward zero.
+        let blend = |c: u8, over: u8| (((c as u32) * a + (over as u32) * (255 - a)) / 255) as u8;
+        out.push(blend(r, bg[0]));
+        out.push(blend(g, bg[1]));
+        out.push(blend(b, bg[2]));
     }
     out
 }
@@ -88,13 +152,20 @@ fn flatten_over_white(img: &image::DynamicImage) -> Vec<u8> {
 fn build_single_page_image_pdf(
     card_w: f32,
     card_h: f32,
-    image_stream: Stream,
+    mut image_stream: Stream,
+    // The image's soft mask, when it carries transparency. Added as its own object
+    // and referenced from the base image's dict via `/SMask`.
+    smask: Option<Stream>,
     flip_x: bool,
     flip_y: bool,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
 
+    if let Some(smask) = smask {
+        let smask_id = doc.add_object(smask);
+        image_stream.dict.set("SMask", Object::Reference(smask_id));
+    }
     let image_id = doc.add_object(image_stream);
 
     // The `cm` maps the image's 1x1 unit space onto the full MediaBox, so the
@@ -208,7 +279,7 @@ mod tests {
         let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
 
         let (card_w, card_h) = (86.0 * MM, 54.0 * MM);
-        let pdf = build_image_background_pdf(&png, card_w, card_h, false, false).expect("should build");
+        let pdf = build_image_background_pdf(&png, card_w, card_h, false, false, None).expect("should build");
         assert!(pdf.starts_with(b"%PDF"));
 
         let (doc, page_id) = page_and_image(&pdf);
@@ -233,7 +304,7 @@ mod tests {
         let (card_w, card_h) = (80.0, 50.0);
 
         let cm = |flip_x: bool, flip_y: bool| -> Vec<f32> {
-            let pdf = build_image_background_pdf(&png, card_w, card_h, flip_x, flip_y).unwrap();
+            let pdf = build_image_background_pdf(&png, card_w, card_h, flip_x, flip_y, None).unwrap();
             let doc = Document::load_mem(&pdf).unwrap();
             let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
             let ops = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap().operations;
@@ -256,10 +327,11 @@ mod tests {
         let img = image::GrayImage::from_pixel(64, 64, image::Luma([128]));
         let png = encode(image::DynamicImage::ImageLuma8(img), image::ImageFormat::Png);
 
-        let pdf = build_image_background_pdf(&png, 100.0, 100.0, false, false).expect("should build");
+        let pdf = build_image_background_pdf(&png, 100.0, 100.0, false, false, None).expect("should build");
         let (doc, page_id) = page_and_image(&pdf);
         let im = image_stream(&doc, page_id);
         assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceGray");
+        assert!(im.dict.get(b"SMask").is_err(), "opaque grayscale needs no /SMask");
     }
 
     #[test]
@@ -267,7 +339,7 @@ mod tests {
         let img = image::RgbImage::from_pixel(32, 32, image::Rgb([200, 50, 50]));
         let jpeg = encode(image::DynamicImage::ImageRgb8(img), image::ImageFormat::Jpeg);
 
-        let pdf = build_image_background_pdf(&jpeg, 50.0, 50.0, false, false).expect("should build");
+        let pdf = build_image_background_pdf(&jpeg, 50.0, 50.0, false, false, None).expect("should build");
         let (doc, page_id) = page_and_image(&pdf);
         let im = image_stream(&doc, page_id);
         assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceRGB");
@@ -275,22 +347,73 @@ mod tests {
     }
 
     #[test]
-    fn transparent_pixels_flatten_to_white() {
-        // A fully transparent image must composite to white (255,255,255). A 1x1
-        // image won't compress, so its samples are stored raw — read directly.
+    fn transparent_image_gets_devicergb_base_plus_smask() {
+        // A 1x1 pixel with alpha=0: the color stays straight (unpremultiplied) RGB
+        // and the alpha becomes a separate DeviceGray /SMask — no white composite.
+        // A 1x1 image won't compress, so its samples are stored raw — read directly.
         let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([10, 20, 30, 0]));
         let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
 
-        let pdf = build_image_background_pdf(&png, 50.0, 50.0, false, false).expect("should build");
+        let pdf = build_image_background_pdf(&png, 50.0, 50.0, false, false, None).expect("should build");
         let (doc, page_id) = page_and_image(&pdf);
         let im = image_stream(&doc, page_id);
         assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceRGB");
-        assert!(im.dict.get(b"Filter").is_err(), "1x1 stays uncompressed (raw samples)");
-        assert_eq!(im.content, vec![255, 255, 255], "transparent pixel flattens to white");
+        assert_eq!(im.content, vec![10, 20, 30], "straight color kept, not flattened to white");
+
+        // /SMask points at a DeviceGray image of matching size holding the alpha.
+        let smask_ref = im.dict.get(b"SMask").expect("transparent image has /SMask").as_reference().unwrap();
+        let smask = doc.get_object(smask_ref).unwrap().as_stream().unwrap();
+        assert_eq!(smask.dict.get(b"Subtype").unwrap().as_name().unwrap(), b"Image");
+        assert_eq!(smask.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceGray");
+        assert_eq!(smask.dict.get(b"BitsPerComponent").unwrap().as_i64().unwrap(), 8);
+        assert_eq!(smask.dict.get(b"Width").unwrap().as_i64().unwrap(), 1);
+        assert_eq!(smask.dict.get(b"Height").unwrap().as_i64().unwrap(), 1);
+        assert_eq!(smask.content, vec![0], "alpha 0 stored in the mask");
+    }
+
+    #[test]
+    fn opaque_rgba_has_no_smask() {
+        // Alpha channel present but fully opaque (255): straight RGB, no mask —
+        // output matches the pre-SMask behavior.
+        let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 80, 40, 255]));
+        let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
+
+        let pdf = build_image_background_pdf(&png, 50.0, 50.0, false, false, None).expect("should build");
+        let (doc, page_id) = page_and_image(&pdf);
+        let im = image_stream(&doc, page_id);
+        assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceRGB");
+        assert!(im.dict.get(b"SMask").is_err(), "fully-opaque image needs no /SMask");
+    }
+
+    #[test]
+    fn backdrop_bakes_over_transparent_pixels_without_smask() {
+        // A fully transparent pixel with a red backdrop → the pixel becomes red
+        // (baked in), the image is opaque DeviceRGB, and no /SMask is emitted.
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([10, 20, 30, 0]));
+        let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
+
+        let pdf = build_image_background_pdf(&png, 50.0, 50.0, false, false, Some([255, 0, 0])).expect("should build");
+        let (doc, page_id) = page_and_image(&pdf);
+        let im = image_stream(&doc, page_id);
+        assert_eq!(im.dict.get(b"ColorSpace").unwrap().as_name().unwrap(), b"DeviceRGB");
+        assert!(im.dict.get(b"SMask").is_err(), "a baked backdrop leaves no /SMask");
+        assert_eq!(im.content, vec![255, 0, 0], "transparent pixel takes the backdrop color");
+    }
+
+    #[test]
+    fn backdrop_leaves_opaque_pixels_untouched() {
+        // An opaque pixel is unaffected by the backdrop (composites to itself).
+        let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([10, 20, 30, 255]));
+        let png = encode(image::DynamicImage::ImageRgba8(img), image::ImageFormat::Png);
+
+        let pdf = build_image_background_pdf(&png, 50.0, 50.0, false, false, Some([255, 0, 0])).expect("should build");
+        let (doc, page_id) = page_and_image(&pdf);
+        let im = image_stream(&doc, page_id);
+        assert_eq!(im.content, vec![10, 20, 30], "opaque pixel ignores the backdrop");
     }
 
     #[test]
     fn rejects_non_image_bytes() {
-        assert!(build_image_background_pdf(b"not an image at all", 50.0, 50.0, false, false).is_err());
+        assert!(build_image_background_pdf(b"not an image at all", 50.0, 50.0, false, false, None).is_err());
     }
 }
