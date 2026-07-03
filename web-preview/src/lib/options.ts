@@ -265,12 +265,13 @@ export interface PageOptions {
   minimal: boolean
 }
 
-// Defaults mirror `Options::default()` in src/options.rs.
+// Defaults mirror `Options::default()` in src/options.rs, except offsetXMm/offsetYMm
+// which default to 2.0 mm here (UI default) vs. 0.0 in Rust.
 export const defaultPageOptions: PageOptions = {
   hostWidthMm: 267,
   hostHeightMm: 350,
-  offsetXMm: 0,
-  offsetYMm: 0,
+  offsetXMm: 2.0,
+  offsetYMm: 2.0,
   circleDiameterMm: 10,
   combine: false,
   debug: false,
@@ -280,7 +281,7 @@ export const defaultPageOptions: PageOptions = {
   preparationTimeS: 60,
   travelSpeedMmS: 16,
   noCut: false,
-  minimal: false,
+  minimal: true,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s

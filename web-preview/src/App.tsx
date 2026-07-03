@@ -422,7 +422,7 @@ const defaultContourConfig: ContourConfig = {
   contourPageNumber: 1,
   contourOpacity: 1.0,
   contourBlendMode: 'normal',
-  dimContourExterior: false,
+  dimContourExterior: true,
   shapeKind: 'circle',
   shapeCornerRadiusMm: 3,
   shapeCornerOrientation: 'out',
@@ -617,13 +617,13 @@ export default function App() {
   // "Redesenează" (equidistant offset) products. When `contourRedrawMm` is non-zero
   // the base contour outline is offset and re-emitted as a fresh cut PDF
   // (`redrawnContourFile` + its rendered `redrawnContour`), a normalized preview mask
-  // (`redrawnMaskPath`, 0..1 y-down), and the offset footprint / placement delta
-  // (`redrawnFootprint`). All null when the offset is 0 (base contour unchanged).
+  // (`redrawnMaskPath`, 0..1 y-down), and the offset footprint size (`redrawnFootprint`).
+  // All null when the offset is 0 (base contour unchanged).
   const [redrawnContourFile, setRedrawnContourFile] = useState<File | null>(null)
   const [redrawnContour, setRedrawnContour] = useState<PdfBackground | null>(null)
   const [redrawnMaskPath, setRedrawnMaskPath] = useState<string | null>(null)
   const [redrawnFootprint, setRedrawnFootprint] = useState<
-    { widthMm: number; heightMm: number; offsetDeltaXMm: number; offsetDeltaYMm: number } | null
+    { widthMm: number; heightMm: number } | null
   >(null)
   const [shapeError, setShapeError] = useState<string | null>(null)
   // Whether the contour is selected for direct manipulation (drag / arrow-key nudge in
@@ -995,13 +995,11 @@ export default function App() {
   const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
   const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
 
-  // Placement: shift the base offset by the offset box's delta, then clamp into the range.
-  const activeContourOffsetXMm = contourRedrawActive
-    ? Math.min(Math.max(contourOffsetMinXMm, clampedContourOffsetXMm + redrawnFootprint!.offsetDeltaXMm), contourOffsetMaxXMm)
-    : clampedContourOffsetXMm
-  const activeContourOffsetYMm = contourRedrawActive
-    ? Math.min(Math.max(contourOffsetMinYMm, clampedContourOffsetYMm + redrawnFootprint!.offsetDeltaYMm), contourOffsetMaxYMm)
-    : clampedContourOffsetYMm
+  // Placement: `contourOffsetMinXMm`/`MaxXMm` already reflect the redrawn footprint's own
+  // size (see `activeContourWidthMm`/`HeightMm` above), so the clamped offset already IS
+  // the footprint's placement — no further shift needed.
+  const activeContourOffsetXMm = clampedContourOffsetXMm
+  const activeContourOffsetYMm = clampedContourOffsetYMm
 
   // The footprint at its actual placement (card mm, y-up), used as the Minimal crop window
   // so the crop envelops the spun contour instead of the un-spun box.
@@ -1152,10 +1150,7 @@ export default function App() {
       lens.push(sp.length)
     }
     const maskD = polygonsToPathD(localZeroed.map((sp) => sp.map(([x, y]): Pt => [x / Wf, y / Hf])))
-    // Placement delta so the offset box lands where the base box was: its left edge is
-    // `bb.minX` from the base left, and its bottom (y-up) is `Hc - bb.maxY` from the base
-    // bottom (local y-down grows downward from the base top).
-    const footprint = { widthMm: Wf, heightMm: Hf, offsetDeltaXMm: bb.minX, offsetDeltaYMm: Hc - bb.maxY }
+    const footprint = { widthMm: Wf, heightMm: Hf }
 
     let cancelled = false
     ensureWasmInit()
