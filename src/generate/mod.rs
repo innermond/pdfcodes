@@ -237,7 +237,19 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     if let Ok(resources) = bg_page_dict.get(b"Resources") {
         bg_xobj_dict.set("Resources", resources.clone());
     }
-    let bg_form = Stream::new(bg_xobj_dict, bg_content_bytes.clone());
+    // Pan the drawn background within the card: an outer translate in card space,
+    // so it's applied on top of the rotate/flip/scale already baked in. The Form's
+    // BBox (card_box) clips whatever slides past the edge, leaving the vacated area
+    // transparent. Only the drawn copy is offset — the `bg_content_bytes` used below
+    // for path measurement / keep-region stays put, so the cut geometry is unaffected.
+    let bg_form_content = if opts.background_offset_x_mm != 0.0 || opts.background_offset_y_mm != 0.0 {
+        let ox = opts.background_offset_x_mm * crate::geometry::MM;
+        let oy = opts.background_offset_y_mm * crate::geometry::MM;
+        [format!("q 1 0 0 1 {ox:.4} {oy:.4} cm\n").into_bytes(), bg_content_bytes.clone(), b"\nQ".to_vec()].concat()
+    } else {
+        bg_content_bytes.clone()
+    };
+    let bg_form = Stream::new(bg_xobj_dict, bg_form_content);
     let bg_form_id = doc.add_object(bg_form);
 
     // Get pages root
@@ -634,6 +646,29 @@ mod tests {
         let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
         let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
         assert!((num(&mb[2]) - 200.0).abs() < 0.5 && (num(&mb[3]) - 100.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn background_offset_pans_the_drawn_background() {
+        let bg = rotated_page_pdf(200.0, 100.0, 0);
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+
+        let plain = generate_pdf(Some("1A 1\n"), &bg, None, &Options { no_cut: true, ..Options::default() }).unwrap().pdf;
+        let panned = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_offset_x_mm: 5.0, background_offset_y_mm: -3.0, no_cut: true, ..Options::default() }).unwrap().pdf;
+        assert_ne!(plain, panned, "a nonzero background offset must change the output");
+
+        // The card rectangle is unchanged — only the content shifts inside it.
+        let doc = Document::load_mem(&panned).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        assert!((num(&mb[2]) - 200.0).abs() < 0.5 && (num(&mb[3]) - 100.0).abs() < 0.5);
+
+        // The drawn background Form carries the outer translate (5mm, -3mm in points).
+        let ox = 5.0 * crate::geometry::MM;
+        let oy = -3.0 * crate::geometry::MM;
+        let needle = format!("1 0 0 1 {ox:.4} {oy:.4} cm");
+        let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if String::from_utf8_lossy(&s.content).contains(&needle)));
+        assert!(found, "expected the background Form to contain the translate {needle:?}");
     }
 
     #[test]

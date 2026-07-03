@@ -283,6 +283,12 @@ interface BgConfig {
   // PDF so preview and output match.
   bgFlipX: boolean
   bgFlipY: boolean
+  // Pan the background within its card rectangle (mm; X right, Y up, PDF convention).
+  // Shared by every source: content shifted past the card edge is clipped and the
+  // vacated area stays transparent. Baked into the generated output and mirrored in
+  // the preview (see CardCanvas / BackgroundPanOverlay).
+  bgOffsetXMm: number
+  bgOffsetYMm: number
 }
 
 const defaultBgConfig: BgConfig = {
@@ -300,6 +306,8 @@ const defaultBgConfig: BgConfig = {
   bgRotation: 0,
   bgFlipX: false,
   bgFlipY: false,
+  bgOffsetXMm: 0,
+  bgOffsetYMm: 0,
 }
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
@@ -537,6 +545,7 @@ export default function App() {
     simpleBgWidthMm, simpleBgHeightMm, simpleBgColor,
     genBgWidthMm, genBgHeightMm, genBgImageSource, genBgImageUrl,
     bgTargetWidthMm, bgTargetHeightMm, bgRotation, bgFlipX, bgFlipY,
+    bgOffsetXMm, bgOffsetYMm,
   } = bgConfig
   function setBgField<K extends keyof BgConfig>(key: K, value: BgConfig[K]) {
     setBgConfig((prev) => ({ ...prev, [key]: value }))
@@ -556,6 +565,10 @@ export default function App() {
   // color string fills the transparent regions with that color, baked into both the
   // preview and the exported PDF (see the backdrop arg to generate_image_background_pdf).
   const [genBgBackdropColor, setGenBgBackdropColor] = useState<string | null>(null)
+  // "Mută fundalul": while on, the preview shows a drag surface to pan the background
+  // (BackgroundPanOverlay) and word/contour editing is suspended so a drag never
+  // steals a word click. The numeric offset fields stay active regardless.
+  const [bgNudgeMode, setBgNudgeMode] = useState(false)
 
   const [contourBackground, setContourBackground] = useState<PdfBackground | null>(null)
   const [contourBackgroundError, setContourBackgroundError] = useState<string | null>(null)
@@ -810,6 +823,16 @@ export default function App() {
   const effectiveCardHeightMm = background && isFinite(cardTargetHeightMm) && cardTargetHeightMm > 0
     ? cardTargetHeightMm
     : (background ? background.heightPt / MM : 0)
+
+  // Nudge the background within its card rectangle, clamped to ±the card dimension
+  // (so it can be pushed fully out, leaving all-transparent). Shared by the numeric
+  // fields and the preview drag (BackgroundPanOverlay).
+  function handleBackgroundOffsetChange(xMm: number, yMm: number) {
+    const cx = effectiveCardWidthMm || 0
+    const cy = effectiveCardHeightMm || 0
+    setBgField('bgOffsetXMm', Math.min(Math.max(-cx, xMm), cx))
+    setBgField('bgOffsetYMm', Math.min(Math.max(-cy, yMm), cy))
+  }
 
   // Available space for a preset shape = the full card (no interior margin).
   const contourAvailWidthMm = effectiveCardWidthMm
@@ -2261,7 +2284,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
@@ -2394,6 +2417,7 @@ export default function App() {
         contourInsetMm,
         backgroundSource === 'upload' ? bgFlipX : false,
         backgroundSource === 'upload' ? bgFlipY : false,
+        bgOffsetXMm, bgOffsetYMm,
       )
 
       await ensureWasmInit()
@@ -2819,6 +2843,21 @@ export default function App() {
                   </>
                 )}
               </>
+            )}
+            {background && (
+              <div className="flex flex-col gap-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Poziționare fundal</span>
+                  <CheckboxField label="Mută fundalul" checked={bgNudgeMode} onChange={setBgNudgeMode} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <NumberField label="Decalaj fundal X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
+                  <NumberField label="Decalaj fundal Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
+                </div>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Deplasează fundalul în cadrul cardului; zonele rămase libere sunt transparente. Activează „Mută fundalul” pentru a trage direct în previzualizare.
+                </p>
+              </div>
             )}
           </Section>
           )}
@@ -3627,6 +3666,10 @@ export default function App() {
                       backgroundImageUrl={background.imageUrl}
                       transparentBackdrop={backgroundSource === 'generate' && genBgTransparent}
                       backdropColor={genBgBackdropColor}
+                      backgroundOffsetXPt={bgOffsetXMm * MM}
+                      backgroundOffsetYPt={bgOffsetYMm * MM}
+                      bgNudgeMode={bgNudgeMode}
+                      onBackgroundOffsetChange={handleBackgroundOffsetChange}
                       cardWidthPt={effectiveCardWidthMm * MM}
                       cardHeightPt={effectiveCardHeightMm * MM}
                       contourImageUrl={activeContourBackground?.imageUrl ?? null}

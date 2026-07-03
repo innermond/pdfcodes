@@ -127,6 +127,12 @@ pub struct Options {
     // the same axes the pdf.js preview flips. Default false.
     pub background_flip_x: bool,
     pub background_flip_y: bool,
+    // Pan the print background within its own card rectangle (mm; X rightward,
+    // Y upward, PDF convention), baked as the outermost transform on the drawn
+    // background. Content shifted past the card edge is clipped by the background
+    // Form's BBox; the vacated area stays transparent. Default 0 (no pan).
+    pub background_offset_x_mm: f32,
+    pub background_offset_y_mm: f32,
     // "Non-decupare" (no-cut) mode: skip imposition entirely. Each card (or the
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
@@ -238,6 +244,8 @@ impl Default for Options {
             background_rotation: 0,
             background_flip_x: false,
             background_flip_y: false,
+            background_offset_x_mm: 0.0,
+            background_offset_y_mm: 0.0,
             no_cut: false,
             contour_offset_x_mm: 0.0,
             contour_offset_y_mm: 0.0,

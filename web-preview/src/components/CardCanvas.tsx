@@ -1,4 +1,4 @@
-import { useId, useRef } from 'react'
+import { useId, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
 import { MM, type BlendMode, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
@@ -29,6 +29,10 @@ export function CardCanvas({
   backgroundImageUrl,
   transparentBackdrop = false,
   backdropColor = null,
+  backgroundOffsetXPt = 0,
+  backgroundOffsetYPt = 0,
+  bgNudgeMode = false,
+  onBackgroundOffsetChange,
   cardWidthPt,
   cardHeightPt,
   contourImageUrl,
@@ -62,6 +66,16 @@ export function CardCanvas({
   // the generator bakes into the exported PDF, and shows it instantly while the
   // WASM rebuild is in flight.
   backdropColor?: string | null
+  // Pan the background image within the card (right/up positive, PDF points). The
+  // SVG viewport clips overflow; the vacated area reveals the card white / checker /
+  // backdrop. Mirrors the offset the generator bakes into the exported PDF.
+  backgroundOffsetXPt?: number
+  backgroundOffsetYPt?: number
+  // "Mută fundalul": show a drag surface to pan the background and suspend word /
+  // contour interaction so a pan drag never selects a word.
+  bgNudgeMode?: boolean
+  // Raw new background offset in mm (X rightward, Y upward); the parent clamps it.
+  onBackgroundOffsetChange?: (xMm: number, yMm: number) => void
   cardWidthPt: number
   cardHeightPt: number
   contourImageUrl: string | null
@@ -192,24 +206,31 @@ export function CardCanvas({
       className="isolate w-full rounded border border-gray-200 bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700"
       style={{ aspectRatio: `${cardWidthPt} / ${cardHeightPt}` }}
     >
-      {transparentBackdrop && backdropColor && (
-        <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={colorToCss(backdropColor)} />
-      )}
-      {transparentBackdrop && !backdropColor && (
-        <>
-          <defs>
-            <pattern id={checkerId} width={checkerCellPt * 2} height={checkerCellPt * 2} patternUnits="userSpaceOnUse">
-              <rect x={0} y={0} width={checkerCellPt * 2} height={checkerCellPt * 2} fill="#e9e9e9" />
-              <rect x={0} y={0} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
-              <rect x={checkerCellPt} y={checkerCellPt} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
-            </pattern>
-          </defs>
-          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={`url(#${checkerId})`} />
-        </>
-      )}
-      {backgroundImageUrl && (
-        <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
-      )}
+      {/* The background layer (its transparency backdrop + the image) pans as one:
+          the baked checker/color travels with the image, while the vacated card area
+          reveals the SVG's white — mirroring the export, where the pan leaves true
+          transparency (prints white). The SVG viewport clips whatever slides out.
+          Y is negated: PDF offset is up-positive, SVG y grows downward. */}
+      <g transform={`translate(${backgroundOffsetXPt} ${-backgroundOffsetYPt})`}>
+        {transparentBackdrop && backdropColor && (
+          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={colorToCss(backdropColor)} />
+        )}
+        {transparentBackdrop && !backdropColor && (
+          <>
+            <defs>
+              <pattern id={checkerId} width={checkerCellPt * 2} height={checkerCellPt * 2} patternUnits="userSpaceOnUse">
+                <rect x={0} y={0} width={checkerCellPt * 2} height={checkerCellPt * 2} fill="#e9e9e9" />
+                <rect x={0} y={0} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
+                <rect x={checkerCellPt} y={checkerCellPt} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
+              </pattern>
+            </defs>
+            <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={`url(#${checkerId})`} />
+          </>
+        )}
+        {backgroundImageUrl && (
+          <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
+        )}
+      </g>
       {contourKeepShape && (
         <defs>
           <clipPath id={clipId} data-capture-clip="true">
@@ -273,6 +294,86 @@ export function CardCanvas({
           onChange={(next) => onChangeWord(index, next)}
         />
       ))}
+      {bgNudgeMode && onBackgroundOffsetChange && (
+        <BackgroundPanOverlay
+          svgRef={svgRef}
+          offsetXMm={backgroundOffsetXPt / MM}
+          offsetYMm={backgroundOffsetYPt / MM}
+          cardWidthPt={cardWidthPt}
+          cardHeightPt={cardHeightPt}
+          onChange={onBackgroundOffsetChange}
+        />
+      )}
     </svg>
+  )
+}
+
+// Full-card drag surface to pan the background while "Mută fundalul" is on. Modeled
+// on ContourOverlay's drag: client px → viewBox units → mm, Shift locks an axis, Y is
+// up-positive (PDF convention). Sitting last in the SVG it covers the words/contour,
+// so a pan drag never selects them; the parent clamps the resulting offset.
+function BackgroundPanOverlay({
+  svgRef,
+  offsetXMm,
+  offsetYMm,
+  cardWidthPt,
+  cardHeightPt,
+  onChange,
+}: {
+  svgRef: React.RefObject<SVGSVGElement | null>
+  offsetXMm: number
+  offsetYMm: number
+  cardWidthPt: number
+  cardHeightPt: number
+  onChange: (xMm: number, yMm: number) => void
+}) {
+  function handlePointerDown(e: ReactPointerEvent<SVGRectElement>) {
+    e.stopPropagation()
+    const svg = svgRef.current
+    if (!svg) return
+    const viewBox = svg.viewBox.baseVal
+    const rect = svg.getBoundingClientRect()
+    const scaleX = viewBox.width / rect.width
+    const scaleY = viewBox.height / rect.height
+    const startClientX = e.clientX
+    const startClientY = e.clientY
+    const startXMm = offsetXMm
+    const startYMm = offsetYMm
+    const target = e.currentTarget
+    target.setPointerCapture(e.pointerId)
+
+    function handleMove(ev: PointerEvent) {
+      let dxUser = (ev.clientX - startClientX) * scaleX
+      let dyUser = (ev.clientY - startClientY) * scaleY
+      // Holding Shift locks the drag to the dominant axis.
+      if (ev.shiftKey) {
+        if (Math.abs(dxUser) >= Math.abs(dyUser)) dyUser = 0
+        else dxUser = 0
+      }
+      // Y is up-positive, so a downward drag (dyUser > 0) decreases the offset.
+      onChange(startXMm + dxUser / MM, startYMm - dyUser / MM)
+    }
+
+    function handleUp(ev: PointerEvent) {
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', handleUp)
+      target.releasePointerCapture(ev.pointerId)
+    }
+
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+  }
+
+  return (
+    <rect
+      x={0}
+      y={0}
+      width={cardWidthPt}
+      height={cardHeightPt}
+      fill="transparent"
+      pointerEvents="all"
+      className="cursor-move"
+      onPointerDown={handlePointerDown}
+    />
   )
 }

@@ -282,6 +282,11 @@ export function buildJsOptions(
   // matching the pdf.js preview). See `background_flip_x`/`_y` in src/options.rs.
   backgroundFlipX?: boolean,
   backgroundFlipY?: boolean,
+  // Pan the print background within its card rectangle (mm; X right, Y up). Content
+  // shifted past the card edge is clipped; the vacated area stays transparent.
+  // Appended last to keep the existing positional call sites stable.
+  backgroundOffsetXMm?: number | null,
+  backgroundOffsetYMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -338,6 +343,8 @@ export function buildJsOptions(
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
     ...(backgroundRotation != null && backgroundRotation !== 0 ? { backgroundRotation } : {}),
+    ...(backgroundOffsetXMm != null && backgroundOffsetXMm !== 0 ? { backgroundOffsetXMm } : {}),
+    ...(backgroundOffsetYMm != null && backgroundOffsetYMm !== 0 ? { backgroundOffsetYMm } : {}),
     ...(backgroundFlipX ? { backgroundFlipX: true } : {}),
     ...(backgroundFlipY ? { backgroundFlipY: true } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),
