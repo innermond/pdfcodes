@@ -34,7 +34,13 @@ pub(crate) fn build_overlay(
     // page MediaBox, matching the standalone cut (see `content_path_bbox`). Keeps the
     // combine overlay aligned with the trimmed cut.
     trim_to_path: bool,
-) -> Result<(ObjectId, ObjectId), Box<dyn std::error::Error>> {
+    // Number of cells the print job's last (partial) sheet fills. When `Some(n)` with
+    // `0 < n < cards_per_page`, a second overlay Form tiling only those `n` cells is built
+    // and returned, so the caller can draw it on the last print page instead of the full
+    // grid — matching the standalone contour's extra partial page. `None`/full ⇒ no second
+    // overlay.
+    partial_cells: Option<usize>,
+) -> Result<(ObjectId, Option<ObjectId>, ObjectId), Box<dyn std::error::Error>> {
     let contour_doc = Document::load_mem(contour_background_bytes)?;
     let contour_pages = contour_doc.get_pages();
     // `get_pages()` is keyed by 1-based page number; pick the requested page
@@ -149,10 +155,37 @@ pub(crate) fn build_overlay(
     let bg_form_c = Stream::new(bg_xobj_dict_c, contour_content_bytes);
     let bg_form_c_id = doc.add_object(bg_form_c);
 
-    // Draw the contour background at every card position, plus the
-    // registration circles, exactly as `--contour` would lay them out.
+    // The full overlay draws the contour at every card position; when the last print
+    // sheet is partial, a second overlay draws it only at the filled cells.
+    let overlay_id = tile_overlay_form(doc, bg_form_c_id, layout, layout.cards_per_page, offset_x, offset_y)?;
+    let partial_overlay_id = match partial_cells {
+        Some(n) if n > 0 && n < layout.cards_per_page => {
+            Some(tile_overlay_form(doc, bg_form_c_id, layout, n, offset_x, offset_y)?)
+        }
+        _ => None,
+    };
+
+    // Optional Content Group marking the overlay as visible on screen
+    // but excluded when printing.
+    let ocg_id = super::ocg::add_nonprintable_ocg(doc, catalog_id, b"Contour overlay (non-printable)")?;
+
+    Ok((overlay_id, partial_overlay_id, ocg_id))
+}
+
+// Build one overlay Form XObject that draws the `BGC` contour at the first `cells` card
+// positions (row-major, via `layout.position`), plus the registration circles — exactly
+// as `--contour` would lay them out. `cells == cards_per_page` gives the full grid;
+// a smaller count gives the partial last-sheet overlay.
+fn tile_overlay_form(
+    doc: &mut Document,
+    bg_form_c_id: ObjectId,
+    layout: &CardLayout,
+    cells: usize,
+    offset_x: f32,
+    offset_y: f32,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut operations = Vec::new();
-    for i in 0..layout.cards_per_page {
+    for i in 0..cells {
         let (x, y) = layout.position(i);
 
         operations.push(Operation::new("q", vec![]));
@@ -181,11 +214,5 @@ pub(crate) fn build_overlay(
         res
     }));
     let overlay_form = Stream::new(overlay_dict, overlay_content.encode()?);
-    let overlay_id = doc.add_object(overlay_form);
-
-    // Optional Content Group marking the overlay as visible on screen
-    // but excluded when printing.
-    let ocg_id = super::ocg::add_nonprintable_ocg(doc, catalog_id, b"Contour overlay (non-printable)")?;
-
-    Ok((overlay_id, ocg_id))
+    Ok(doc.add_object(overlay_form))
 }

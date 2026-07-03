@@ -242,6 +242,7 @@ pub fn generate(
         contour_inset_mm: 0.0,
         contour_align_left_mm: None,
         contour_align_width_mm: None,
+        contour_total_cards: None,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -349,6 +350,10 @@ struct JsOptions {
     // resolved per code against the contour instead of the card. `None` ⇒ card frame.
     contour_align_left_mm: Option<f32>,
     contour_align_width_mm: Option<f32>,
+    // Total cards the print job will emit (the effective CSV row count), so the contour
+    // job can append an extra page cutting only the cards on a partially-filled last
+    // sheet. `None` ⇒ single full-grid page (legacy).
+    contour_total_cards: Option<u32>,
 }
 
 impl Default for JsOptions {
@@ -422,6 +427,7 @@ impl Default for JsOptions {
             contour_inset_mm: base.contour_inset_mm,
             contour_align_left_mm: base.contour_align_left_mm,
             contour_align_width_mm: base.contour_align_width_mm,
+            contour_total_cards: None,
         }
     }
 }
@@ -621,6 +627,7 @@ pub fn generate_with_options(
         contour_inset_mm: js_opts.contour_inset_mm,
         contour_align_left_mm: js_opts.contour_align_left_mm,
         contour_align_width_mm: js_opts.contour_align_width_mm,
+        contour_total_cards: js_opts.contour_total_cards.map(|n| n as usize),
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)

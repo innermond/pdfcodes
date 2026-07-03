@@ -209,6 +209,10 @@ pub struct Options {
     // contour instead of the card. `None` falls back to the card frame (0, card width).
     pub contour_align_left_mm: Option<f32>,
     pub contour_align_width_mm: Option<f32>,
+    // Total number of cards (CSV rows) the print job will emit, so the contour branch can
+    // tell whether the last printed sheet is partial and, if so, append an extra contour
+    // page cutting only the cards that exist on it. `None` ⇒ single full-grid page (legacy).
+    pub contour_total_cards: Option<usize>,
 }
 
 impl Options {
@@ -287,6 +291,7 @@ impl Default for Options {
             contour_inset_mm: 0.0,
             contour_align_left_mm: None,
             contour_align_width_mm: None,
+            contour_total_cards: None,
         }
     }
 }

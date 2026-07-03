@@ -15,6 +15,7 @@ import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_pol
 import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
+import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { offsetPolygons, polygonsBBox, polygonsToPathD } from './lib/contourOffset'
 import { polygonAspectExtent } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
@@ -851,73 +852,44 @@ export default function App() {
   const contourAvailHeightMm = effectiveCardHeightMm
   // Requested contour frame = the user's target (default = fill available),
   // clamped to the available space so it only shrinks when it no longer fits.
+  // A 90°/270° reorient swaps which card axis each design dimension lands on, so a preset
+  // shape's design request is clamped against the axis it occupies *after* the reorient.
+  const contourRotQuarter = (((contourRotation % 180) + 180) % 180) === 90
+  const designAvailWidthMm = contourRotQuarter ? contourAvailHeightMm : contourAvailWidthMm
+  const designAvailHeightMm = contourRotQuarter ? contourAvailWidthMm : contourAvailHeightMm
   const contourReqWidthMm = isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
-    ? Math.min(contourTargetWidthMm, contourAvailWidthMm) : contourAvailWidthMm
+    ? Math.min(contourTargetWidthMm, designAvailWidthMm) : designAvailWidthMm
   const contourReqHeightMm = isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
-    ? Math.min(contourTargetHeightMm, contourAvailHeightMm) : contourAvailHeightMm
-  // Effective contour size = the shape's tight box at the requested frame, so a
-  // circle stays a square of min(side) and can still travel along the card's
-  // longer axis. The preset shape is generated true at exactly this size;
-  // uploads keep their target/native size.
-  // Gated on `background` (the card), not `contourBackground`, so the effective
-  // size is known before the shape PDF is generated (the generator needs it).
+    ? Math.min(contourTargetHeightMm, designAvailHeightMm) : designAvailHeightMm
+  // The shape's tight box in its own (unrotated, design) frame — a circle stays a square of
+  // min(side), a polygon its natural box, etc. Gated on `background` (the card), not
+  // `contourBackground`, so the size is known before the shape PDF is generated.
   const contourShapeTightBox = contourSource === 'shape' && background
     ? contourBoxMm(shapeKind, contourReqWidthMm, contourReqHeightMm)
     : null
+  // Uploaded contour's host-frame size: its `contourBackground` render already bakes the
+  // reorient, so its native dims are host-frame (a target override is host-frame too).
+  const rawUploadWidthMm = contourBackground
+    ? (isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0 ? contourTargetWidthMm : contourBackground.widthPt / MM)
+    : 0
+  const rawUploadHeightMm = contourBackground
+    ? (isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0 ? contourTargetHeightMm : contourBackground.heightPt / MM)
+    : 0
+  // Host-frame contour box: a 90°/270° reorient swaps a preset shape's design-box sides (so a
+  // rotated 40×20 shape occupies 20×40 on the card); an uploaded contour's render is already
+  // host-frame. Every downstream consumer — preview rect, cut size, keep-region, footprint,
+  // Minimal crop, offset bounds — reads these, so the reorient stays consistent end-to-end.
   const effectiveContourWidthMm = contourShapeTightBox
-    ? contourShapeTightBox.w
-    : (contourBackground && isFinite(contourTargetWidthMm) && contourTargetWidthMm > 0
-        ? contourTargetWidthMm
-        : (contourBackground ? contourBackground.widthPt / MM : 0))
+    ? (contourRotQuarter ? contourShapeTightBox.h : contourShapeTightBox.w)
+    : Math.min(contourAvailWidthMm, rawUploadWidthMm)
   const effectiveContourHeightMm = contourShapeTightBox
-    ? contourShapeTightBox.h
-    : (contourBackground && isFinite(contourTargetHeightMm) && contourTargetHeightMm > 0
-        ? contourTargetHeightMm
-        : (contourBackground ? contourBackground.heightPt / MM : 0))
-
-  // Contour offset bounds: the contour stays inside the card; corner-anchored with
-  // slack (card − contour), centered by the fraction-preservation effect below.
-  const contourOffsetMaxXMm = Math.max(0, effectiveCardWidthMm - effectiveContourWidthMm)
-  const contourOffsetMaxYMm = Math.max(0, effectiveCardHeightMm - effectiveContourHeightMm)
-  const contourOffsetMinXMm = 0
-  const contourOffsetMinYMm = 0
-  // Re-clamp at point-of-use so a later contour/size change can't leave a stale
-  // out-of-range value reaching the preview or the generator.
-  const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
-  const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
-
-  // Drag / arrow-key nudge from the preview: clamp the raw offset into the in-card range
-  // (same clamp the offset sliders apply) before storing it.
-  function handleContourOffsetChange(xMm: number, yMm: number) {
-    setContourField('contourOffsetXMm', Math.min(Math.max(contourOffsetMinXMm, xMm), contourOffsetMaxXMm))
-    setContourField('contourOffsetYMm', Math.min(Math.max(contourOffsetMinYMm, yMm), contourOffsetMaxYMm))
-  }
-
-  // Preserve the contour offset's relative position across any resize of the card
-  // or the contour. We remember the previous bounds and re-express the offset at
-  // the same fraction of the new bounds, so: a centered contour (fraction 0.5)
-  // stays centered, and a nudged one keeps its proportional spot — instead of a
-  // stale absolute mm that ends up off-position when dimensions change (the
-  // reported bug). Only for preset shapes; uploaded contours keep their absolute
-  // placement. The offset itself is in the deps so its closure is never stale.
-  useEffect(() => {
-    if (contourSource !== 'shape' || !contourBackground) { prevContourBoundsRef.current = null; return }
-    const cur = { minX: contourOffsetMinXMm, maxX: contourOffsetMaxXMm, minY: contourOffsetMinYMm, maxY: contourOffsetMaxYMm }
-    const prev = prevContourBoundsRef.current
-    prevContourBoundsRef.current = cur
-    if (!prev) {
-      // First appearance of this contour: center it (offsets are corner-anchored).
-      setContourField('contourOffsetXMm', (cur.minX + cur.maxX) / 2)
-      setContourField('contourOffsetYMm', (cur.minY + cur.maxY) / 2)
-      return
-    }
-    const fx = prev.maxX > prev.minX ? (contourOffsetXMm - prev.minX) / (prev.maxX - prev.minX) : 0.5
-    const fy = prev.maxY > prev.minY ? (contourOffsetYMm - prev.minY) / (prev.maxY - prev.minY) : 0.5
-    const nx = cur.minX + fx * (cur.maxX - cur.minX)
-    const ny = cur.minY + fy * (cur.maxY - cur.minY)
-    if (Math.abs(nx - contourOffsetXMm) > 1e-6) setContourField('contourOffsetXMm', nx)
-    if (Math.abs(ny - contourOffsetYMm) > 1e-6) setContourField('contourOffsetYMm', ny)
-  }, [contourSource, contourBackground, contourOffsetXMm, contourOffsetYMm, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
+    ? (contourRotQuarter ? contourShapeTightBox.w : contourShapeTightBox.h)
+    : Math.min(contourAvailHeightMm, rawUploadHeightMm)
+  // The contour must fit inside the background: an uploaded contour larger than the card is
+  // clamped above (shapes are already clamped via `contourReq*`); flag it so the UI warns.
+  const uploadExceedsCard =
+    contourSource === 'upload' && contourBackground != null &&
+    (rawUploadWidthMm > contourAvailWidthMm + 1e-6 || rawUploadHeightMm > contourAvailHeightMm + 1e-6)
 
   // Cut region for the preview's "dim exterior" overlay. The preset shape now
   // fills its own (effective-size) frame, so the cut fills the contour rect: the
@@ -961,20 +933,114 @@ export default function App() {
   const activeContourCutShape = contourRedrawActive ? null : contourCutShape
   const activeInteriorMaskPath = contourRedrawActive ? redrawnMaskPath : contourInteriorMaskPath
   const activeContourRotation = contourRedrawActive ? 0 : contourRotation
-  // Unlike the 90° reorient (baked into the redrawn outline via `cutShape.rotation`), the
-  // free spin is *not* baked by the redraw (its `contourLocalPolygons` gets no `spinDeg`),
-  // so it must keep applying as a transform on top — otherwise redraw drops the rotation.
-  const activeContourSpinDeg = contourSpinDeg
+  // The contour's display footprint at a given spin (about the box center), offset 0.
+  // Unlike the 90° reorient (baked into the outline), the free spin is *not* baked by the
+  // redraw, so it always applies as a transform on top — otherwise redraw drops the spin.
+  const footprintAtSpin = (spin: number) =>
+    contourDisplayFootprintMm({
+      boxWidthMm: activeContourWidthMm,
+      boxHeightMm: activeContourHeightMm,
+      offsetXMm: 0,
+      offsetYMm: 0,
+      cutShape: activeContourCutShape,
+      interiorMaskPath: activeInteriorMaskPath,
+      spinDeg: spin,
+    })
+  const spinFits = (spin: number) => {
+    const f = footprintAtSpin(spin)
+    return !f || (f.widthMm <= effectiveCardWidthMm + 1e-6 && f.heightMm <= effectiveCardHeightMm + 1e-6)
+  }
+  // The contour must stay inside the background: a spin grows the footprint, so cap |spin|
+  // to the largest value (≤ the requested one) whose footprint still fits the card. The
+  // box already fits at 0°, so the fitting range is an interval around 0 — a binary search
+  // on the magnitude finds its edge. 0 when even an unspun (oversized) contour overflows.
+  const cappedContourSpinDeg = (() => {
+    if (!contourBackground || spinFits(contourSpinDeg)) return contourSpinDeg
+    const sign = Math.sign(contourSpinDeg) || 1
+    let lo = 0
+    let hi = Math.abs(contourSpinDeg)
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2
+      if (spinFits(sign * mid)) lo = mid
+      else hi = mid
+    }
+    return sign * lo
+  })()
+  const activeContourSpinDeg = cappedContourSpinDeg
   const activeContourTrimToPath = contourRedrawActive ? false : contourTrimToPath
   // The redrawn cut PDF is single-page, so its page pick is always 1.
   const activeContourPageNumber = contourRedrawActive ? 1 : contourPageNumber
-  // Placement: shift the base offset by the offset box's delta, then clamp to the card.
+
+  // Display footprint (spin folded in) at offset 0, so the offset bounds and the Minimal
+  // crop use the real spun extent, not the un-spun box. `left0/bottom0` is where the
+  // footprint sits relative to the box origin — negative when the spin reaches past it.
+  const contourFootprint0 = footprintAtSpin(cappedContourSpinDeg)
+  const footprintWidthMm = contourFootprint0?.widthMm ?? activeContourWidthMm
+  const footprintHeightMm = contourFootprint0?.heightMm ?? activeContourHeightMm
+  const footprintLeft0Mm = contourFootprint0?.leftMm ?? 0
+  const footprintBottom0Mm = contourFootprint0?.bottomMm ?? 0
+
+  // Offset bounds keep the whole footprint inside the card (corner-anchored). The box
+  // origin never goes negative (the standalone cut positions by it); when a spin makes the
+  // footprint reach past the box's left/bottom, `min` rises so the footprint's own edge —
+  // not the box's — lands on the card edge.
+  const contourOffsetMinXMm = Math.max(0, -footprintLeft0Mm)
+  const contourOffsetMaxXMm = Math.max(contourOffsetMinXMm, effectiveCardWidthMm - footprintWidthMm - footprintLeft0Mm)
+  const contourOffsetMinYMm = Math.max(0, -footprintBottom0Mm)
+  const contourOffsetMaxYMm = Math.max(contourOffsetMinYMm, effectiveCardHeightMm - footprintHeightMm - footprintBottom0Mm)
+  // Re-clamp at point-of-use so a later contour/size/spin change can't leave a stale
+  // out-of-range value reaching the preview or the generator.
+  const clampedContourOffsetXMm = Math.min(Math.max(contourOffsetMinXMm, contourOffsetXMm), contourOffsetMaxXMm)
+  const clampedContourOffsetYMm = Math.min(Math.max(contourOffsetMinYMm, contourOffsetYMm), contourOffsetMaxYMm)
+
+  // Placement: shift the base offset by the offset box's delta, then clamp into the range.
   const activeContourOffsetXMm = contourRedrawActive
-    ? Math.min(Math.max(0, clampedContourOffsetXMm + redrawnFootprint!.offsetDeltaXMm), Math.max(0, effectiveCardWidthMm - activeContourWidthMm))
+    ? Math.min(Math.max(contourOffsetMinXMm, clampedContourOffsetXMm + redrawnFootprint!.offsetDeltaXMm), contourOffsetMaxXMm)
     : clampedContourOffsetXMm
   const activeContourOffsetYMm = contourRedrawActive
-    ? Math.min(Math.max(0, clampedContourOffsetYMm + redrawnFootprint!.offsetDeltaYMm), Math.max(0, effectiveCardHeightMm - activeContourHeightMm))
+    ? Math.min(Math.max(contourOffsetMinYMm, clampedContourOffsetYMm + redrawnFootprint!.offsetDeltaYMm), contourOffsetMaxYMm)
     : clampedContourOffsetYMm
+
+  // The footprint at its actual placement (card mm, y-up), used as the Minimal crop window
+  // so the crop envelops the spun contour instead of the un-spun box.
+  const contourFootprintLeftMm = activeContourOffsetXMm + footprintLeft0Mm
+  const contourFootprintBottomMm = activeContourOffsetYMm + footprintBottom0Mm
+
+  // Drag / arrow-key nudge from the preview: clamp the raw offset into the in-card range.
+  function handleContourOffsetChange(xMm: number, yMm: number) {
+    setContourField('contourOffsetXMm', Math.min(Math.max(contourOffsetMinXMm, xMm), contourOffsetMaxXMm))
+    setContourField('contourOffsetYMm', Math.min(Math.max(contourOffsetMinYMm, yMm), contourOffsetMaxYMm))
+  }
+
+  // The contour was reduced to keep it inside the background — spin capped and/or an
+  // oversized uploaded contour clamped to the card — so the UI can warn the user.
+  const contourCappedToFit =
+    contourBackground != null &&
+    (Math.abs(cappedContourSpinDeg - contourSpinDeg) > 1e-3 || uploadExceedsCard)
+
+  // Preserve the contour offset's relative position across any resize of the card or the
+  // contour. We remember the previous bounds and re-express the offset at the same fraction
+  // of the new bounds, so a centered contour stays centered and a nudged one keeps its
+  // proportional spot. Only for preset shapes; uploaded contours keep their absolute
+  // placement. The offset itself is in the deps so its closure is never stale.
+  useEffect(() => {
+    if (contourSource !== 'shape' || !contourBackground) { prevContourBoundsRef.current = null; return }
+    const cur = { minX: contourOffsetMinXMm, maxX: contourOffsetMaxXMm, minY: contourOffsetMinYMm, maxY: contourOffsetMaxYMm }
+    const prev = prevContourBoundsRef.current
+    prevContourBoundsRef.current = cur
+    if (!prev) {
+      // First appearance of this contour: center it (offsets are corner-anchored).
+      setContourField('contourOffsetXMm', (cur.minX + cur.maxX) / 2)
+      setContourField('contourOffsetYMm', (cur.minY + cur.maxY) / 2)
+      return
+    }
+    const fx = prev.maxX > prev.minX ? (contourOffsetXMm - prev.minX) / (prev.maxX - prev.minX) : 0.5
+    const fy = prev.maxY > prev.minY ? (contourOffsetYMm - prev.minY) / (prev.maxY - prev.minY) : 0.5
+    const nx = cur.minX + fx * (cur.maxX - cur.minX)
+    const ny = cur.minY + fy * (cur.maxY - cur.minY)
+    if (Math.abs(nx - contourOffsetXMm) > 1e-6) setContourField('contourOffsetXMm', nx)
+    if (Math.abs(ny - contourOffsetYMm) > 1e-6) setContourField('contourOffsetYMm', ny)
+  }, [contourSource, contourBackground, contourOffsetXMm, contourOffsetYMm, contourOffsetMinXMm, contourOffsetMaxXMm, contourOffsetMinYMm, contourOffsetMaxYMm])
 
   // The contour's bounding rectangle in card mm (y-up from the card bottom), fed to the
   // align helpers so the `contour-*` alignment options frame a code against the contour
@@ -2063,9 +2129,10 @@ export default function App() {
   // as the background is resized) vs. an explicit/frozen size (then preserved).
   const contourShapeTargetAutoRef = useRef(true)
 
-  // Generate a preset-shape contour PDF at its EFFECTIVE (clamped, true) size. The
-  // shape is generated unrotated (dims swapped for 90/270) and
-  // `renderPdfBackground` re-applies `contourRotation`, exactly as before.
+  // Generate a preset-shape contour PDF in its own (design) frame, then let
+  // `renderPdfBackground` re-apply `contourRotation`. `effectiveContour*` is the host box
+  // (already swapped for 90/270), so swapping it back here recovers the design dims — the
+  // shape is drawn true-size and the reorient rotates it onto the swapped host footprint.
   useEffect(() => {
     if (contourSource !== 'shape' || !background) return
     const rot = (((contourRotation % 360) + 360) % 360)
@@ -2226,12 +2293,11 @@ export default function App() {
   // card, no circles) when a cut is produced and its size is known.
   const cuttableWidthMm = pageOptions.hostWidthMm - 2 * pageOptions.circleDiameterMm
   const cuttableHeightMm = pageOptions.hostHeightMm - 2 * pageOptions.circleDiameterMm
-  // Contour box in host orientation (a 90°/270° cut rotation swaps its sides). The
-  // redrawn (offset) contour already has rotation baked into its footprint, so it
-  // needs no swap — its active size is the host-oriented box.
-  const contourRotatedQuarter = ((contourRotation % 180) + 180) % 180 === 90 && !contourRedrawActive
-  const contourFitWidthMm = contourRotatedQuarter ? activeContourHeightMm : activeContourWidthMm
-  const contourFitHeightMm = contourRotatedQuarter ? activeContourWidthMm : activeContourHeightMm
+  // The contour's real host-oriented footprint (the 90° reorient and the free spin are
+  // both folded into `footprintWidth/HeightMm`), so the cut-zone check uses the true
+  // extent rather than the un-rotated box.
+  const contourFitWidthMm = footprintWidthMm
+  const contourFitHeightMm = footprintHeightMm
   const cutExceedsSheet =
     needsContourInput &&
     !pageOptions.noCut &&
@@ -2339,10 +2405,16 @@ export default function App() {
       const contourOffsetActive = activeContourOffsetXMm !== 0 || activeContourOffsetYMm !== 0
       const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
-      // Minimal sends the contour offset (the crop origin) and the contour box even
-      // without combine; the box is the last two args.
+      // Minimal sends the contour offset (the crop origin) and the contour window even
+      // without combine; the window is the last two args. The window and its origin are
+      // the contour's *display footprint* (rotation + spin folded in), so the crop
+      // envelops the actually-drawn contour rather than the un-spun box. The combine
+      // overlay ignores this offset in minimal mode (Rust places it at bleed/2), so
+      // sending the footprint origin here is safe for both.
+      const cropOriginXMm = (combine || minimal) ? (minimal ? contourFootprintLeftMm : activeContourOffsetXMm) : undefined
+      const cropOriginYMm = (combine || minimal) ? (minimal ? contourFootprintBottomMm : activeContourOffsetYMm) : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? contourSpinDeg : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, cropOriginXMm, cropOriginYMm, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? footprintWidthMm : undefined, minimal ? footprintHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? activeContourSpinDeg : undefined)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
@@ -2459,14 +2531,14 @@ export default function App() {
         words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, samplePageOptions, false,
         bgWidthOverride, bgHeightOverride, backgroundPageNumber,
         sampleCombine ? activeContourPageNumber : undefined,
-        (sampleCombine || sampleMinimal) ? activeContourOffsetXMm : undefined,
-        (sampleCombine || sampleMinimal) ? activeContourOffsetYMm : undefined,
+        (sampleCombine || sampleMinimal) ? (sampleMinimal ? contourFootprintLeftMm : activeContourOffsetXMm) : undefined,
+        (sampleCombine || sampleMinimal) ? (sampleMinimal ? contourFootprintBottomMm : activeContourOffsetYMm) : undefined,
         undefined, undefined, bgRotation,
         sampleCombine ? contourWidthOverride : undefined,
         sampleCombine ? contourHeightOverride : undefined,
         sampleCombine ? activeContourRotation : undefined,
-        sampleMinimal ? activeContourWidthMm : undefined,
-        sampleMinimal ? activeContourHeightMm : undefined,
+        sampleMinimal ? footprintWidthMm : undefined,
+        sampleMinimal ? footprintHeightMm : undefined,
         activeContourTrimToPath,
         contourKeepRegion,
         correctOverflow,
@@ -2478,7 +2550,7 @@ export default function App() {
         bgOffsetXMm, bgOffsetYMm,
         bgBackdropColor ? colorToCss(bgBackdropColor) : '',
         contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null,
-        bgSpinDeg, sampleCombine ? contourSpinDeg : undefined,
+        bgSpinDeg, sampleCombine ? activeContourSpinDeg : undefined,
       )
 
       await ensureWasmInit()
@@ -3570,6 +3642,16 @@ export default function App() {
                 ⚠ Conturul ({contourFitWidthMm.toFixed(1)} × {contourFitHeightMm.toFixed(1)} mm) nu încape în zona de
                 tăiere a paginii ({Math.max(0, cuttableWidthMm).toFixed(1)} × {Math.max(0, cuttableHeightMm).toFixed(1)}{' '}
                 mm = pagina minus cercurile de reglaj). Mărește pagina, micșorează diametrul cercurilor sau conturul.
+              </p>
+            )}
+
+            {contourCappedToFit && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                ⚠ Conturul a fost redus ca să încapă în fundal ({effectiveCardWidthMm.toFixed(1)} ×{' '}
+                {effectiveCardHeightMm.toFixed(1)} mm): {Math.abs(cappedContourSpinDeg - contourSpinDeg) > 1e-3
+                  ? `rotația a fost limitată la ${cappedContourSpinDeg.toFixed(0)}° (din ${contourSpinDeg.toFixed(0)}°)`
+                  : 'dimensiunea a fost micșorată'}
+                . Micșorează conturul sau rotația ca să folosești valoarea dorită.
               </p>
             )}
 

@@ -317,35 +317,57 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         };
         let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
         let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
+
+        // Total cards the print job will emit: the explicit option wins (the web worker
+        // passes the effective row count), else the CSV record count, else a full page.
+        // Drives both the cutting-time metrics and the extra last-page contour below.
+        let total_cards = opts.contour_total_cards
+            .or_else(|| csv_data.map(count_csv_records))
+            .unwrap_or(layout.cards_per_page);
+
         let cutting_metrics = if opts.measure_paths && !opts.contour_as_grid {
             let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
             // The contour PDF is a single sheet, but the cutting machine
             // will run it once per sheet needed to cover every CSV record.
-            let total_cards = match csv_data {
-                Some(data) => count_csv_records(data),
-                None => layout.cards_per_page,
-            };
             let num_pages = (total_cards as f32 / layout.cards_per_page as f32).ceil().max(1.0);
             Some(compute_cutting_metrics(&path_metrics, opts, total_cards, num_pages, layout.pitch_mm()))
         } else {
             None
         };
 
-        let page_id = if opts.contour_as_grid {
-            let stroke = extract_stroke_color(&bg_content_bytes)
-                .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
-            contour::build_grid_contour_page(&mut doc, pages_id, catalog_id, &layout, stroke, offset_x, offset_y)?
-        } else {
-            contour::build_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, offset_x, offset_y)?
-        };
+        // Pages to emit. Normally one full-grid page (reused for every printed sheet).
+        // When the print job's row count is known and its last sheet is only partially
+        // filled, add — or, if the whole job is a single partial sheet, substitute — a
+        // page whose cut paths cover only the cards that exist on that last sheet, so the
+        // cutter doesn't trace empty cells. `rem` cells fill the last sheet row-major.
+        let cpp = layout.cards_per_page;
+        let rem = if cpp > 0 { total_cards % cpp } else { 0 };
+        let has_full_sheet = opts.contour_total_cards.is_none() || total_cards > cpp || rem == 0;
 
+        let mut page_ids: Vec<lopdf::ObjectId> = Vec::new();
+        if has_full_sheet {
+            let page_id = if opts.contour_as_grid {
+                let stroke = extract_stroke_color(&bg_content_bytes)
+                    .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
+                contour::build_grid_contour_page(&mut doc, pages_id, catalog_id, &layout, stroke, offset_x, offset_y)?
+            } else {
+                contour::build_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, offset_x, offset_y)?
+            };
+            page_ids.push(page_id);
+        }
+        if opts.contour_total_cards.is_some() && rem > 0 {
+            let partial = contour::build_partial_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, rem, offset_x, offset_y)?;
+            page_ids.push(partial);
+        }
+
+        let count = page_ids.len() as i64;
         let pages_obj = doc.get_object(pages_id)?;
         let pages_dict_orig = pages_obj.as_dict()?;
         let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
-        kids.push(Object::Reference(page_id));
+        kids.extend(page_ids.into_iter().map(Object::Reference));
         let mut pages_dict = pages_dict_orig.clone();
         pages_dict.set("Kids", Object::Array(kids));
-        pages_dict.set("Count", Object::Integer(1));
+        pages_dict.set("Count", Object::Integer(count));
         doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
 
         let mut pdf = Vec::new();
@@ -424,7 +446,16 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         } else {
             (opts.contour_offset_x_mm * crate::geometry::MM, opts.contour_offset_y_mm * crate::geometry::MM)
         };
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path)?)
+        // Cells the last (partial) print sheet fills, so `build_overlay` can also build a
+        // partial overlay for it. Batches are page-aligned, so this call's `card_ids`
+        // remainder is the true partial count of the last page in this PDF.
+        let cpp = tile_layout.cards_per_page;
+        let last_len = if card_ids.is_empty() { 0 } else {
+            let r = card_ids.len() % cpp;
+            if r == 0 { cpp } else { r }
+        };
+        let partial_cells = (last_len > 0 && last_len < cpp).then_some(last_len);
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path, partial_cells)?)
     } else {
         None
     };
@@ -467,7 +498,14 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         operations.extend(tile_layout.registration_circles());
 
         let mut properties = Dictionary::new();
-        if let Some((overlay_id, ocg_id)) = overlay {
+        if let Some((full_id, partial_id, ocg_id)) = overlay {
+            // Only the last chunk can be partial; use the partial overlay there so the
+            // last print page's alignment view shows just the cards that exist.
+            let overlay_id = if chunk.len() < tile_layout.cards_per_page {
+                partial_id.unwrap_or(full_id)
+            } else {
+                full_id
+            };
             xobjects.set("OV", Object::Reference(overlay_id));
             properties.set("MC0", Object::Reference(ocg_id));
 
@@ -789,6 +827,47 @@ mod tests {
 
         assert!(out.pdf.starts_with(b"%PDF"));
         assert!(out.cards_per_page >= 1);
+    }
+
+    #[test]
+    fn contour_appends_partial_page_for_last_sheet() {
+        // Count the `Do /BG` operations (one per drawn cell) on a page.
+        fn bg_cells(doc: &Document, page_id: lopdf::ObjectId) -> usize {
+            let parsed = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap();
+            parsed.operations.iter().filter(|op| {
+                op.operator == "Do" && matches!(op.operands.first(), Some(Object::Name(n)) if n == b"BG")
+            }).count()
+        }
+
+        let base = Options { contour: true, ..Options::default() };
+        let cpp = generate_pdf(None, BACKGROUND_PDF, None, &base)
+            .expect("contour generation should succeed").cards_per_page;
+        assert!(cpp > 3, "test needs a grid with more than 3 cells per page (got {cpp})");
+
+        // A job that spills onto a partial last sheet (a full sheet + 3 cards) →
+        // full page (cpp cells) + an extra partial page cutting only the 3 real cards.
+        let spill = Options { contour_total_cards: Some(cpp + 3), ..base.clone() };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &spill).unwrap();
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let pages: Vec<_> = doc.get_pages().into_values().collect();
+        assert_eq!(pages.len(), 2, "spill job should yield a full page plus a partial page");
+        assert_eq!(bg_cells(&doc, pages[0]), cpp, "first page is the full grid");
+        assert_eq!(bg_cells(&doc, pages[1]), 3, "second page cuts only the last sheet's 3 cards");
+
+        // An exact multiple of a full sheet → single full page, no extra.
+        let exact = Options { contour_total_cards: Some(cpp * 2), ..base.clone() };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &exact).unwrap();
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        assert_eq!(doc.get_pages().len(), 1, "a full last sheet needs no extra page");
+
+        // The whole job is a single partial sheet (< one page) → only the partial page,
+        // no wasted full grid.
+        let sub = Options { contour_total_cards: Some(3), ..base };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &sub).unwrap();
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let pages: Vec<_> = doc.get_pages().into_values().collect();
+        assert_eq!(pages.len(), 1, "a sub-page job is a single partial page");
+        assert_eq!(bg_cells(&doc, pages[0]), 3, "and it cuts only the 3 existing cards");
     }
 
     #[test]
@@ -1404,6 +1483,42 @@ mod tests {
             .expect("combine generation should succeed");
 
         assert!(out.pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn combine_overlay_last_page_uses_partial_grid() {
+        // The `OV` overlay Form on a print page, and its count of `Do /BGC` cells.
+        fn page_overlay(doc: &Document, page_id: lopdf::ObjectId) -> (lopdf::ObjectId, usize) {
+            let ov_ref = doc.get_object(page_id).unwrap().as_dict().unwrap()
+                .get(b"Resources").unwrap().as_dict().unwrap()
+                .get(b"XObject").unwrap().as_dict().unwrap()
+                .get(b"OV").unwrap().as_reference().unwrap();
+            let ov = doc.get_object(ov_ref).unwrap().as_stream().unwrap();
+            let content = ov.decompressed_content().unwrap_or_else(|_| ov.content.clone());
+            let parsed = Content::decode(&content).unwrap();
+            let cells = parsed.operations.iter().filter(|op| {
+                op.operator == "Do" && matches!(op.operands.first(), Some(Object::Name(n)) if n == b"BGC")
+            }).count();
+            (ov_ref, cells)
+        }
+
+        let base = Options { combine: true, ..Options::default() };
+        let cpp = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(BACKGROUND_PDF), &base)
+            .expect("combine generation should succeed").cards_per_page;
+        assert!(cpp > 2, "test needs more than 2 cells per page (got {cpp})");
+
+        // One full page plus 2 cards → the 2nd print page's overlay must tile only 2 cells.
+        let csv: String = (0..cpp + 2).map(|i| format!("C{i} {i}\n")).collect();
+        let out = generate_pdf(Some(&csv), BACKGROUND_PDF, Some(BACKGROUND_PDF), &base).unwrap();
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let pages: Vec<_> = doc.get_pages().into_values().collect();
+        assert_eq!(pages.len(), 2, "cpp + 2 cards should span two print pages");
+
+        let (full_ov, full_cells) = page_overlay(&doc, pages[0]);
+        let (partial_ov, partial_cells) = page_overlay(&doc, pages[1]);
+        assert_eq!(full_cells, cpp, "first page overlay tiles the full grid");
+        assert_eq!(partial_cells, 2, "last page overlay tiles only the 2 existing cards");
+        assert_ne!(full_ov, partial_ov, "the partial overlay is a distinct Form XObject");
     }
 
     #[test]

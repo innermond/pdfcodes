@@ -62,6 +62,65 @@ pub(crate) fn build_contour_page(
     Ok(doc.add_object(Object::Dictionary(page_dict)))
 }
 
+// Build the "extra" contour page for a partially-filled last print sheet: the same
+// host page as `build_contour_page`, but drawing the contour only in the first `count`
+// cells — the cells the print job actually fills on its last sheet — so the cutter
+// doesn't trace paths over empty cells. Cells are placed row-major via
+// `layout.position(i)` (NOT serpentine), matching how the print fills an incomplete last
+// row from the left (mod.rs lays cards out with `CardLayout::position`). Registration
+// circles are drawn identically (non-printable). Returns the new page's object ID.
+pub(crate) fn build_partial_contour_page(
+    doc: &mut Document,
+    pages_id: ObjectId,
+    catalog_id: ObjectId,
+    bg_form_id: ObjectId,
+    layout: &CardLayout,
+    count: usize,
+    offset_x: f32,
+    offset_y: f32,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let mut operations = Vec::new();
+
+    for i in 0..count {
+        let (x, y) = layout.position(i);
+
+        operations.push(Operation::new("q", vec![]));
+        operations.push(Operation::new("cm", vec![
+            Object::Real(1.0), Object::Real(0.0),
+            Object::Real(0.0), Object::Real(1.0),
+            Object::Real(x + offset_x), Object::Real(y + offset_y),
+        ]));
+        operations.push(Operation::new("Do", vec![Object::Name(b"BG".to_vec())]));
+        operations.push(Operation::new("Q", vec![]));
+    }
+
+    let circle_ocg = wrap_registration_circles(doc, catalog_id, &mut operations, layout)?;
+
+    let content = Content { operations };
+    let content_stream = Stream::new(Dictionary::new(), content.encode()?);
+    let content_id = doc.add_object(content_stream);
+
+    let mut page_dict = Dictionary::new();
+    page_dict.set("Type", Object::Name(b"Page".to_vec()));
+    page_dict.set("Parent", Object::Reference(pages_id));
+    page_dict.set("MediaBox", Object::Array(layout.host_box.clone()));
+    page_dict.set("Contents", Object::Reference(content_id));
+    page_dict.set("Resources", Object::Dictionary({
+        let mut res = Dictionary::new();
+        res.set("XObject", Object::Dictionary({
+            let mut xobjs = Dictionary::new();
+            xobjs.set("BG", Object::Reference(bg_form_id));
+            xobjs
+        }));
+        if let Some(ocg_id) = circle_ocg {
+            res.set("Properties", circle_properties(ocg_id));
+        }
+        res
+    }));
+
+    Ok(doc.add_object(Object::Dictionary(page_dict)))
+}
+
 // Append the layout's registration circles to `operations`, wrapped in an
 // `/OC /OC0 BDC … EMC` marked-content sequence tied to a fresh non-printable OCG.
 // Returns the OCG id (for the page's Resources /Properties), or `None` when the
