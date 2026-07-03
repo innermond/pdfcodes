@@ -1,13 +1,44 @@
 // Points per millimeter, matching `MM` in src/geometry.rs.
 export const MM = 72 / 25.4
 
-export type Align = 'left' | 'center' | 'right'
+// Horizontal alignment mode. `left`/`center`/`right` frame the code in the card
+// rectangle; the `contour-*` variants frame it in the contour's bounding rectangle
+// instead. Card variants are resolved by the generator (from the card width) when
+// `xMm` is null; the `contour-*` variants are resolved here to an explicit `xMm`
+// (like `VAlign`), since the generator doesn't know the contour rectangle.
+export type Align =
+  | 'left' | 'center' | 'right'
+  | 'contour-left' | 'contour-center' | 'contour-right'
 
-// Vertical alignment of a word's glyph box within the card. Unlike `Align`
-// (handled by the generator), this is resolved in the preview to a concrete
-// baseline `yMm`, so the generated PDF needs no extra support. `custom` means
-// the baseline was positioned manually (drag, arrow keys, or the Y field).
-export type VAlign = 'top' | 'middle' | 'bottom' | 'custom'
+// Vertical alignment of a word's glyph box. `top`/`middle`/`bottom` frame it in the
+// card; the `contour-*` variants frame it in the contour's bounding rectangle. Unlike
+// the card `Align`, every variant here is resolved in the preview to a concrete
+// baseline `yMm`, so the generated PDF needs no extra support. `custom` means the
+// baseline was positioned manually (drag, arrow keys, or the Y field).
+export type VAlign =
+  | 'top' | 'middle' | 'bottom'
+  | 'contour-top' | 'contour-middle' | 'contour-bottom'
+  | 'custom'
+
+// The frame a contour alignment measures against: the contour's bounding rectangle
+// in card mm (y-up from the card bottom). `null` ⇒ no contour, fall back to the card.
+export interface ContourAlignRect {
+  leftMm: number
+  bottomMm: number
+  widthMm: number
+  heightMm: number
+}
+
+// Strip a contour alignment down to its base card alignment (the value the generator
+// understands). Card modes pass through unchanged.
+export function baseAlign(align: Align): 'left' | 'center' | 'right' {
+  switch (align) {
+    case 'contour-left': return 'left'
+    case 'contour-center': return 'center'
+    case 'contour-right': return 'right'
+    case 'left': case 'center': case 'right': return align
+  }
+}
 
 // CSS `mix-blend-mode` values, used to composite the contour background.
 export type BlendMode =
@@ -117,12 +148,13 @@ export function verticalAlignYMm(
   fontFamily: string,
   cardHeightMm: number,
   safeMarginMm: number,
+  contour?: ContourAlignRect | null,
 ): number {
   if (valign === 'custom') return word.yMm
 
   let ascentMm = (word.fontSizePt * 0.8) / MM
   let descentMm = (word.fontSizePt * 0.2) / MM
-  const ctx = document.createElement('canvas').getContext('2d')
+  const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
   if (ctx) {
     ctx.font = `${word.fontSizePt}px ${fontFamily}`
     const tm = ctx.measureText(word.text || 'X')
@@ -130,13 +162,22 @@ export function verticalAlignYMm(
     descentMm = tm.fontBoundingBoxDescent / MM
   }
 
+  // Frame the code against the contour rectangle for the `contour-*` modes, else the
+  // card. A missing contour falls back to the card so the option stays safe.
+  const isContour = valign === 'contour-top' || valign === 'contour-middle' || valign === 'contour-bottom'
+  const bottomMm = isContour && contour ? contour.bottomMm : 0
+  const heightMm = isContour && contour ? contour.heightMm : cardHeightMm
+
   switch (valign) {
     case 'top':
-      return cardHeightMm - safeMarginMm - ascentMm
+    case 'contour-top':
+      return bottomMm + heightMm - safeMarginMm - ascentMm
     case 'bottom':
-      return safeMarginMm + descentMm
+    case 'contour-bottom':
+      return bottomMm + safeMarginMm + descentMm
     case 'middle':
-      return cardHeightMm / 2 - (ascentMm - descentMm) / 2
+    case 'contour-middle':
+      return bottomMm + heightMm / 2 - (ascentMm - descentMm) / 2
   }
 }
 
@@ -151,9 +192,10 @@ export function horizontalAlignXMm(
   fontFamily: string,
   cardWidthMm: number,
   safeMarginMm: number,
+  contour?: ContourAlignRect | null,
 ): number {
   let textWidthMm = (word.fontSizePt * 0.6 * Math.max(1, word.text.length)) / MM
-  const ctx = document.createElement('canvas').getContext('2d')
+  const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
   if (ctx) {
     ctx.font = `${word.fontSizePt}px ${fontFamily}`
     const charCount = Math.max(1, word.text.length)
@@ -161,13 +203,22 @@ export function horizontalAlignXMm(
     textWidthMm = measured / MM
   }
 
+  // Frame the code against the contour rectangle for the `contour-*` modes, else the
+  // card. A missing contour falls back to the card so the option stays safe.
+  const isContour = align === 'contour-left' || align === 'contour-center' || align === 'contour-right'
+  const leftMm = isContour && contour ? contour.leftMm : 0
+  const widthMm = isContour && contour ? contour.widthMm : cardWidthMm
+
   switch (align) {
     case 'left':
-      return safeMarginMm
+    case 'contour-left':
+      return leftMm + safeMarginMm
     case 'center':
-      return cardWidthMm / 2 - textWidthMm / 2
+    case 'contour-center':
+      return leftMm + widthMm / 2 - textWidthMm / 2
     case 'right':
-      return cardWidthMm - textWidthMm - safeMarginMm
+    case 'contour-right':
+      return leftMm + widthMm - textWidthMm - safeMarginMm
   }
 }
 
@@ -287,6 +338,9 @@ export function buildJsOptions(
   // Appended last to keep the existing positional call sites stable.
   backgroundOffsetXMm?: number | null,
   backgroundOffsetYMm?: number | null,
+  // Solid color ("#RRGGBB" or "c:m:y:k") painted behind the background to fill the
+  // zones a pan vacates (and any transparent pixels); empty/null keeps them transparent.
+  backgroundBackdropColor?: string | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -305,10 +359,14 @@ export function buildJsOptions(
     travelSpeedMmS: page.travelSpeedMmS,
     fontSizes: new Float32Array(words.map((w) => w.fontSizePt)),
     textYMm: new Float32Array(words.map((w) => w.yMm)),
-    textXMm: words.every((w) => w.xMm !== null)
-      ? new Float32Array(words.map((w) => w.xMm!))
-      : new Float32Array(),
-    align: words.map((w) => w.align),
+    // Per-word X: an explicit `xMm` (custom drag or a resolved `contour-*` alignment)
+    // or `NaN` = "defer to `align`" for card left/center/right, which the generator
+    // then measures itself (see `resolve_x` in src/generate/cards.rs). Sent per word so
+    // one explicit X never forces the others; the generator ignores `align` for finite X.
+    textXMm: new Float32Array(words.map((w) => (w.xMm ?? NaN))),
+    // Only the base card alignment reaches the generator; `contour-*` resolves to `xMm`
+    // above, so map it to its base (harmless — ignored when the word carries a finite X).
+    align: words.map((w) => baseAlign(w.align)),
     // "Combină paginile" overlays the contour onto the print pages (view-only,
     // non-printing). It works in both grid (decupare) and no-cut mode.
     combine: page.combine,
@@ -345,6 +403,7 @@ export function buildJsOptions(
     ...(backgroundRotation != null && backgroundRotation !== 0 ? { backgroundRotation } : {}),
     ...(backgroundOffsetXMm != null && backgroundOffsetXMm !== 0 ? { backgroundOffsetXMm } : {}),
     ...(backgroundOffsetYMm != null && backgroundOffsetYMm !== 0 ? { backgroundOffsetYMm } : {}),
+    ...(backgroundBackdropColor ? { backgroundBackdropColor } : {}),
     ...(backgroundFlipX ? { backgroundFlipX: true } : {}),
     ...(backgroundFlipY ? { backgroundFlipY: true } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),

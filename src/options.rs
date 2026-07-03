@@ -133,6 +133,10 @@ pub struct Options {
     // Form's BBox; the vacated area stays transparent. Default 0 (no pan).
     pub background_offset_x_mm: f32,
     pub background_offset_y_mm: f32,
+    // Solid color painted behind the (possibly panned) background, filling the whole
+    // card so the zones a pan vacates — and any transparent pixels of the background —
+    // show this color instead of nothing. `None` keeps them transparent. Default None.
+    pub background_backdrop_color: Option<TextColor>,
     // "Non-decupare" (no-cut) mode: skip imposition entirely. Each card (or the
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
@@ -246,6 +250,7 @@ impl Default for Options {
             background_flip_y: false,
             background_offset_x_mm: 0.0,
             background_offset_y_mm: 0.0,
+            background_backdrop_color: None,
             no_cut: false,
             contour_offset_x_mm: 0.0,
             contour_offset_y_mm: 0.0,

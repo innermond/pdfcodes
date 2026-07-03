@@ -13,7 +13,7 @@ import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview }
 import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import type { PresetResources } from './lib/presetBundle'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, type Align, type BlendMode, type PageOptions, type VAlign, type WordStyle } from './lib/options'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { offsetPolygons, polygonsBBox, polygonsToPathD } from './lib/contourOffset'
 import { polygonAspectExtent } from './lib/contourMask'
@@ -289,6 +289,9 @@ interface BgConfig {
   // the preview (see CardCanvas / BackgroundPanOverlay).
   bgOffsetXMm: number
   bgOffsetYMm: number
+  // Solid color ("c:m:y:k" or null) painted behind the background to fill the zones a
+  // pan vacates (and any transparent pixels); null keeps them transparent.
+  bgBackdropColor: string | null
 }
 
 const defaultBgConfig: BgConfig = {
@@ -308,6 +311,7 @@ const defaultBgConfig: BgConfig = {
   bgFlipY: false,
   bgOffsetXMm: 0,
   bgOffsetYMm: 0,
+  bgBackdropColor: null,
 }
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
@@ -545,7 +549,7 @@ export default function App() {
     simpleBgWidthMm, simpleBgHeightMm, simpleBgColor,
     genBgWidthMm, genBgHeightMm, genBgImageSource, genBgImageUrl,
     bgTargetWidthMm, bgTargetHeightMm, bgRotation, bgFlipX, bgFlipY,
-    bgOffsetXMm, bgOffsetYMm,
+    bgOffsetXMm, bgOffsetYMm, bgBackdropColor,
   } = bgConfig
   function setBgField<K extends keyof BgConfig>(key: K, value: BgConfig[K]) {
     setBgConfig((prev) => ({ ...prev, [key]: value }))
@@ -960,6 +964,18 @@ export default function App() {
     ? Math.min(Math.max(0, clampedContourOffsetYMm + redrawnFootprint!.offsetDeltaYMm), Math.max(0, effectiveCardHeightMm - activeContourHeightMm))
     : clampedContourOffsetYMm
 
+  // The contour's bounding rectangle in card mm (y-up from the card bottom), fed to the
+  // align helpers so the `contour-*` alignment options frame a code against the contour
+  // instead of the card. `null` when no contour is loaded → those options fall back to
+  // the card frame. Recomputed as the contour moves/resizes so alignments re-snap.
+  const contourAlignRect: ContourAlignRect | null = useMemo(
+    () =>
+      activeContourBackground && activeContourWidthMm > 0 && activeContourHeightMm > 0
+        ? { leftMm: activeContourOffsetXMm, bottomMm: activeContourOffsetYMm, widthMm: activeContourWidthMm, heightMm: activeContourHeightMm }
+        : null,
+    [activeContourBackground, activeContourWidthMm, activeContourHeightMm, activeContourOffsetXMm, activeContourOffsetYMm],
+  )
+
   // The cut's "keep" region in card coordinates (PDF points, y-up), handed to the
   // generator so Step 5's overflow warning flags codes the cut would slice instead
   // of testing against the page. Present whenever a contour is loaded; null (no
@@ -1091,14 +1107,33 @@ export default function App() {
       let changed = false
       const next = prev.map((word, index) => {
         if (word.valign === 'custom') return word
-        const yMm = verticalAlignYMm(word.valign, word, fontFamilyForWord(fonts, index), cardHeightMm, safeMarginMm)
+        const yMm = verticalAlignYMm(word.valign, word, fontFamilyForWord(fonts, index), cardHeightMm, safeMarginMm, contourAlignRect)
         if (Math.abs(yMm - word.yMm) < 1e-6) return word
         changed = true
         return { ...word, yMm }
       })
       return changed ? next : prev
     })
-  }, [fonts, background, effectiveCardHeightMm, safeMarginMm, words])
+  }, [fonts, background, effectiveCardHeightMm, safeMarginMm, words, contourAlignRect])
+
+  // Horizontal analog of the vertical re-snap above, but only for the `contour-*`
+  // alignment modes: they're resolved here to an explicit `xMm` (the generator can't
+  // frame against the contour). Card left/center/right keep `xMm === null` and stay
+  // generator-resolved. Re-runs when the contour rect, text, font or margin change.
+  useEffect(() => {
+    if (!background || !(effectiveCardWidthMm > 0)) return
+    setWords((prev) => {
+      let changed = false
+      const next = prev.map((word, index) => {
+        if (word.align !== 'contour-left' && word.align !== 'contour-center' && word.align !== 'contour-right') return word
+        const xMm = horizontalAlignXMm(word.align, word, fontFamilyForWord(fonts, index), effectiveCardWidthMm, safeMarginMm, contourAlignRect)
+        if (word.xMm !== null && Math.abs(xMm - word.xMm) < 1e-6) return word
+        changed = true
+        return { ...word, xMm }
+      })
+      return changed ? next : prev
+    })
+  }, [fonts, background, effectiveCardWidthMm, safeMarginMm, words, contourAlignRect])
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
@@ -2131,7 +2166,17 @@ export default function App() {
   }
 
   function updateWord(index: number, next: Partial<WordStyle>) {
-    setWords((prev) => prev.map((w, i) => (i === index ? { ...w, ...next } : w)))
+    setWords((prev) => prev.map((w, i) => {
+      if (i !== index) return w
+      const merged = { ...w, ...next }
+      // Setting an explicit finite X (a horizontal drag or the "X (mm)" field) on a
+      // contour-aligned word freezes it as a custom position: strip the `contour-*`
+      // mode to its base so the horizontal re-snap effect stops overriding the value.
+      if (next.xMm != null && Number.isFinite(next.xMm) && next.align === undefined && merged.align.startsWith('contour-')) {
+        merged.align = baseAlign(merged.align)
+      }
+      return merged
+    }))
   }
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
@@ -2284,7 +2329,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '')
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
@@ -2418,6 +2463,7 @@ export default function App() {
         backgroundSource === 'upload' ? bgFlipX : false,
         backgroundSource === 'upload' ? bgFlipY : false,
         bgOffsetXMm, bgOffsetYMm,
+        bgBackdropColor ? colorToCss(bgBackdropColor) : '',
       )
 
       await ensureWasmInit()
@@ -2854,8 +2900,16 @@ export default function App() {
                   <NumberField label="Decalaj fundal X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
                   <NumberField label="Decalaj fundal Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
                 </div>
+                <ColorField
+                  label="Culoare zone libere"
+                  value={bgBackdropColor}
+                  onChange={(v) => setBgField('bgBackdropColor', v)}
+                  allowNone
+                  noneLabel="transparent"
+                  hideWhenNull
+                />
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  Deplasează fundalul în cadrul cardului; zonele rămase libere sunt transparente. Activează „Mută fundalul” pentru a trage direct în previzualizare.
+                  Deplasează fundalul în cadrul cardului; zonele rămase libere sunt transparente (sau umplute cu culoarea aleasă mai sus). Activează „Mută fundalul” pentru a trage direct în previzualizare.
                 </p>
               </div>
             )}
@@ -3179,29 +3233,37 @@ export default function App() {
                 <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
                 <SelectField<Align | 'custom'>
                   label="Aliniere orizontală"
-                  warning={selected.xMm !== null ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
-                  value={selected.xMm !== null ? 'custom' : selected.align}
-                  onChange={(v) =>
-                    v === 'custom'
-                      ? updateWord(selectedIndex, {
-                          xMm:
-                            selected.xMm ??
-                            (effectiveCardWidthMm > 0
-                              ? horizontalAlignXMm(
-                                  selected.align,
-                                  selected,
-                                  fontFamilyForWord(fonts, selectedIndex),
-                                  effectiveCardWidthMm,
-                                  safeMarginMm,
-                                )
-                              : 0),
-                        })
-                      : updateWord(selectedIndex, { align: v, xMm: null })
-                  }
+                  warning={selected.xMm !== null && !selected.align.startsWith('contour-') ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
+                  value={selected.align.startsWith('contour-') ? selected.align : selected.xMm !== null ? 'custom' : selected.align}
+                  onChange={(v) => {
+                    if (v === 'custom') {
+                      // Freeze at the current on-screen position and drop any contour mode.
+                      const xMm = selected.xMm ??
+                        (effectiveCardWidthMm > 0
+                          ? horizontalAlignXMm(selected.align, selected, fontFamilyForWord(fonts, selectedIndex), effectiveCardWidthMm, safeMarginMm, contourAlignRect)
+                          : 0)
+                      updateWord(selectedIndex, { align: baseAlign(selected.align), xMm })
+                    } else if (v.startsWith('contour-')) {
+                      // Contour modes resolve to an explicit xMm (kept in sync by the effect).
+                      const xMm = effectiveCardWidthMm > 0
+                        ? horizontalAlignXMm(v, selected, fontFamilyForWord(fonts, selectedIndex), effectiveCardWidthMm, safeMarginMm, contourAlignRect)
+                        : 0
+                      updateWord(selectedIndex, { align: v, xMm })
+                    } else {
+                      updateWord(selectedIndex, { align: v, xMm: null })
+                    }
+                  }}
                   options={[
                     { value: 'left', label: 'stânga' },
                     { value: 'center', label: 'centru' },
                     { value: 'right', label: 'dreapta' },
+                    ...(contourAlignRect || selected.align.startsWith('contour-')
+                      ? ([
+                          { value: 'contour-left', label: 'stânga (contur)' },
+                          { value: 'contour-center', label: 'centru (contur)' },
+                          { value: 'contour-right', label: 'dreapta (contur)' },
+                        ] as const)
+                      : []),
                     { value: 'custom', label: 'la punct fix' },
                   ]}
                 />
@@ -3219,6 +3281,7 @@ export default function App() {
                             fontFamilyForWord(fonts, selectedIndex),
                             background.heightPt / MM,
                             safeMarginMm,
+                            contourAlignRect,
                           )
                         : selected.yMm,
                     })
@@ -3227,6 +3290,13 @@ export default function App() {
                     { value: 'top', label: 'sus' },
                     { value: 'middle', label: 'mijloc' },
                     { value: 'bottom', label: 'jos' },
+                    ...(contourAlignRect || selected.valign.startsWith('contour-')
+                      ? ([
+                          { value: 'contour-top', label: 'sus (contur)' },
+                          { value: 'contour-middle', label: 'mijloc (contur)' },
+                          { value: 'contour-bottom', label: 'jos (contur)' },
+                        ] as const)
+                      : []),
                     { value: 'custom', label: 'la punct fix' },
                   ]}
                 />
@@ -3664,10 +3734,9 @@ export default function App() {
                   >
                     <CardCanvas
                       backgroundImageUrl={background.imageUrl}
-                      transparentBackdrop={backgroundSource === 'generate' && genBgTransparent}
-                      backdropColor={genBgBackdropColor}
                       backgroundOffsetXPt={bgOffsetXMm * MM}
                       backgroundOffsetYPt={bgOffsetYMm * MM}
+                      backgroundBackdropColor={bgBackdropColor}
                       bgNudgeMode={bgNudgeMode}
                       onBackgroundOffsetChange={handleBackgroundOffsetChange}
                       cardWidthPt={effectiveCardWidthMm * MM}

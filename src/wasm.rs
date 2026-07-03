@@ -218,6 +218,7 @@ pub fn generate(
         background_flip_y: false,
         background_offset_x_mm: 0.0,
         background_offset_y_mm: 0.0,
+        background_backdrop_color: None,
         no_cut: false,
         contour_offset_x_mm: 0.0,
         contour_offset_y_mm: 0.0,
@@ -308,6 +309,9 @@ struct JsOptions {
     background_flip_y: bool,
     background_offset_x_mm: f32,
     background_offset_y_mm: f32,
+    // Solid backdrop for the zones a pan vacates ("#RRGGBB" or "c:m:y:k"); empty keeps
+    // them transparent.
+    background_backdrop_color: String,
     no_cut: bool,
     contour_offset_x_mm: f32,
     contour_offset_y_mm: f32,
@@ -383,6 +387,7 @@ impl Default for JsOptions {
             background_flip_y: false,
             background_offset_x_mm: base.background_offset_x_mm,
             background_offset_y_mm: base.background_offset_y_mm,
+            background_backdrop_color: String::new(),
             no_cut: false,
             contour_offset_x_mm: base.contour_offset_x_mm,
             contour_offset_y_mm: base.contour_offset_y_mm,
@@ -508,6 +513,12 @@ pub fn generate_with_options(
         .collect::<Result<Vec<Option<TextColor>>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let background_backdrop_color = if js_opts.background_backdrop_color.trim().is_empty() {
+        None
+    } else {
+        parse_color_or_none(&js_opts.background_backdrop_color).map_err(|e| JsError::new(&e))?
+    };
+
     let text_background_blend_modes = js_opts.text_background_blend_modes.iter()
         .map(|s| s.parse::<BlendMode>())
         .collect::<Result<Vec<BlendMode>, String>>()
@@ -569,6 +580,7 @@ pub fn generate_with_options(
         background_flip_y: js_opts.background_flip_y,
         background_offset_x_mm: js_opts.background_offset_x_mm,
         background_offset_y_mm: js_opts.background_offset_y_mm,
+        background_backdrop_color,
         no_cut: js_opts.no_cut,
         contour_offset_x_mm: js_opts.contour_offset_x_mm,
         contour_offset_y_mm: js_opts.contour_offset_y_mm,

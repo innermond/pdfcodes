@@ -27,10 +27,9 @@ export type ContourCutShape = {
 
 export function CardCanvas({
   backgroundImageUrl,
-  transparentBackdrop = false,
-  backdropColor = null,
   backgroundOffsetXPt = 0,
   backgroundOffsetYPt = 0,
+  backgroundBackdropColor = null,
   bgNudgeMode = false,
   onBackgroundOffsetChange,
   cardWidthPt,
@@ -57,20 +56,15 @@ export function CardCanvas({
   onChangeWord,
 }: {
   backgroundImageUrl: string | null
-  // Draw a gray checkerboard behind the background image (instead of the card's
-  // white) so transparent regions of a generated image background read as
-  // transparent, the way graphics editors indicate an alpha channel.
-  transparentBackdrop?: boolean
-  // Solid backdrop fill (CMYK color string) shown behind a transparent image
-  // instead of the checkerboard; `null` keeps the checkerboard. Mirrors the fill
-  // the generator bakes into the exported PDF, and shows it instantly while the
-  // WASM rebuild is in flight.
-  backdropColor?: string | null
   // Pan the background image within the card (right/up positive, PDF points). The
   // SVG viewport clips overflow; the vacated area reveals the card white / checker /
   // backdrop. Mirrors the offset the generator bakes into the exported PDF.
   backgroundOffsetXPt?: number
   backgroundOffsetYPt?: number
+  // Solid color (CMYK string) painted over the whole card behind the background, so a
+  // pan's vacated zones (and any transparent pixels) show it instead of the card white.
+  // `null` keeps them transparent. Mirrors the fill baked into the exported PDF.
+  backgroundBackdropColor?: string | null
   // "Mută fundalul": show a drag surface to pan the background and suspend word /
   // contour interaction so a pan drag never selects a word.
   bgNudgeMode?: boolean
@@ -206,27 +200,32 @@ export function CardCanvas({
       className="isolate w-full rounded border border-gray-200 bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700"
       style={{ aspectRatio: `${cardWidthPt} / ${cardHeightPt}` }}
     >
-      {/* The background layer (its transparency backdrop + the image) pans as one:
-          the baked checker/color travels with the image, while the vacated card area
-          reveals the SVG's white — mirroring the export, where the pan leaves true
-          transparency (prints white). The SVG viewport clips whatever slides out.
-          Y is negated: PDF offset is up-positive, SVG y grows downward. */}
+      {/* Fixed full-card fill behind everything: a pan's vacated zones (and transparent
+          pixels) show this color instead of the card white. Mirrors the baked PDF fill. */}
+      {/* Card base, drawn behind the (pannable) background so any transparent zone shows
+          through it: the pan-backdrop color when set, else a gray checkerboard that marks
+          transparency the way image editors do. It covers both the background image's own
+          alpha (preserved via /SMask) and the area a pan vacates, for every source. This
+          is a preview aid only — the export leaves those zones truly transparent (white on
+          print) or filled with the chosen color. */}
+      {backgroundBackdropColor ? (
+        <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={colorToCss(backgroundBackdropColor)} />
+      ) : (
+        <>
+          <defs>
+            <pattern id={checkerId} width={checkerCellPt * 2} height={checkerCellPt * 2} patternUnits="userSpaceOnUse">
+              <rect x={0} y={0} width={checkerCellPt * 2} height={checkerCellPt * 2} fill="#e9e9e9" />
+              <rect x={0} y={0} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
+              <rect x={checkerCellPt} y={checkerCellPt} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
+            </pattern>
+          </defs>
+          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={`url(#${checkerId})`} />
+        </>
+      )}
+      {/* The background image pans within the card; the SVG viewport clips whatever slides
+          out and the vacated area reveals the card base above. Y is negated: PDF offset is
+          up-positive, SVG y grows downward. */}
       <g transform={`translate(${backgroundOffsetXPt} ${-backgroundOffsetYPt})`}>
-        {transparentBackdrop && backdropColor && (
-          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={colorToCss(backdropColor)} />
-        )}
-        {transparentBackdrop && !backdropColor && (
-          <>
-            <defs>
-              <pattern id={checkerId} width={checkerCellPt * 2} height={checkerCellPt * 2} patternUnits="userSpaceOnUse">
-                <rect x={0} y={0} width={checkerCellPt * 2} height={checkerCellPt * 2} fill="#e9e9e9" />
-                <rect x={0} y={0} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
-                <rect x={checkerCellPt} y={checkerCellPt} width={checkerCellPt} height={checkerCellPt} fill="#cfcfcf" />
-              </pattern>
-            </defs>
-            <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill={`url(#${checkerId})`} />
-          </>
-        )}
         {backgroundImageUrl && (
           <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
         )}

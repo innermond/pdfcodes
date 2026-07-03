@@ -242,13 +242,22 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // BBox (card_box) clips whatever slides past the edge, leaving the vacated area
     // transparent. Only the drawn copy is offset — the `bg_content_bytes` used below
     // for path measurement / keep-region stays put, so the cut geometry is unaffected.
-    let bg_form_content = if opts.background_offset_x_mm != 0.0 || opts.background_offset_y_mm != 0.0 {
+    let panned_bg = if opts.background_offset_x_mm != 0.0 || opts.background_offset_y_mm != 0.0 {
         let ox = opts.background_offset_x_mm * crate::geometry::MM;
         let oy = opts.background_offset_y_mm * crate::geometry::MM;
         [format!("q 1 0 0 1 {ox:.4} {oy:.4} cm\n").into_bytes(), bg_content_bytes.clone(), b"\nQ".to_vec()].concat()
     } else {
         bg_content_bytes.clone()
     };
+    // Optional solid backdrop painted behind the (possibly panned) background, filling
+    // the whole card so the zones a pan vacates — and any transparent pixels of the
+    // background — show this color instead of nothing. Clipped to the card by the BBox.
+    let backdrop_prefix: Vec<u8> = match opts.background_backdrop_color {
+        Some(TextColor::Rgb(r, g, b)) => format!("q {r:.4} {g:.4} {b:.4} rg 0 0 {card_w:.4} {card_h:.4} re f Q\n").into_bytes(),
+        Some(TextColor::Cmyk(c, m, y, k)) => format!("q {c:.4} {m:.4} {y:.4} {k:.4} k 0 0 {card_w:.4} {card_h:.4} re f Q\n").into_bytes(),
+        None => Vec::new(),
+    };
+    let bg_form_content = [backdrop_prefix, panned_bg].concat();
     let bg_form = Stream::new(bg_xobj_dict, bg_form_content);
     let bg_form_id = doc.add_object(bg_form);
 
@@ -669,6 +678,27 @@ mod tests {
         let needle = format!("1 0 0 1 {ox:.4} {oy:.4} cm");
         let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if String::from_utf8_lossy(&s.content).contains(&needle)));
         assert!(found, "expected the background Form to contain the translate {needle:?}");
+    }
+
+    #[test]
+    fn background_backdrop_color_paints_a_fill_behind_the_background() {
+        let bg = rotated_page_pdf(200.0, 100.0, 0);
+        let plain = generate_pdf(Some("1A 1\n"), &bg, None, &Options { no_cut: true, ..Options::default() }).unwrap().pdf;
+        let filled = generate_pdf(Some("1A 1\n"), &bg, None, &Options {
+            background_backdrop_color: Some(crate::color::TextColor::Rgb(1.0, 0.0, 0.0)),
+            no_cut: true,
+            ..Options::default()
+        }).unwrap().pdf;
+        assert_ne!(plain, filled, "a backdrop color must change the output");
+
+        // The background Form carries a red fill spanning the card (200x100), painted
+        // before the background so vacated/transparent zones show it.
+        let doc = Document::load_mem(&filled).unwrap();
+        let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if {
+            let c = String::from_utf8_lossy(&s.content);
+            c.contains("1.0000 0.0000 0.0000 rg") && c.contains("0 0 200.0000 100.0000 re f")
+        }));
+        assert!(found, "expected a full-card red fill in the background Form");
     }
 
     #[test]

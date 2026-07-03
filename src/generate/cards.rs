@@ -155,8 +155,12 @@ fn word_text_width(advance_per_pt: f32, char_spacing: f32, num_chars: f32, fs: f
 
 fn resolve_x(align: TextAlign, text_x_mm: Option<f32>, card_w: f32, safe_margin: f32, text_width: f32) -> f32 {
     match text_x_mm {
-        Some(x_mm) => x_mm * MM,
-        None => match align {
+        // A finite explicit X wins (custom drag, or a JS-resolved contour alignment).
+        // A non-finite value (NaN) is the web app's "defer to `align`" sentinel — sent
+        // per word so an explicit X on one word doesn't force all of them (see the
+        // `textXMm` array in options.ts), while card left/center/right stay measured here.
+        Some(x_mm) if x_mm.is_finite() => x_mm * MM,
+        _ => match align {
             TextAlign::Left => safe_margin,
             TextAlign::Center => (card_w - text_width) / 2.0,
             TextAlign::Right => card_w - text_width - safe_margin,
@@ -745,6 +749,19 @@ mod tests {
             configured_fs,
             text_x_mm: None,
         }
+    }
+
+    #[test]
+    fn resolve_x_uses_finite_explicit_but_falls_back_to_align_on_nan() {
+        // Finite explicit X wins, in points.
+        assert_eq!(resolve_x(TextAlign::Center, Some(10.0), 100.0, 2.0, 20.0), 10.0 * MM);
+        // NaN is the "defer to align" sentinel → same as None (here: centered).
+        let centered = resolve_x(TextAlign::Center, None, 100.0, 2.0, 20.0);
+        assert_eq!(resolve_x(TextAlign::Center, Some(f32::NAN), 100.0, 2.0, 20.0), centered);
+        assert_eq!(centered, (100.0 - 20.0) / 2.0);
+        // NaN + left/right still resolve against the card + margin.
+        assert_eq!(resolve_x(TextAlign::Left, Some(f32::NAN), 100.0, 2.0, 20.0), 2.0);
+        assert_eq!(resolve_x(TextAlign::Right, Some(f32::NAN), 100.0, 2.0, 20.0), 100.0 - 20.0 - 2.0);
     }
 
     #[test]
