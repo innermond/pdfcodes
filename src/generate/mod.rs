@@ -226,6 +226,49 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         _ => (orig_w, orig_h, bg_content_bytes_raw),
     };
 
+    // For the standalone cut, a free spin must not clip the outline: bake the spin
+    // (about the box center) into the content, keep the exact rotated equivalent of
+    // the old box clip (a `W n` clip of the un-spun box, so junk outside the contour
+    // page still can't leak), and re-origin to the spun contour's *display footprint*
+    // — web-computed (`contour_footprint_*_mm`, tight to the actual outline), falling
+    // back to the spun box rectangle's bbox. The footprint becomes the card box, so
+    // the cut page/cells match the minimal print window (which the web also sizes to
+    // the footprint) and the placement offsets (footprint-origin based) line up with
+    // the preview. The print background instead keeps the clip-to-card spin below.
+    let mut spin_form_bbox: Option<(f32, f32, f32, f32)> = None;
+    let (card_w, card_h, bg_content_bytes) = match (opts.contour && opts.background_spin_deg != 0.0)
+        .then(|| crate::geometry::word_transform(opts.background_spin_deg, false, false, card_w / 2.0, card_h / 2.0))
+        .flatten()
+    {
+        Some(m) => {
+            let (bx0, by0, bx1, by1) = crate::geometry::rect_transform_bbox(&m, card_w, card_h);
+            let (fl, fb, fw, fh) = match (opts.contour_footprint_left_mm, opts.contour_footprint_bottom_mm, opts.contour_footprint_width_mm, opts.contour_footprint_height_mm) {
+                (Some(l), Some(b), Some(w), Some(h)) if w > 0.0 && h > 0.0 => {
+                    let mm = crate::geometry::MM;
+                    (l * mm, b * mm, w * mm, h * mm)
+                }
+                _ => (bx0, by0, bx1 - bx0, by1 - by0),
+            };
+            let content = [
+                format!("q 1 0 0 1 {:.4} {:.4} cm\n", -fl, -fb).into_bytes(),
+                format!("q {:.6} {:.6} {:.6} {:.6} {:.4} {:.4} cm\n", m[0], m[1], m[2], m[3], m[4], m[5]).into_bytes(),
+                format!("0 0 {card_w:.4} {card_h:.4} re W n\n").into_bytes(),
+                bg_content_bytes,
+                b"\nQ\nQ".to_vec(),
+            ].concat();
+            // The Form BBox must cover both the footprint box and the whole spun
+            // rectangle (the stroke can overhang the tight footprint), re-origined.
+            spin_form_bbox = Some((
+                (bx0 - fl).min(0.0),
+                (by0 - fb).min(0.0),
+                (bx1 - fl).max(fw),
+                (by1 - fb).max(fh),
+            ));
+            (fw, fh, content)
+        }
+        None => (card_w, card_h, bg_content_bytes),
+    };
+
     // Compute grid layout on the host page.
     let layout = CardLayout::compute(card_w, card_h, opts);
 
@@ -233,7 +276,14 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let mut bg_xobj_dict = Dictionary::new();
     bg_xobj_dict.set("Type", Object::Name(b"XObject".to_vec()));
     bg_xobj_dict.set("Subtype", Object::Name(b"Form".to_vec()));
-    bg_xobj_dict.set("BBox", Object::Array(layout.card_box.clone()));
+    // A spun cut's BBox is the spun rectangle's extent (the baked `W n` clip does the
+    // precise clipping), so the outline the spin pushes past the footprint box — e.g.
+    // the stroke overhang — isn't shaved off by the BBox.
+    let bg_bbox = match spin_form_bbox {
+        Some((x0, y0, x1, y1)) => vec![Object::Real(x0), Object::Real(y0), Object::Real(x1), Object::Real(y1)],
+        None => layout.card_box.clone(),
+    };
+    bg_xobj_dict.set("BBox", Object::Array(bg_bbox));
     if let Ok(resources) = bg_page_dict.get(b"Resources") {
         bg_xobj_dict.set("Resources", resources.clone());
     }
@@ -251,7 +301,9 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         let oy = opts.background_offset_y_mm * crate::geometry::MM;
         transform.extend_from_slice(format!("1 0 0 1 {ox:.4} {oy:.4} cm\n").as_bytes());
     }
-    if opts.background_spin_deg != 0.0 {
+    // The cut job's spin is already baked into `bg_content_bytes` above (footprint
+    // re-origin); only the print background spins here, clipped to the card.
+    if opts.background_spin_deg != 0.0 && !opts.contour {
         if let Some(m) = crate::geometry::word_transform(opts.background_spin_deg, false, false, card_w / 2.0, card_h / 2.0) {
             transform.extend_from_slice(format!("{:.6} {:.6} {:.6} {:.6} {:.4} {:.4} cm\n", m[0], m[1], m[2], m[3], m[4], m[5]).as_bytes());
         }
@@ -455,7 +507,11 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             if r == 0 { cpp } else { r }
         };
         let partial_cells = (last_len > 0 && last_len < cpp).then_some(last_len);
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path, partial_cells)?)
+        let spin_footprint = match (opts.contour_footprint_left_mm, opts.contour_footprint_bottom_mm, opts.contour_footprint_width_mm, opts.contour_footprint_height_mm) {
+            (Some(l), Some(b), Some(w), Some(h)) => Some((l, b, w, h)),
+            _ => None,
+        };
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, spin_footprint, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path, partial_cells)?)
     } else {
         None
     };
@@ -754,6 +810,48 @@ mod tests {
         let needle = format!("{cos:.6} {sin:.6} {:.6} {cos:.6} {e:.4}", -sin);
         let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if String::from_utf8_lossy(&s.content).contains(&needle)));
         assert!(found, "expected the background Form to contain the spin matrix {needle:?}");
+    }
+
+    #[test]
+    fn contour_spin_reorigins_the_cut_to_its_footprint() {
+        // A 200x100 contour spun 30°: the cut page must grow to the spun footprint
+        // (no clipping at the un-spun box) and the content must carry the box clip,
+        // the spin about the box center, and the footprint re-origin.
+        let bg = rotated_page_pdf(200.0, 100.0, 0);
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        let m = crate::geometry::word_transform(30.0, false, false, 100.0, 50.0).unwrap();
+        let (bx0, by0, bx1, by1) = crate::geometry::rect_transform_bbox(&m, 200.0, 100.0);
+        let mm = crate::geometry::MM;
+        let out = generate_pdf(None, &bg, None, &Options {
+            contour: true,
+            no_cut: true,
+            background_spin_deg: 30.0,
+            contour_footprint_left_mm: Some(bx0 / mm),
+            contour_footprint_bottom_mm: Some(by0 / mm),
+            contour_footprint_width_mm: Some((bx1 - bx0) / mm),
+            contour_footprint_height_mm: Some((by1 - by0) / mm),
+            ..Options::default()
+        }).expect("spun contour generation should succeed");
+
+        // Page = footprint: 200·cos30 + 100·sin30 ≈ 223.2 wide, 200·sin30 + 100·cos30 ≈ 186.6 tall.
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        assert!((num(&mb[2]) - (bx1 - bx0)).abs() < 0.5, "page width should be the spun footprint, got {}", num(&mb[2]));
+        assert!((num(&mb[3]) - (by1 - by0)).abs() < 0.5, "page height should be the spun footprint, got {}", num(&mb[3]));
+
+        // The contour Form carries: the re-origin translate, the spin matrix, and the
+        // un-spun box kept as a precise clip path.
+        let needle_translate = format!("1 0 0 1 {:.4} {:.4} cm", -bx0, -by0);
+        let (sin, cos) = 30f32.to_radians().sin_cos();
+        let e = 100.0 - (cos * 100.0 + (-sin) * 50.0);
+        let needle_spin = format!("{cos:.6} {sin:.6} {:.6} {cos:.6} {e:.4}", -sin);
+        let needle_clip = "0 0 200.0000 100.0000 re W n";
+        let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if {
+            let c = String::from_utf8_lossy(&s.content);
+            c.contains(&needle_translate) && c.contains(&needle_spin) && c.contains(needle_clip)
+        }));
+        assert!(found, "expected the cut Form to bake re-origin + spin + box clip");
     }
 
     #[test]
@@ -1519,6 +1617,38 @@ mod tests {
         assert_eq!(full_cells, cpp, "first page overlay tiles the full grid");
         assert_eq!(partial_cells, 2, "last page overlay tiles only the 2 existing cards");
         assert_ne!(full_ov, partial_ov, "the partial overlay is a distinct Form XObject");
+    }
+
+    #[test]
+    fn combine_overlay_spin_reorigins_to_the_footprint() {
+        // Spin the overlaid contour 30° with a web-sent footprint: the contour Form
+        // must bake the footprint re-origin, the spin, and the un-spun box kept as a
+        // precise clip — the same treatment the standalone cut gets, so both land at
+        // the same spot un-clipped.
+        let mm = crate::geometry::MM;
+        let w = 15.0 * mm; // BACKGROUND_PDF is a 15x15mm page
+        let m = crate::geometry::word_transform(30.0, false, false, w / 2.0, w / 2.0).unwrap();
+        let (bx0, by0, bx1, by1) = crate::geometry::rect_transform_bbox(&m, w, w);
+        let opts = Options {
+            combine: true,
+            contour_spin_deg: 30.0,
+            contour_footprint_left_mm: Some(bx0 / mm),
+            contour_footprint_bottom_mm: Some(by0 / mm),
+            contour_footprint_width_mm: Some((bx1 - bx0) / mm),
+            contour_footprint_height_mm: Some((by1 - by0) / mm),
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(BACKGROUND_PDF), &opts)
+            .expect("combine with spin should generate");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let needle_translate = format!("1 0 0 1 {:.4} {:.4} cm", -bx0, -by0);
+        let needle_clip = format!("0 0 {w:.4} {w:.4} re W n");
+        let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if {
+            let c = s.decompressed_content().unwrap_or_else(|_| s.content.clone());
+            let c = String::from_utf8_lossy(&c);
+            c.contains(&needle_translate) && c.contains(&needle_clip)
+        }));
+        assert!(found, "expected the overlay contour Form to bake re-origin + spin + box clip");
     }
 
     #[test]

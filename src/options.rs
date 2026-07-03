@@ -170,6 +170,18 @@ pub struct Options {
     // combine overlay; rotates the cut outline (and its keep-region) without changing the
     // contour's target size. Default 0.
     pub contour_spin_deg: f32,
+    // The spun contour's *display footprint*: the tight bounding box of its outline
+    // after the spin, relative to the un-spun contour box's origin (mm, y-up;
+    // left/bottom go negative when the spin reaches past the box). Computed by the web
+    // from the actual outline and consumed only when the relevant spin is nonzero: the
+    // standalone cut and the combine overlay re-origin the spun contour to this
+    // footprint and treat it as the contour box, so nothing is clipped and the cut
+    // page/cells stay aligned with the minimal print window (which the web also sizes
+    // to the footprint). `None` falls back to the spun box rectangle's bounding box.
+    pub contour_footprint_left_mm: Option<f32>,
+    pub contour_footprint_bottom_mm: Option<f32>,
+    pub contour_footprint_width_mm: Option<f32>,
+    pub contour_footprint_height_mm: Option<f32>,
     // Trim an uploaded contour to the tight bounding box of its drawn path instead of
     // its page MediaBox, so a cut line sitting inside a larger page (with whitespace
     // margins) is sized/placed by the artwork, not the page. Default: false (use the
@@ -280,6 +292,10 @@ impl Default for Options {
             contour_target_height_mm: None,
             contour_rotation: 0,
             contour_spin_deg: 0.0,
+            contour_footprint_left_mm: None,
+            contour_footprint_bottom_mm: None,
+            contour_footprint_width_mm: None,
+            contour_footprint_height_mm: None,
             contour_trim_to_path: false,
             minimal: false,
             minimal_width_mm: None,

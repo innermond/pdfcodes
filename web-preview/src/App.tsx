@@ -974,7 +974,9 @@ export default function App() {
   // Display footprint (spin folded in) at offset 0, so the offset bounds and the Minimal
   // crop use the real spun extent, not the un-spun box. `left0/bottom0` is where the
   // footprint sits relative to the box origin — negative when the spin reaches past it.
-  const contourFootprint0 = footprintAtSpin(cappedContourSpinDeg)
+  // Only engaged for a nonzero spin: at 0° the box IS the footprint (keeps the un-spun
+  // behavior byte-identical, including untrimmed uploads whose outline sits inside it).
+  const contourFootprint0 = cappedContourSpinDeg !== 0 ? footprintAtSpin(cappedContourSpinDeg) : null
   const footprintWidthMm = contourFootprint0?.widthMm ?? activeContourWidthMm
   const footprintHeightMm = contourFootprint0?.heightMm ?? activeContourHeightMm
   const footprintLeft0Mm = contourFootprint0?.leftMm ?? 0
@@ -2402,28 +2404,32 @@ export default function App() {
       // "canvas" so the no-cut cut page is sized to the background (a smaller,
       // offset contour then cuts in the right place); otherwise leave it so the
       // contour keeps its own page size (unchanged behaviour).
-      const contourOffsetActive = activeContourOffsetXMm !== 0 || activeContourOffsetYMm !== 0
+      // The cut's drawing unit is the spun *footprint* (Rust re-origins a spun contour
+      // to it), so the cut and the overlay place by the footprint origin — identical
+      // to the box offset at 0° spin.
+      const contourOffsetActive = contourFootprintLeftMm !== 0 || contourFootprintBottomMm !== 0
       const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
       // Minimal sends the contour offset (the crop origin) and the contour window even
       // without combine; the window is the last two args. The window and its origin are
       // the contour's *display footprint* (rotation + spin folded in), so the crop
-      // envelops the actually-drawn contour rather than the un-spun box. The combine
-      // overlay ignores this offset in minimal mode (Rust places it at bleed/2), so
-      // sending the footprint origin here is safe for both.
-      const cropOriginXMm = (combine || minimal) ? (minimal ? contourFootprintLeftMm : activeContourOffsetXMm) : undefined
-      const cropOriginYMm = (combine || minimal) ? (minimal ? contourFootprintBottomMm : activeContourOffsetYMm) : undefined
+      // envelops the actually-drawn contour rather than the un-spun box; the combine
+      // overlay places by the same footprint origin (in minimal mode Rust puts it at
+      // bleed/2 instead).
+      const cropOriginXMm = (combine || minimal) ? contourFootprintLeftMm : undefined
+      const cropOriginYMm = (combine || minimal) ? contourFootprintBottomMm : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, cropOriginXMm, cropOriginYMm, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? footprintWidthMm : undefined, minimal ? footprintHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? activeContourSpinDeg : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, cropOriginXMm, cropOriginYMm, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? footprintWidthMm : undefined, minimal ? footprintHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? activeContourSpinDeg : undefined, combine ? footprintLeft0Mm : undefined, combine ? footprintBottom0Mm : undefined, combine ? footprintWidthMm : undefined, combine ? footprintHeightMm : undefined)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
-      // is an arbitrary polygon PDF, never the grid.
-      const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && !rectangleContour && !contourRedrawActive
-      // In minimal mode the cut page is the contour's own box at origin (matching the
-      // cropped print page), so drop the background canvas and zero the offset.
-      const cutOffsetXMm = minimal ? 0 : activeContourOffsetXMm
-      const cutOffsetYMm = minimal ? 0 : activeContourOffsetYMm
+      // is an arbitrary polygon PDF, never the grid; a spun rectangle can't be spanning
+      // lines either, so any spin also forces real tiled rectangles.
+      const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && !rectangleContour && !contourRedrawActive && activeContourSpinDeg === 0
+      // In minimal mode the cut page is the contour's own footprint at origin (matching
+      // the cropped print page), so drop the background canvas and zero the offset.
+      const cutOffsetXMm = minimal ? 0 : contourFootprintLeftMm
+      const cutOffsetYMm = minimal ? 0 : contourFootprintBottomMm
       const cutCanvasWMm = minimal ? undefined : contourCanvasWMm
       const cutCanvasHMm = minimal ? undefined : contourCanvasHMm
       const contourOptions = needsContourInput
@@ -2432,7 +2438,7 @@ export default function App() {
         // background slots: cardWidth/Height (7th/8th) and backgroundRotation
         // (15th). The 10th (contourPageNumber, only for the combine overlay) is
         // unused here — undefined so the offset/canvas args land in their slots.
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, activeContourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, activeContourRotation, undefined, undefined, undefined, undefined, undefined, activeContourTrimToPath, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, activeContourSpinDeg), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, activeContourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, activeContourRotation, undefined, undefined, undefined, undefined, undefined, activeContourTrimToPath, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, activeContourSpinDeg, undefined, footprintLeft0Mm, footprintBottom0Mm, footprintWidthMm, footprintHeightMm), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
@@ -2531,8 +2537,10 @@ export default function App() {
         words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, samplePageOptions, false,
         bgWidthOverride, bgHeightOverride, backgroundPageNumber,
         sampleCombine ? activeContourPageNumber : undefined,
-        (sampleCombine || sampleMinimal) ? (sampleMinimal ? contourFootprintLeftMm : activeContourOffsetXMm) : undefined,
-        (sampleCombine || sampleMinimal) ? (sampleMinimal ? contourFootprintBottomMm : activeContourOffsetYMm) : undefined,
+        // The overlay and the minimal crop both place by the contour's footprint
+        // origin (= the box offset at 0° spin); see the batch flow above.
+        (sampleCombine || sampleMinimal) ? contourFootprintLeftMm : undefined,
+        (sampleCombine || sampleMinimal) ? contourFootprintBottomMm : undefined,
         undefined, undefined, bgRotation,
         sampleCombine ? contourWidthOverride : undefined,
         sampleCombine ? contourHeightOverride : undefined,
@@ -2551,6 +2559,10 @@ export default function App() {
         bgBackdropColor ? colorToCss(bgBackdropColor) : '',
         contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null,
         bgSpinDeg, sampleCombine ? activeContourSpinDeg : undefined,
+        sampleCombine ? footprintLeft0Mm : undefined,
+        sampleCombine ? footprintBottom0Mm : undefined,
+        sampleCombine ? footprintWidthMm : undefined,
+        sampleCombine ? footprintHeightMm : undefined,
       )
 
       await ensureWasmInit()

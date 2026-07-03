@@ -360,6 +360,15 @@ export function buildJsOptions(
   // `backgroundSpinDeg` for the print background, `contourSpinDeg` for the contour.
   backgroundSpinDeg?: number | null,
   contourSpinDeg?: number | null,
+  // The spun contour's display footprint relative to its un-spun box origin (mm, y-up;
+  // left/bottom ≤ 0 when the spin reaches past the box). Consumed only with a nonzero
+  // spin: the standalone cut and the combine overlay re-origin the spun contour to this
+  // footprint so it isn't clipped and lands where the preview shows it. See
+  // `contour_footprint_*_mm` in src/options.rs.
+  contourFootprintLeftMm?: number | null,
+  contourFootprintBottomMm?: number | null,
+  contourFootprintWidthMm?: number | null,
+  contourFootprintHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -429,6 +438,12 @@ export function buildJsOptions(
     ...(contourAlignWidthMm != null ? { contourAlignWidthMm } : {}),
     ...(backgroundSpinDeg ? { backgroundSpinDeg } : {}),
     ...(contourSpinDeg ? { contourSpinDeg } : {}),
+    // Only meaningful as a full set (Rust falls back to the spun box rect otherwise).
+    ...(contourFootprintLeftMm != null && contourFootprintBottomMm != null &&
+        contourFootprintWidthMm != null && contourFootprintWidthMm > 0 &&
+        contourFootprintHeightMm != null && contourFootprintHeightMm > 0
+      ? { contourFootprintLeftMm, contourFootprintBottomMm, contourFootprintWidthMm, contourFootprintHeightMm }
+      : {}),
     ...(backgroundFlipX ? { backgroundFlipX: true } : {}),
     ...(backgroundFlipY ? { backgroundFlipY: true } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),

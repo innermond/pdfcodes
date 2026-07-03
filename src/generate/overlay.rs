@@ -28,6 +28,12 @@ pub(crate) fn build_overlay(
     // after the 90° reorient + scale, matching the standalone cut (which spins via the
     // background pipeline's `background_spin_deg`). 0 = no spin.
     spin_deg: f32,
+    // The spun contour's display footprint relative to its un-spun box origin
+    // (left, bottom, width, height — mm, y-up; see `contour_footprint_*_mm` in
+    // Options). With a nonzero spin the overlaid contour is re-origined to this
+    // footprint, exactly like the standalone cut, so both land at the same spot.
+    // `None` falls back to the spun box rectangle's bbox.
+    spin_footprint_mm: Option<(f32, f32, f32, f32)>,
     target_width_mm: Option<f32>,
     target_height_mm: Option<f32>,
     // Trim the overlaid contour to the bounding box of its drawn path instead of its
@@ -127,21 +133,46 @@ pub(crate) fn build_overlay(
         _ => (rot_w, rot_h, rotated_content),
     };
 
-    // Free-angle spin about the displayed contour's center (within its box; the BBox
-    // clips anything pushed past the edge, same as the standalone cut through mod.rs).
-    let contour_content_bytes = if spin_deg != 0.0 {
-        match crate::geometry::word_transform(spin_deg, false, false, card_w_c / 2.0, card_h_c / 2.0) {
-            Some(m) => [
+    // Free-angle spin about the displayed contour's center, re-origined to the spun
+    // footprint — the same bake mod.rs applies to the standalone cut: the un-spun box
+    // is kept as a `W n` clip (the rotated equivalent of the old BBox clip), and the
+    // footprint becomes the overlay's box, so the tiled overlay (placed by the
+    // footprint origin) lands exactly where the cut and the preview put the contour.
+    let (contour_content_bytes, card_box_c) = match (spin_deg != 0.0)
+        .then(|| crate::geometry::word_transform(spin_deg, false, false, card_w_c / 2.0, card_h_c / 2.0))
+        .flatten()
+    {
+        Some(m) => {
+            let (bx0, by0, bx1, by1) = crate::geometry::rect_transform_bbox(&m, card_w_c, card_h_c);
+            let (fl, fb, fw, fh) = match spin_footprint_mm {
+                Some((l, b, w, h)) if w > 0.0 && h > 0.0 => {
+                    let mm = crate::geometry::MM;
+                    (l * mm, b * mm, w * mm, h * mm)
+                }
+                _ => (bx0, by0, bx1 - bx0, by1 - by0),
+            };
+            let content = [
+                format!("q 1 0 0 1 {:.4} {:.4} cm\n", -fl, -fb).into_bytes(),
                 format!("q {:.6} {:.6} {:.6} {:.6} {:.4} {:.4} cm\n", m[0], m[1], m[2], m[3], m[4], m[5]).into_bytes(),
+                format!("0 0 {card_w_c:.4} {card_h_c:.4} re W n\n").into_bytes(),
                 contour_content_bytes,
-                b"\nQ".to_vec(),
-            ].concat(),
-            None => contour_content_bytes,
+                b"\nQ\nQ".to_vec(),
+            ].concat();
+            // BBox covers the footprint box and the whole spun rectangle (stroke
+            // overhang), re-origined; the `W n` clip does the precise clipping.
+            let bbox = vec![
+                Object::Real((bx0 - fl).min(0.0)),
+                Object::Real((by0 - fb).min(0.0)),
+                Object::Real((bx1 - fl).max(fw)),
+                Object::Real((by1 - fb).max(fh)),
+            ];
+            (content, bbox)
         }
-    } else {
-        contour_content_bytes
+        None => {
+            let bbox = vec![Object::Real(0.0), Object::Real(0.0), Object::Real(card_w_c), Object::Real(card_h_c)];
+            (contour_content_bytes, bbox)
+        }
     };
-    let card_box_c = vec![Object::Real(0.0), Object::Real(0.0), Object::Real(card_w_c), Object::Real(card_h_c)];
 
     let mut id_map = std::collections::HashMap::new();
     let mut bg_xobj_dict_c = Dictionary::new();

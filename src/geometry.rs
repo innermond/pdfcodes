@@ -305,6 +305,22 @@ pub(crate) fn apply_matrix(m: &[f32; 6], p: (f32, f32)) -> (f32, f32) {
     (m[0] * p.0 + m[2] * p.1 + m[4], m[1] * p.0 + m[3] * p.1 + m[5])
 }
 
+// Axis-aligned bounding box (x0, y0, x1, y1) of the rectangle (0,0)–(w,h) under a
+// `word_transform` matrix. Everything drawn inside the rectangle stays inside this
+// box after the transform, so it bounds the un-clipped extent of a spun contour.
+pub(crate) fn rect_transform_bbox(m: &[f32; 6], w: f32, h: f32) -> (f32, f32, f32, f32) {
+    let corners = [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)];
+    let mut bbox = (f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for p in corners {
+        let (x, y) = apply_matrix(m, p);
+        bbox.0 = bbox.0.min(x);
+        bbox.1 = bbox.1.min(y);
+        bbox.2 = bbox.2.max(x);
+        bbox.3 = bbox.3.max(y);
+    }
+    bbox
+}
+
 pub(crate) fn to_f64(obj: &Object) -> f64 {
     match obj {
         Object::Real(v) => *v as f64,
