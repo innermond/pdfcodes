@@ -100,6 +100,21 @@ export function contourLocalPolygons(params: {
   height: number
   cutShape: ContourCutShape | null
   interiorMaskPath: string | null
+  // Free-angle spin (deg) applied about the box center on top of the preset reorient,
+  // matching CardCanvas's `rotate(-spin)` on the contour group. Default 0.
+  spinDeg?: number
+}): Pt[][] {
+  const { width: iw, height: ih, spinDeg = 0 } = params
+  const local = contourLocalPolygonsUnspun(params)
+  if (!spinDeg) return local
+  return local.map((sp) => sp.map((p) => rotate(p, iw / 2, ih / 2, -spinDeg)))
+}
+
+function contourLocalPolygonsUnspun(params: {
+  width: number
+  height: number
+  cutShape: ContourCutShape | null
+  interiorMaskPath: string | null
 }): Pt[][] {
   const { width: iw, height: ih } = params
   if (params.cutShape) {
@@ -142,6 +157,8 @@ export function computeContourKeepRegion(params: {
   // back to the contour's bounding rectangle.
   cutShape: ContourCutShape | null
   interiorMaskPath: string | null
+  // Free-angle spin (deg) about the contour center, matching the preview + the generator.
+  spinDeg?: number
 }): ContourKeepRegion | null {
   const { cardWidthMm, cardHeightMm, contourWidthMm, contourHeightMm, offsetXMm, offsetYMm } = params
   if (!(cardWidthMm > 0) || !(cardHeightMm > 0) || !(contourWidthMm > 0) || !(contourHeightMm > 0)) {
@@ -156,7 +173,7 @@ export function computeContourKeepRegion(params: {
 
   // Build the keep region in the contour box (SVG y-down), translate to the card
   // and flip y below.
-  const subpaths = contourLocalPolygons({ width: iw, height: ih, cutShape: params.cutShape, interiorMaskPath: params.interiorMaskPath })
+  const subpaths = contourLocalPolygons({ width: iw, height: ih, cutShape: params.cutShape, interiorMaskPath: params.interiorMaskPath, spinDeg: params.spinDeg })
     .map((sp) => sp.map(([lx, ly]): Pt => [ix + lx, iy + ly]))
 
   // Flip to PDF card space (y-up) and pack. Drop degenerate subpaths.

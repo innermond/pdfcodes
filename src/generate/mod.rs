@@ -242,12 +242,24 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // BBox (card_box) clips whatever slides past the edge, leaving the vacated area
     // transparent. Only the drawn copy is offset — the `bg_content_bytes` used below
     // for path measurement / keep-region stays put, so the cut geometry is unaffected.
-    let panned_bg = if opts.background_offset_x_mm != 0.0 || opts.background_offset_y_mm != 0.0 {
+    // Compose the free spin (about the card center) and the pan translate as outer
+    // transforms on the drawn background. Pan is outermost so it shifts the spun result;
+    // corners the spin/pan push past the card edge are clipped by the Form BBox below.
+    let mut transform: Vec<u8> = Vec::new();
+    if opts.background_offset_x_mm != 0.0 || opts.background_offset_y_mm != 0.0 {
         let ox = opts.background_offset_x_mm * crate::geometry::MM;
         let oy = opts.background_offset_y_mm * crate::geometry::MM;
-        [format!("q 1 0 0 1 {ox:.4} {oy:.4} cm\n").into_bytes(), bg_content_bytes.clone(), b"\nQ".to_vec()].concat()
-    } else {
+        transform.extend_from_slice(format!("1 0 0 1 {ox:.4} {oy:.4} cm\n").as_bytes());
+    }
+    if opts.background_spin_deg != 0.0 {
+        if let Some(m) = crate::geometry::word_transform(opts.background_spin_deg, false, false, card_w / 2.0, card_h / 2.0) {
+            transform.extend_from_slice(format!("{:.6} {:.6} {:.6} {:.6} {:.4} {:.4} cm\n", m[0], m[1], m[2], m[3], m[4], m[5]).as_bytes());
+        }
+    }
+    let panned_bg = if transform.is_empty() {
         bg_content_bytes.clone()
+    } else {
+        [b"q\n".to_vec(), transform, bg_content_bytes.clone(), b"\nQ".to_vec()].concat()
     };
     // Optional solid backdrop painted behind the (possibly panned) background, filling
     // the whole card so the zones a pan vacates — and any transparent pixels of the
@@ -412,7 +424,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         } else {
             (opts.contour_offset_x_mm * crate::geometry::MM, opts.contour_offset_y_mm * crate::geometry::MM)
         };
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path)?)
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path)?)
     } else {
         None
     };
@@ -678,6 +690,32 @@ mod tests {
         let needle = format!("1 0 0 1 {ox:.4} {oy:.4} cm");
         let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if String::from_utf8_lossy(&s.content).contains(&needle)));
         assert!(found, "expected the background Form to contain the translate {needle:?}");
+    }
+
+    #[test]
+    fn background_spin_rotates_the_drawn_background_about_the_card_center() {
+        let bg = rotated_page_pdf(200.0, 100.0, 0);
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+
+        let plain = generate_pdf(Some("1A 1\n"), &bg, None, &Options { no_cut: true, ..Options::default() }).unwrap().pdf;
+        let spun = generate_pdf(Some("1A 1\n"), &bg, None, &Options { background_spin_deg: 20.0, no_cut: true, ..Options::default() }).unwrap().pdf;
+        assert_ne!(plain, spun, "a nonzero spin must change the output");
+
+        // The card rectangle is unchanged — only the content rotates inside it.
+        let doc = Document::load_mem(&spun).unwrap();
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+        assert!((num(&mb[2]) - 200.0).abs() < 0.5 && (num(&mb[3]) - 100.0).abs() < 0.5);
+
+        // The drawn background carries the rotation `cm` about the card center (100, 50):
+        // cos(20°) ≈ 0.9397. e = cx − (a·cx + c·cy); with a=cos, c=−sin(20°)≈−0.3420 →
+        // e = 100 − (0.9397·100 + 0.3420·50) = 100 − 111.07 = -11.07 (approx).
+        let (sin, cos) = 20f32.to_radians().sin_cos();
+        let cx = 100.0f32; let cy = 50.0f32;
+        let e = cx - (cos * cx + (-sin) * cy);
+        let needle = format!("{cos:.6} {sin:.6} {:.6} {cos:.6} {e:.4}", -sin);
+        let found = doc.objects.values().any(|o| matches!(o, Object::Stream(s) if String::from_utf8_lossy(&s.content).contains(&needle)));
+        assert!(found, "expected the background Form to contain the spin matrix {needle:?}");
     }
 
     #[test]

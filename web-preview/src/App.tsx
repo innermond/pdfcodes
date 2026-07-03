@@ -289,6 +289,9 @@ interface BgConfig {
   // the preview (see CardCanvas / BackgroundPanOverlay).
   bgOffsetXMm: number
   bgOffsetYMm: number
+  // Free-angle "spin" (degrees) of the background about the card center, on top of the
+  // 90° `bgRotation` reorient. Corners it vacates are transparent (backdrop/checker).
+  bgSpinDeg: number
   // Solid color ("c:m:y:k" or null) painted behind the background to fill the zones a
   // pan vacates (and any transparent pixels); null keeps them transparent.
   bgBackdropColor: string | null
@@ -311,6 +314,7 @@ const defaultBgConfig: BgConfig = {
   bgFlipY: false,
   bgOffsetXMm: 0,
   bgOffsetYMm: 0,
+  bgSpinDeg: 0,
   bgBackdropColor: null,
 }
 
@@ -404,6 +408,9 @@ interface ContourConfig {
   contourTargetWidthMm: number
   contourTargetHeightMm: number
   contourRotation: number
+  // Free-angle "spin" (degrees) of the contour about its own center, on top of the 90°
+  // `contourRotation` reorient. Rotates the cut outline + keep-region without changing size.
+  contourSpinDeg: number
   // "Redesenează": equidistant offset of the cut outline (mm, signed). Positive
   // grows it outward (bleed), negative shrinks it inward (safety margin), the
   // same amount everywhere along the outline — applied to both contour sources.
@@ -427,6 +434,7 @@ const defaultContourConfig: ContourConfig = {
   contourTargetWidthMm: NaN,
   contourTargetHeightMm: NaN,
   contourRotation: 0,
+  contourSpinDeg: 0,
   contourRedrawMm: 0,
 }
 
@@ -549,7 +557,7 @@ export default function App() {
     simpleBgWidthMm, simpleBgHeightMm, simpleBgColor,
     genBgWidthMm, genBgHeightMm, genBgImageSource, genBgImageUrl,
     bgTargetWidthMm, bgTargetHeightMm, bgRotation, bgFlipX, bgFlipY,
-    bgOffsetXMm, bgOffsetYMm, bgBackdropColor,
+    bgOffsetXMm, bgOffsetYMm, bgSpinDeg, bgBackdropColor,
   } = bgConfig
   function setBgField<K extends keyof BgConfig>(key: K, value: BgConfig[K]) {
     setBgConfig((prev) => ({ ...prev, [key]: value }))
@@ -584,7 +592,7 @@ export default function App() {
     contourSource, contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
     shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
-    contourTargetWidthMm, contourTargetHeightMm, contourRotation, contourRedrawMm,
+    contourTargetWidthMm, contourTargetHeightMm, contourRotation, contourSpinDeg, contourRedrawMm,
   } = contourConfig
   // Accepts a plain value or an updater fn (like a raw setState). None of the
   // config fields are functions, so the typeof check safely tells them apart —
@@ -953,6 +961,10 @@ export default function App() {
   const activeContourCutShape = contourRedrawActive ? null : contourCutShape
   const activeInteriorMaskPath = contourRedrawActive ? redrawnMaskPath : contourInteriorMaskPath
   const activeContourRotation = contourRedrawActive ? 0 : contourRotation
+  // Unlike the 90° reorient (baked into the redrawn outline via `cutShape.rotation`), the
+  // free spin is *not* baked by the redraw (its `contourLocalPolygons` gets no `spinDeg`),
+  // so it must keep applying as a transform on top — otherwise redraw drops the rotation.
+  const activeContourSpinDeg = contourSpinDeg
   const activeContourTrimToPath = contourRedrawActive ? false : contourTrimToPath
   // The redrawn cut PDF is single-page, so its page pick is always 1.
   const activeContourPageNumber = contourRedrawActive ? 1 : contourPageNumber
@@ -993,12 +1005,13 @@ export default function App() {
             offsetYMm: activeContourOffsetYMm,
             cutShape: activeContourCutShape,
             interiorMaskPath: activeInteriorMaskPath,
+            spinDeg: activeContourSpinDeg,
           })
         : null,
     [
       contourBackground, effectiveCardWidthMm, effectiveCardHeightMm,
       activeContourWidthMm, activeContourHeightMm,
-      activeContourOffsetXMm, activeContourOffsetYMm,
+      activeContourOffsetXMm, activeContourOffsetYMm, activeContourSpinDeg,
       activeContourCutShape, activeInteriorMaskPath,
     ],
   )
@@ -2329,7 +2342,7 @@ export default function App() {
       // Minimal sends the contour offset (the crop origin) and the contour box even
       // without combine; the box is the last two args.
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, (combine || minimal) ? activeContourOffsetXMm : undefined, (combine || minimal) ? activeContourOffsetYMm : undefined, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? activeContourWidthMm : undefined, minimal ? activeContourHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? contourSpinDeg : undefined)
         : null
       // A rectangle contour normally draws as optimized spanning grid lines; "Contur
       // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
@@ -2347,7 +2360,7 @@ export default function App() {
         // background slots: cardWidth/Height (7th/8th) and backgroundRotation
         // (15th). The 10th (contourPageNumber, only for the combine overlay) is
         // unused here — undefined so the offset/canvas args land in their slots.
-        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, activeContourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, activeContourRotation, undefined, undefined, undefined, undefined, undefined, activeContourTrimToPath), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
+        ? { ...buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, pageOptions, true, contourWidthOverride, contourHeightOverride, activeContourPageNumber, undefined, cutOffsetXMm, cutOffsetYMm, cutCanvasWMm, cutCanvasHMm, activeContourRotation, undefined, undefined, undefined, undefined, undefined, activeContourTrimToPath, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, activeContourSpinDeg), ...(contourIsGrid ? { contourAsGrid: true } : {}) }
         : null
 
       const background = needsPrintInput ? await backgroundFile!.arrayBuffer() : new ArrayBuffer(0)
@@ -2465,6 +2478,7 @@ export default function App() {
         bgOffsetXMm, bgOffsetYMm,
         bgBackdropColor ? colorToCss(bgBackdropColor) : '',
         contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null,
+        bgSpinDeg, sampleCombine ? contourSpinDeg : undefined,
       )
 
       await ensureWasmInit()
@@ -2901,6 +2915,7 @@ export default function App() {
                   <NumberField label="Decalaj fundal X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
                   <NumberField label="Decalaj fundal Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
                 </div>
+                <NumberField label="Rotație fundal (grade)" value={bgSpinDeg} onChange={(v) => setBgField('bgSpinDeg', v)} step={1} />
                 <ColorField
                   label="Culoare zone libere"
                   value={bgBackdropColor}
@@ -3068,6 +3083,7 @@ export default function App() {
                       </button>
                       <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
                     </div>
+                    <NumberField label="Rotație contur (grade)" value={contourSpinDeg} onChange={(v) => setContourField('contourSpinDeg', v)} step={1} />
                   </>
                 )}
                 {/* "Redesenează": equidistant offset of the cut outline, applied to
@@ -3739,6 +3755,8 @@ export default function App() {
                       backgroundImageUrl={background.imageUrl}
                       backgroundOffsetXPt={bgOffsetXMm * MM}
                       backgroundOffsetYPt={bgOffsetYMm * MM}
+                      backgroundSpinDeg={bgSpinDeg}
+                      contourSpinDeg={activeContourSpinDeg}
                       backgroundBackdropColor={bgBackdropColor}
                       bgNudgeMode={bgNudgeMode}
                       onBackgroundOffsetChange={handleBackgroundOffsetChange}

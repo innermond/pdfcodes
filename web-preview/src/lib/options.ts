@@ -356,6 +356,10 @@ export function buildJsOptions(
   // `contour-*` horizontal alignments per code against the contour. Null ⇒ card frame.
   contourAlignLeftMm?: number | null,
   contourAlignWidthMm?: number | null,
+  // Free-angle "spin" (degrees) about the frame center, on top of the 90° reorient:
+  // `backgroundSpinDeg` for the print background, `contourSpinDeg` for the contour.
+  backgroundSpinDeg?: number | null,
+  contourSpinDeg?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   const hasContour = words.some((w) => w.contourColor !== null)
@@ -423,6 +427,8 @@ export function buildJsOptions(
     ...(backgroundBackdropColor ? { backgroundBackdropColor } : {}),
     ...(contourAlignLeftMm != null ? { contourAlignLeftMm } : {}),
     ...(contourAlignWidthMm != null ? { contourAlignWidthMm } : {}),
+    ...(backgroundSpinDeg ? { backgroundSpinDeg } : {}),
+    ...(contourSpinDeg ? { contourSpinDeg } : {}),
     ...(backgroundFlipX ? { backgroundFlipX: true } : {}),
     ...(backgroundFlipY ? { backgroundFlipY: true } : {}),
     ...(contourPageNumber != null && contourPageNumber > 1 ? { contourPageNumber } : {}),

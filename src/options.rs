@@ -133,6 +133,11 @@ pub struct Options {
     // Form's BBox; the vacated area stays transparent. Default 0 (no pan).
     pub background_offset_x_mm: f32,
     pub background_offset_y_mm: f32,
+    // Free-angle "spin" (clockwise degrees) applied to the drawn background about the card
+    // center, on top of the 90° `background_rotation` reorient. Corners it rotates past the
+    // card edge are clipped by the background Form's BBox (left transparent / backdrop).
+    // Default 0.
+    pub background_spin_deg: f32,
     // Solid color painted behind the (possibly panned) background, filling the whole
     // card so the zones a pan vacates — and any transparent pixels of the background —
     // show this color instead of nothing. `None` keeps them transparent. Default None.
@@ -160,6 +165,11 @@ pub struct Options {
     pub contour_target_width_mm: Option<f32>,
     pub contour_target_height_mm: Option<f32>,
     pub contour_rotation: i64,
+    // Free-angle "spin" (clockwise degrees) applied to the contour about its own center,
+    // on top of the 90° `contour_rotation` reorient. Baked into the standalone cut and the
+    // combine overlay; rotates the cut outline (and its keep-region) without changing the
+    // contour's target size. Default 0.
+    pub contour_spin_deg: f32,
     // Trim an uploaded contour to the tight bounding box of its drawn path instead of
     // its page MediaBox, so a cut line sitting inside a larger page (with whitespace
     // margins) is sized/placed by the artwork, not the page. Default: false (use the
@@ -255,6 +265,7 @@ impl Default for Options {
             background_flip_y: false,
             background_offset_x_mm: 0.0,
             background_offset_y_mm: 0.0,
+            background_spin_deg: 0.0,
             background_backdrop_color: None,
             no_cut: false,
             contour_offset_x_mm: 0.0,
@@ -264,6 +275,7 @@ impl Default for Options {
             contour_target_width_mm: None,
             contour_target_height_mm: None,
             contour_rotation: 0,
+            contour_spin_deg: 0.0,
             contour_trim_to_path: false,
             minimal: false,
             minimal_width_mm: None,

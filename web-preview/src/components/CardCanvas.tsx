@@ -29,9 +29,11 @@ export function CardCanvas({
   backgroundImageUrl,
   backgroundOffsetXPt = 0,
   backgroundOffsetYPt = 0,
+  backgroundSpinDeg = 0,
   backgroundBackdropColor = null,
   bgNudgeMode = false,
   onBackgroundOffsetChange,
+  contourSpinDeg = 0,
   cardWidthPt,
   cardHeightPt,
   contourImageUrl,
@@ -61,6 +63,11 @@ export function CardCanvas({
   // backdrop. Mirrors the offset the generator bakes into the exported PDF.
   backgroundOffsetXPt?: number
   backgroundOffsetYPt?: number
+  // Free-angle spin (deg) of the background about the card center. Applied as SVG
+  // `rotate(-spin)` to match the generator's `word_transform(+spin)` (see WordOverlay).
+  backgroundSpinDeg?: number
+  // Free-angle spin (deg) of the contour about its box center (same sign convention).
+  contourSpinDeg?: number
   // Solid color (CMYK string) painted over the whole card behind the background, so a
   // pan's vacated zones (and any transparent pixels) show it instead of the card white.
   // `null` keeps them transparent. Mirrors the fill baked into the exported PDF.
@@ -142,10 +149,11 @@ export function CardCanvas({
       { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
       { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
     )
-    // Tight bounding rect of the (rotated) outline: flatten the path, rotate its
-    // points to match the image, then take the extents. For shapes that fill their
-    // box this equals [ix,iy,iw,ih]; for a polygon it shrinks to the shape.
-    const pts = flattenPathD(d).flat().map((p) => rotate(p, cx, cy, rot))
+    // Tight bounding rect of the fully-transformed outline: flatten the path, apply the
+    // reorient *and* the free spin (matching the drawn image), then take the extents — so
+    // the selection is an axis-aligned rectangle enveloping the spun shape. For shapes that
+    // fill their box this equals [ix,iy,iw,ih] at 0°; for a polygon it shrinks to the shape.
+    const pts = flattenPathD(d).flat().map((p) => rotate(rotate(p, cx, cy, rot), cx, cy, -contourSpinDeg))
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     for (const [px, py] of pts) {
       if (px < minX) minX = px
@@ -162,25 +170,55 @@ export function CardCanvas({
   // present so it can serve both the "dim exterior" knockout (below, gated on
   // `dimExterior`) and the capture clip-path (a <clipPath> def, always available).
   const contourKeepShape = contourImageUrl ? (() => {
-    if (contourCutOutline) {
-      return <path d={contourCutOutline.d} fill="black" transform={contourCutOutline.transform} />
-    }
-    // Uploaded contour: prefer the traced vector path (fractional coords scaled to
-    // the same rect as the contour image, so it lines up and stays crisp at any
-    // zoom). Without it (open outline, or still computing), dim outside the bbox.
-    if (contourInteriorMaskPath) {
-      return (
-        <path
-          d={contourInteriorMaskPath}
-          fillRule="evenodd"
-          clipRule="evenodd"
-          fill="black"
-          transform={`translate(${ix} ${iy}) scale(${iw} ${ih})`}
-        />
-      )
-    }
-    return <rect x={ix} y={iy} width={iw} height={ih} fill="black" />
+    const inner = (() => {
+      if (contourCutOutline) {
+        return <path d={contourCutOutline.d} fill="black" transform={contourCutOutline.transform} />
+      }
+      // Uploaded contour: prefer the traced vector path (fractional coords scaled to
+      // the same rect as the contour image, so it lines up and stays crisp at any
+      // zoom). Without it (open outline, or still computing), dim outside the bbox.
+      if (contourInteriorMaskPath) {
+        return (
+          <path
+            d={contourInteriorMaskPath}
+            fillRule="evenodd"
+            clipRule="evenodd"
+            fill="black"
+            transform={`translate(${ix} ${iy}) scale(${iw} ${ih})`}
+          />
+        )
+      }
+      return <rect x={ix} y={iy} width={iw} height={ih} fill="black" />
+    })()
+    // Add the free spin about the contour box center, matching the image + keep-region.
+    return contourSpinDeg
+      ? <g transform={`rotate(${-contourSpinDeg} ${ix + iw / 2} ${iy + ih / 2})`}>{inner}</g>
+      : inner
   })() : null
+
+  // Axis-aligned rectangle enveloping the spun contour, for the selection marching-ants.
+  // A preset shape uses its tight (already spin-folded) outline bbox; an uploaded contour
+  // uses its traced outline (same source the dim/keep-shape uses) so the box hugs the real
+  // shape instead of the full contour rectangle (which would grow far too much when spun);
+  // only when neither is available do we fall back to the contour-box corners.
+  const contourSelectionRect = contourImageUrl
+    ? (contourCutOutline?.rect ?? (() => {
+        const cx = ix + iw / 2, cy = iy + ih / 2
+        const pts: [number, number][] = contourInteriorMaskPath
+          ? flattenPathD(contourInteriorMaskPath).flat().map(([fx, fy]) => [ix + fx * iw, iy + fy * ih])
+          : [[ix, iy], [ix + iw, iy], [ix + iw, iy + ih], [ix, iy + ih]]
+        if (pts.length === 0) return null
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+        for (const p of pts) {
+          const [px, py] = rotate(p, cx, cy, -contourSpinDeg)
+          if (px < minX) minX = px
+          if (px > maxX) maxX = px
+          if (py < minY) minY = py
+          if (py > maxY) maxY = py
+        }
+        return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
+      })())
+    : null
 
   return (
     <svg
@@ -225,7 +263,7 @@ export function CardCanvas({
       {/* The background image pans within the card; the SVG viewport clips whatever slides
           out and the vacated area reveals the card base above. Y is negated: PDF offset is
           up-positive, SVG y grows downward. */}
-      <g transform={`translate(${backgroundOffsetXPt} ${-backgroundOffsetYPt})`}>
+      <g transform={`translate(${backgroundOffsetXPt} ${-backgroundOffsetYPt}) rotate(${-backgroundSpinDeg} ${cardWidthPt / 2} ${cardHeightPt / 2})`}>
         {backgroundImageUrl && (
           <image href={backgroundImageUrl} x={0} y={0} width={cardWidthPt} height={cardHeightPt} preserveAspectRatio="none" />
         )}
@@ -238,17 +276,19 @@ export function CardCanvas({
         </defs>
       )}
       {contourImageUrl && (
-        <image
-          data-contour-outline="true"
-          href={contourImageUrl}
-          x={contourOffsetXPt}
-          y={cardHeightPt - contourHeightPt - contourOffsetYPt}
-          width={contourWidthPt}
-          height={contourHeightPt}
-          preserveAspectRatio="none"
-          opacity={contourOpacity}
-          style={{ mixBlendMode: contourBlendMode }}
-        />
+        <g transform={contourSpinDeg ? `rotate(${-contourSpinDeg} ${ix + iw / 2} ${iy + ih / 2})` : undefined}>
+          <image
+            data-contour-outline="true"
+            href={contourImageUrl}
+            x={contourOffsetXPt}
+            y={cardHeightPt - contourHeightPt - contourOffsetYPt}
+            width={contourWidthPt}
+            height={contourHeightPt}
+            preserveAspectRatio="none"
+            opacity={contourOpacity}
+            style={{ mixBlendMode: contourBlendMode }}
+          />
+        </g>
       )}
       {dimExterior && contourKeepShape && (
         <>
@@ -273,7 +313,7 @@ export function CardCanvas({
           offsetXMm={contourOffsetXPt / MM}
           offsetYMm={contourOffsetYPt / MM}
           selected={contourSelected}
-          outlineRect={contourCutOutline?.rect ?? null}
+          outlineRect={contourSelectionRect}
           onSelect={onContourSelect}
           onChange={onContourOffsetChange}
         />

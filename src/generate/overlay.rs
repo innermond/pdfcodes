@@ -24,6 +24,10 @@ pub(crate) fn build_overlay(
     // `target_width_mm`/`target_height_mm` scale the displayed contour to that
     // card size (`None`/0 keeps its own size).
     rotation: i64,
+    // Free-angle spin (clockwise degrees) about the displayed contour's center, applied
+    // after the 90° reorient + scale, matching the standalone cut (which spins via the
+    // background pipeline's `background_spin_deg`). 0 = no spin.
+    spin_deg: f32,
     target_width_mm: Option<f32>,
     target_height_mm: Option<f32>,
     // Trim the overlaid contour to the bounding box of its drawn path instead of its
@@ -115,6 +119,21 @@ pub(crate) fn build_overlay(
             }
         }
         _ => (rot_w, rot_h, rotated_content),
+    };
+
+    // Free-angle spin about the displayed contour's center (within its box; the BBox
+    // clips anything pushed past the edge, same as the standalone cut through mod.rs).
+    let contour_content_bytes = if spin_deg != 0.0 {
+        match crate::geometry::word_transform(spin_deg, false, false, card_w_c / 2.0, card_h_c / 2.0) {
+            Some(m) => [
+                format!("q {:.6} {:.6} {:.6} {:.6} {:.4} {:.4} cm\n", m[0], m[1], m[2], m[3], m[4], m[5]).into_bytes(),
+                contour_content_bytes,
+                b"\nQ".to_vec(),
+            ].concat(),
+            None => contour_content_bytes,
+        }
+    } else {
+        contour_content_bytes
     };
     let card_box_c = vec![Object::Real(0.0), Object::Real(0.0), Object::Real(card_w_c), Object::Real(card_h_c)];
 

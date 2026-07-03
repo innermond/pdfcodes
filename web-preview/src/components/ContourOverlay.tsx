@@ -36,6 +36,8 @@ export function ContourOverlay({
   // Tight bounding rect of a preset shape's cut outline (card points). When given,
   // the selection rectangle + hit area use it so they envelop the real shape (e.g.
   // an inscribed polygon); null (uploaded contour) falls back to the box rect.
+  // Axis-aligned rectangle enveloping the (possibly spun) contour shape, computed by
+  // CardCanvas. Drawn unrotated; drag is client-space so it's unaffected by the shape's spin.
   outlineRect?: { x: number; y: number; w: number; h: number } | null
   onSelect: () => void
   onChange: (xMm: number, yMm: number) => void
