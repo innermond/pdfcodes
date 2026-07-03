@@ -1107,14 +1107,14 @@ export default function App() {
       let changed = false
       const next = prev.map((word, index) => {
         if (word.valign === 'custom') return word
-        const yMm = verticalAlignYMm(word.valign, word, fontFamilyForWord(fonts, index), cardHeightMm, safeMarginMm, contourAlignRect)
+        const yMm = verticalAlignYMm(word.valign, word, fontFamilyForWord(fonts, index), cardHeightMm, safeMarginMm, contourAlignRect, contourInsetMm)
         if (Math.abs(yMm - word.yMm) < 1e-6) return word
         changed = true
         return { ...word, yMm }
       })
       return changed ? next : prev
     })
-  }, [fonts, background, effectiveCardHeightMm, safeMarginMm, words, contourAlignRect])
+  }, [fonts, background, effectiveCardHeightMm, safeMarginMm, words, contourAlignRect, contourInsetMm])
 
   // Horizontal analog of the vertical re-snap above, but only for the `contour-*`
   // alignment modes: they're resolved here to an explicit `xMm` (the generator can't
@@ -1126,14 +1126,14 @@ export default function App() {
       let changed = false
       const next = prev.map((word, index) => {
         if (word.align !== 'contour-left' && word.align !== 'contour-center' && word.align !== 'contour-right') return word
-        const xMm = horizontalAlignXMm(word.align, word, fontFamilyForWord(fonts, index), effectiveCardWidthMm, safeMarginMm, contourAlignRect)
+        const xMm = horizontalAlignXMm(word.align, word, fontFamilyForWord(fonts, index), effectiveCardWidthMm, safeMarginMm, contourAlignRect, contourInsetMm)
         if (word.xMm !== null && Math.abs(xMm - word.xMm) < 1e-6) return word
         changed = true
         return { ...word, xMm }
       })
       return changed ? next : prev
     })
-  }, [fonts, background, effectiveCardWidthMm, safeMarginMm, words, contourAlignRect])
+  }, [fonts, background, effectiveCardWidthMm, safeMarginMm, words, contourAlignRect, contourInsetMm])
 
   async function handleGenerateCsv() {
     setCodeCsvProgress(0)
@@ -3163,9 +3163,10 @@ export default function App() {
               <NumberField label="Distanțăre contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
             </div>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              „Distanțare contur” trage conturul de tăiere spre interior doar pentru verificare:
-              codurile trebuie să stea cel puțin atât de departe de tăietură ca să fie considerate „sigure”.
-              Se aplică doar când folosești un contur de tăiere.
+              „Distanțare contur” este distanța minimă față de tăietură: e folosită atât pentru
+              verificare (codurile trebuie să stea cel puțin atât de departe de tăietură ca să fie
+              „sigure”), cât și ca margine pentru alinierile „(contur)”. Se aplică doar când
+              folosești un contur de tăiere.
             </p>
             {fontsError && <p className="text-sm text-red-600 dark:text-red-400">{fontsError}</p>}
             {fontsNotice && <p className="text-sm text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
@@ -3240,13 +3241,13 @@ export default function App() {
                       // Freeze at the current on-screen position and drop any contour mode.
                       const xMm = selected.xMm ??
                         (effectiveCardWidthMm > 0
-                          ? horizontalAlignXMm(selected.align, selected, fontFamilyForWord(fonts, selectedIndex), effectiveCardWidthMm, safeMarginMm, contourAlignRect)
+                          ? horizontalAlignXMm(selected.align, selected, fontFamilyForWord(fonts, selectedIndex), effectiveCardWidthMm, safeMarginMm, contourAlignRect, contourInsetMm)
                           : 0)
                       updateWord(selectedIndex, { align: baseAlign(selected.align), xMm })
                     } else if (v.startsWith('contour-')) {
                       // Contour modes resolve to an explicit xMm (kept in sync by the effect).
                       const xMm = effectiveCardWidthMm > 0
-                        ? horizontalAlignXMm(v, selected, fontFamilyForWord(fonts, selectedIndex), effectiveCardWidthMm, safeMarginMm, contourAlignRect)
+                        ? horizontalAlignXMm(v, selected, fontFamilyForWord(fonts, selectedIndex), effectiveCardWidthMm, safeMarginMm, contourAlignRect, contourInsetMm)
                         : 0
                       updateWord(selectedIndex, { align: v, xMm })
                     } else {
@@ -3282,6 +3283,7 @@ export default function App() {
                             background.heightPt / MM,
                             safeMarginMm,
                             contourAlignRect,
+                            contourInsetMm,
                           )
                         : selected.yMm,
                     })

@@ -42,3 +42,19 @@ describe('horizontalAlignXMm contour framing', () => {
     expect(horizontalAlignXMm('contour-left', word, 'sans', 100, safe)).toBeCloseTo(horizontalAlignXMm('left', word, 'sans', 100, safe), 6)
   })
 })
+
+describe('contour alignment insets by contourInsetMm (not the card margin)', () => {
+  const inset = 5 // distinct from `safe` (2)
+  it('vertical contour edges use the contour inset', () => {
+    expect(verticalAlignYMm('contour-top', word, 'sans', 100, safe, contour, inset)).toBeCloseTo(20 + 30 - inset - ascentMm, 6)
+    expect(verticalAlignYMm('contour-bottom', word, 'sans', 100, safe, contour, inset)).toBeCloseTo(20 + inset + descentMm, 6)
+  })
+  it('horizontal contour edges use the contour inset', () => {
+    expect(horizontalAlignXMm('contour-left', word, 'sans', 100, safe, contour, inset)).toBeCloseTo(15 + inset, 6)
+    expect(horizontalAlignXMm('contour-right', word, 'sans', 100, safe, contour, inset)).toBeCloseTo(15 + 40 - textWidthMm - inset, 6)
+  })
+  it('card modes still use the card margin even when a contour inset is passed', () => {
+    expect(verticalAlignYMm('top', word, 'sans', 100, safe, contour, inset)).toBeCloseTo(100 - safe - ascentMm, 6)
+    expect(horizontalAlignXMm('left', word, 'sans', 100, safe, contour, inset)).toBeCloseTo(safe, 6)
+  })
+})

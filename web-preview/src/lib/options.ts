@@ -149,6 +149,9 @@ export function verticalAlignYMm(
   cardHeightMm: number,
   safeMarginMm: number,
   contour?: ContourAlignRect | null,
+  // Inset for the `contour-*` modes ("Distanțăre contur" = the cut clearance). Defaults
+  // to the card margin so callers that don't distinguish keep the old behavior.
+  contourInsetMm: number = safeMarginMm,
 ): number {
   if (valign === 'custom') return word.yMm
 
@@ -162,19 +165,22 @@ export function verticalAlignYMm(
     descentMm = tm.fontBoundingBoxDescent / MM
   }
 
-  // Frame the code against the contour rectangle for the `contour-*` modes, else the
-  // card. A missing contour falls back to the card so the option stays safe.
-  const isContour = valign === 'contour-top' || valign === 'contour-middle' || valign === 'contour-bottom'
-  const bottomMm = isContour && contour ? contour.bottomMm : 0
-  const heightMm = isContour && contour ? contour.heightMm : cardHeightMm
+  // Contour modes frame against the contour rectangle and inset by the *cut* clearance
+  // (`contourInsetMm`), so an edge-aligned contour code sits exactly at the safe distance
+  // the overflow check enforces — mirroring how card modes use the card margin. A missing
+  // contour falls back to the card frame + card margin.
+  const useContour = contour != null && (valign === 'contour-top' || valign === 'contour-middle' || valign === 'contour-bottom')
+  const marginMm = useContour ? contourInsetMm : safeMarginMm
+  const bottomMm = useContour ? contour.bottomMm : 0
+  const heightMm = useContour ? contour.heightMm : cardHeightMm
 
   switch (valign) {
     case 'top':
     case 'contour-top':
-      return bottomMm + heightMm - safeMarginMm - ascentMm
+      return bottomMm + heightMm - marginMm - ascentMm
     case 'bottom':
     case 'contour-bottom':
-      return bottomMm + safeMarginMm + descentMm
+      return bottomMm + marginMm + descentMm
     case 'middle':
     case 'contour-middle':
       return bottomMm + heightMm / 2 - (ascentMm - descentMm) / 2
@@ -193,6 +199,9 @@ export function horizontalAlignXMm(
   cardWidthMm: number,
   safeMarginMm: number,
   contour?: ContourAlignRect | null,
+  // Inset for the `contour-*` modes ("Distanțăre contur" = the cut clearance). Defaults
+  // to the card margin so callers that don't distinguish keep the old behavior.
+  contourInsetMm: number = safeMarginMm,
 ): number {
   let textWidthMm = (word.fontSizePt * 0.6 * Math.max(1, word.text.length)) / MM
   const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
@@ -203,22 +212,24 @@ export function horizontalAlignXMm(
     textWidthMm = measured / MM
   }
 
-  // Frame the code against the contour rectangle for the `contour-*` modes, else the
-  // card. A missing contour falls back to the card so the option stays safe.
-  const isContour = align === 'contour-left' || align === 'contour-center' || align === 'contour-right'
-  const leftMm = isContour && contour ? contour.leftMm : 0
-  const widthMm = isContour && contour ? contour.widthMm : cardWidthMm
+  // Contour modes frame against the contour rectangle and inset by the *cut* clearance
+  // (`contourInsetMm`); card modes use the card margin. A missing contour falls back to
+  // the card frame + card margin.
+  const useContour = contour != null && (align === 'contour-left' || align === 'contour-center' || align === 'contour-right')
+  const marginMm = useContour ? contourInsetMm : safeMarginMm
+  const leftMm = useContour ? contour.leftMm : 0
+  const widthMm = useContour ? contour.widthMm : cardWidthMm
 
   switch (align) {
     case 'left':
     case 'contour-left':
-      return leftMm + safeMarginMm
+      return leftMm + marginMm
     case 'center':
     case 'contour-center':
       return leftMm + widthMm / 2 - textWidthMm / 2
     case 'right':
     case 'contour-right':
-      return leftMm + widthMm - textWidthMm - safeMarginMm
+      return leftMm + widthMm - textWidthMm - marginMm
   }
 }
 
