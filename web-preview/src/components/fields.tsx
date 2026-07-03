@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
 import { ColorSampleContext } from '../lib/colorSample'
 
@@ -377,6 +377,13 @@ export function ColorField({
   const cmyk = parseCmyk(effectiveColor)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  // Where the popover opens relative to the swatch. Recomputed on open so the
+  // panel lands wherever the viewport has room rather than always below.
+  const [placement, setPlacement] = useState<{ vertical: 'top' | 'bottom'; horizontal: 'left' | 'right' }>({
+    vertical: 'bottom',
+    horizontal: 'left',
+  })
 
   function setChannel(key: keyof Cmyk, percent: number) {
     const next = { ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 }
@@ -406,6 +413,39 @@ export function ColorField({
     return () => {
       document.removeEventListener('click', handleOutsideClick, true)
       document.removeEventListener('keydown', handleKey)
+    }
+  }, [open])
+
+  // Position the popover where the viewport has the most room. Runs before paint
+  // (and on scroll/resize while open) so it flips above/left instead of spilling
+  // off-screen. The panel is measured live, so it accounts for its real size.
+  useLayoutEffect(() => {
+    if (!open) return
+    function place() {
+      const container = containerRef.current
+      const panel = panelRef.current
+      if (!container || !panel) return
+      const anchor = container.getBoundingClientRect()
+      const panelRect = panel.getBoundingClientRect()
+      const margin = 8
+      const spaceBelow = window.innerHeight - anchor.bottom
+      const spaceAbove = anchor.top
+      const vertical: 'top' | 'bottom' =
+        spaceBelow < panelRect.height + margin && spaceAbove > spaceBelow ? 'top' : 'bottom'
+      // Default aligns the panel's left edge to the swatch; flip to right-aligned
+      // when that would overflow the right edge and there's more room the other way.
+      const spaceRight = window.innerWidth - anchor.left
+      const spaceLeft = anchor.right
+      const horizontal: 'left' | 'right' =
+        spaceRight < panelRect.width + margin && spaceLeft > spaceRight ? 'right' : 'left'
+      setPlacement({ vertical, horizontal })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
     }
   }, [open])
 
@@ -469,7 +509,14 @@ export function ColorField({
               style={{ backgroundColor: colorToCss(effectiveColor) }}
             />
             {open && (
-              <div className="absolute z-10 mt-1 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800">
+              <div
+                ref={panelRef}
+                className={
+                  'absolute z-10 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800 ' +
+                  (placement.vertical === 'top' ? 'bottom-full mb-1 ' : 'top-full mt-1 ') +
+                  (placement.horizontal === 'right' ? 'right-0' : 'left-0')
+                }
+              >
                 <div
                   className="relative h-40 w-40 cursor-crosshair rounded"
                   style={{ backgroundImage: `url(${cmySquareDataUrl(cmyk.k)})`, backgroundSize: '100% 100%' }}
