@@ -806,6 +806,10 @@ export default function App() {
       handleSampleTextChange(uploadedMaxRow, effectiveSeparator, fields)
     } else {
       if (step !== 'date') return
+      // A row count of 0 has no representative row to mirror — skip so this
+      // momentary state doesn't blank the sample text and wipe the per-word
+      // styles (font, color, size…) already configured once rows resume.
+      if (codeRowCount === 0) return
       handleSampleTextChange(activePreview.split('\n')[0] ?? '')
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
