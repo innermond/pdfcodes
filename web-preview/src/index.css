@@ -2,6 +2,41 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/*
+ * Golden-ratio design system. Base = the field label (14 px = 0.875rem).
+ *
+ * Type climbs in half-steps of √φ ≈ 1.2720 (so every second tier relates by
+ * exactly φ ≈ 1.6180), keeping the small end readable in a dense tool UI:
+ *   hint 11 ← ÷√φ — label 14 — ×√φ → title 17.8 — ×φ → page 22.65
+ * Body leading is φ (14 × 1.618 ≈ 22.65 px); headings sit tighter at √φ.
+ *
+ * Spacing is a strict φ chain around the same base — each adjacent distance
+ * relates to the next by exactly φ:
+ *   tight 5.35 (b÷φ²) · inner 8.65 (b÷φ) · field 14 (b) · block 22.65 (b×φ)
+ *   · section 36.65 (b×φ²)
+ * Semantics: tight = label→input, inner = intra-control clusters,
+ * field = between fields, block = section padding / block separation,
+ * section = between columns / page frame.
+ *
+ * Values stay exact (unrounded rem) so the rendered ratios honor φ.
+ */
+@theme {
+  --text-hint: 0.6879rem; /* 11.01 px = base ÷ √φ */
+  --text-hint--line-height: 1.618;
+  --text-label: 0.875rem; /* 14 px = base */
+  --text-label--line-height: 1.618;
+  --text-title: 1.1130rem; /* 17.81 px = base × √φ */
+  --text-title--line-height: 1.272;
+  --text-page: 1.4158rem; /* 22.65 px = base × φ */
+  --text-page--line-height: 1.272;
+
+  --spacing-tight: 0.3342rem; /* 5.35 px = base ÷ φ² */
+  --spacing-inner: 0.5408rem; /* 8.65 px = base ÷ φ */
+  --spacing-field: 0.875rem; /* 14 px = base */
+  --spacing-block: 1.4158rem; /* 22.65 px = base × φ */
+  --spacing-section: 2.2907rem; /* 36.65 px = base × φ² */
+}
+
 html.dark {
   background-color: var(--color-gray-950);
 }

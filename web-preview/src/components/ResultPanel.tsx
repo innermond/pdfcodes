@@ -99,9 +99,9 @@ export function FileDownload({
   }, [blob, isZip])
 
   return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
-      {note && <p className="text-sm text-gray-500 dark:text-gray-400">{note}</p>}
+    <div className="flex flex-col gap-inner">
+      <h3 className="text-title font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      {note && <p className="text-label text-gray-500 dark:text-gray-400">{note}</p>}
       {previewUrl && (
         <iframe
           title={`Previzualizare ${title}`}
@@ -110,7 +110,7 @@ export function FileDownload({
         />
       )}
       {url && (
-        <a href={url} download={name} className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
+        <a href={url} download={name} className="text-label font-medium text-blue-600 hover:underline dark:text-blue-400">
           Descarcă {name}
         </a>
       )}
@@ -167,7 +167,7 @@ export function DownloadBothButton({
       type="button"
       onClick={handleClick}
       disabled={busy}
-      className="self-start text-sm font-medium text-blue-600 hover:underline disabled:opacity-60 dark:text-blue-400"
+      className="self-start text-label font-medium text-blue-600 hover:underline disabled:opacity-60 dark:text-blue-400"
     >
       {busy ? 'Se pregătește…' : 'Descarcă ambele (print + contur, .zip)'}
     </button>
@@ -182,9 +182,9 @@ export function ResultPanel({ title, result, downloadName }: { title: string; re
   const hasCuttingMetrics = result.timeCuttingPerCardS !== undefined
 
   return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
-      <div className="grid grid-cols-2 gap-2 text-sm text-gray-700 dark:text-gray-300">
+    <div className="flex flex-col gap-inner">
+      <h3 className="text-title font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+      <div className="grid grid-cols-2 gap-inner text-label text-gray-700 dark:text-gray-300">
         <div>Carduri pe pagină: <span className="font-semibold">{result.cardsPerPage}</span></div>
         {hasCuttingMetrics && (
           <>
@@ -201,8 +201,8 @@ export function ResultPanel({ title, result, downloadName }: { title: string; re
       </div>
 
       {pdfUrl && (
-        <div className="mt-2 flex flex-col gap-2">
-          <a href={pdfUrl} download={downloadName} className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
+        <div className="mt-inner flex flex-col gap-inner">
+          <a href={pdfUrl} download={downloadName} className="text-label font-medium text-blue-600 hover:underline dark:text-blue-400">
             Descarcă {downloadName}
           </a>
           <iframe title={`Previzualizare ${title}`} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200 dark:border-gray-700" />

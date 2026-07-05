@@ -172,11 +172,11 @@ export function GoogleFontPicker({
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-inner">
       <div className="relative">
         <TextField label="Google Font" value={query} onChange={handleQueryChange} placeholder="Caută un font (ex: Roboto)" />
         {matches.length > 0 && (
-          <ul ref={listRef} className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded border border-gray-300 bg-white text-sm shadow-lg dark:border-gray-600 dark:bg-gray-800">
+          <ul ref={listRef} className="absolute z-10 mt-tight max-h-48 w-full overflow-auto rounded border border-gray-300 bg-white text-label shadow-lg dark:border-gray-600 dark:bg-gray-800">
             {matches.map((name) => (
               <li key={name} data-family={name}>
                 <button
@@ -184,8 +184,8 @@ export function GoogleFontPicker({
                   onClick={() => selectFamily(name)}
                   className="flex w-full flex-col gap-0.5 px-2 py-1 text-left hover:bg-blue-50 dark:hover:bg-gray-700"
                 >
-                  <span className="text-xs text-gray-500 dark:text-gray-400">{name}</span>
-                  <span className="text-lg leading-tight text-gray-900 dark:text-gray-100" style={{ fontFamily: `"${name}", sans-serif` }}>
+                  <span className="text-hint text-gray-500 dark:text-gray-400">{name}</span>
+                  <span className="text-title leading-tight text-gray-900 dark:text-gray-100" style={{ fontFamily: `"${name}", sans-serif` }}>
                     {PREVIEW_SAMPLE}
                   </span>
                 </button>
@@ -196,19 +196,19 @@ export function GoogleFontPicker({
       </div>
 
       {value?.family && (
-        <span className="text-2xl leading-tight text-gray-900 dark:text-gray-100" style={{ fontFamily: `"${value.family}", sans-serif` }}>
+        <span className="text-page leading-tight text-gray-900 dark:text-gray-100" style={{ fontFamily: `"${value.family}", sans-serif` }}>
           {PREVIEW_SAMPLE}
         </span>
       )}
 
       {value?.family && !latinExtOk && (
-        <p className="text-sm text-amber-600 dark:text-amber-400">
+        <p className="text-label text-amber-600 dark:text-amber-400">
           ⚠ Acest font nu acoperă diacriticele românești (ș, ț, ă, â, î).
         </p>
       )}
 
       {value?.family && styles.length > 0 && (
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-inner">
           <SelectField
             label="Stil"
             value={value.style}
@@ -218,15 +218,15 @@ export function GoogleFontPicker({
           <button
             type="button"
             onClick={clear}
-            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             Șterge
           </button>
         </div>
       )}
 
-      {loading && <p className="text-sm text-gray-500 dark:text-gray-400">Se încarcă fontul...</p>}
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {loading && <p className="text-label text-gray-500 dark:text-gray-400">Se încarcă fontul...</p>}
+      {error && <p className="text-label text-red-600 dark:text-red-400">{error}</p>}
     </div>
   )
 }

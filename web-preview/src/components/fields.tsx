@@ -34,7 +34,7 @@ export function NumberField({
     return r
   }
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
+    <label className="flex flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="number"
@@ -120,7 +120,7 @@ export function LinkedDimensions({
     }
   }
   return (
-    <div className="flex flex-wrap items-end gap-3">
+    <div className="flex flex-wrap items-end gap-field">
       <div className="min-w-40 flex-1">
         <NumberField label={widthLabel} value={width} max={maxWidth} onChange={emitFromWidth} />
       </div>
@@ -138,7 +138,7 @@ export function LinkedDimensions({
         }
         aria-label={locked ? 'Păstrează proporțiile' : 'Dimensiuni libere'}
         className={
-          'mb-1 rounded px-2 py-1 text-base transition ' +
+          'mb-tight rounded px-2 py-1 text-label transition ' +
           (lockToggleDisabled ? 'cursor-not-allowed opacity-60 ' : '') +
           (locked
             ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
@@ -153,7 +153,7 @@ export function LinkedDimensions({
           onClick={onSwap}
           title="Schimbă lățimea cu înălțimea (portret ⇄ peisaj)"
           aria-label="Schimbă orientarea"
-          className="mb-1 rounded bg-gray-200 px-2 py-1 text-base text-gray-600 transition hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+          className="mb-tight rounded bg-gray-200 px-2 py-1 text-label text-gray-600 transition hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           ⇄
         </button>
@@ -181,7 +181,7 @@ export function TextField({
   type?: 'text' | 'password'
 }) {
   return (
-    <label className="flex min-w-0 flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
+    <label className="flex min-w-0 flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type={type}
@@ -206,7 +206,7 @@ export function CheckboxField({
   onChange: (value: boolean) => void
 }) {
   return (
-    <label className="-mx-2 flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800">
+    <label className="-mx-2 flex cursor-pointer items-center gap-inner rounded px-2 py-1 text-label text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800">
       <input
         type="checkbox"
         checked={checked}
@@ -230,16 +230,16 @@ export function RadioGroupField<T extends string>({
   onChange: (value: T) => void
 }) {
   return (
-    <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
+    <fieldset className="flex flex-col gap-inner text-label text-gray-700 dark:text-gray-300">
       <legend className="font-medium">{label}</legend>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-inner">
         {options.map((opt) => {
           const isSelected = value === opt.value
           return (
             <label
               key={opt.value}
               className={
-                'flex w-fit cursor-pointer items-start gap-2 rounded px-2 py-1 transition ' +
+                'flex w-fit cursor-pointer items-start gap-inner rounded px-2 py-1 transition ' +
                 (isSelected
                   ? 'text-gray-900 dark:text-gray-100'
                   : 'opacity-60 hover:opacity-100 hover:bg-gray-100 dark:hover:bg-gray-800')
@@ -249,11 +249,11 @@ export function RadioGroupField<T extends string>({
                 type="radio"
                 checked={isSelected}
                 onChange={() => onChange(opt.value)}
-                className="mt-1 h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
+                className="mt-tight h-4 w-4 cursor-pointer border-gray-300 dark:border-gray-600 dark:bg-gray-800"
               />
               <span>
                 <span className={isSelected ? 'font-semibold' : 'font-normal'}>{opt.label}</span>
-                {opt.description && <span className="block text-xs text-gray-500 dark:text-gray-400">{opt.description}</span>}
+                {opt.description && <span className="block text-hint text-gray-500 dark:text-gray-400">{opt.description}</span>}
               </span>
             </label>
           )
@@ -279,7 +279,7 @@ export function SelectField<T extends string>({
   warning?: string
 }) {
   return (
-    <label className="flex flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
+    <label className="flex flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <select
         value={value}
@@ -296,7 +296,7 @@ export function SelectField<T extends string>({
           </option>
         ))}
       </select>
-      {warning && <span className="text-xs text-amber-600 dark:text-amber-400">{warning}</span>}
+      {warning && <span className="text-hint text-amber-600 dark:text-amber-400">{warning}</span>}
     </label>
   )
 }
@@ -483,11 +483,11 @@ export function ColorField({
   }
 
   return (
-    <fieldset className="flex flex-col gap-2 text-sm text-gray-700 dark:text-gray-300">
+    <fieldset className="flex flex-col gap-inner text-label text-gray-700 dark:text-gray-300">
       <div className="flex items-center justify-between">
         <span className="font-medium">{label}</span>
         {allowNone && (
-          <label className="flex cursor-pointer items-center gap-1 text-xs">
+          <label className="flex cursor-pointer items-center gap-tight text-hint">
             <input
               type="checkbox"
               checked={value === null}
@@ -499,7 +499,7 @@ export function ColorField({
         )}
       </div>
       {showPicker && (
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-field">
           <div ref={containerRef} className="relative shrink-0">
             <button
               type="button"
@@ -512,8 +512,8 @@ export function ColorField({
               <div
                 ref={panelRef}
                 className={
-                  'absolute z-10 flex flex-col gap-2 rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800 ' +
-                  (placement.vertical === 'top' ? 'bottom-full mb-1 ' : 'top-full mt-1 ') +
+                  'absolute z-10 flex flex-col gap-inner rounded border border-gray-300 bg-white p-2 shadow-lg dark:border-gray-600 dark:bg-gray-800 ' +
+                  (placement.vertical === 'top' ? 'bottom-full mb-tight ' : 'top-full mt-tight ') +
                   (placement.horizontal === 'right' ? 'right-0' : 'left-0')
                 }
               >
@@ -530,7 +530,7 @@ export function ColorField({
                     />
                   )}
                 </div>
-                <label className="flex items-center gap-2 text-xs">
+                <label className="flex items-center gap-inner text-hint">
                   <span className="w-4 font-medium">K</span>
                   <input
                     type="range"
@@ -548,7 +548,7 @@ export function ColorField({
                     onClick={pickFromPreview}
                     aria-label="Alege o culoare din previzualizare"
                     title="Alege o culoare din previzualizare"
-                    className="flex items-center justify-center gap-1.5 rounded border border-gray-300 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
+                    className="flex items-center justify-center gap-tight rounded border border-gray-300 px-2 py-1 text-hint hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
                       <path d="M15 11.25l1.5 1.5.75-.75V8.758l2.276-.61a3 3 0 10-3.675-3.675l-.61 2.277H12l-.75.75 1.5 1.5M15 11.25l-8.47 8.47c-.34.34-.8.53-1.28.53s-.94.19-1.28.53l-.97.97-.75-.75.97-.97c.34-.34.53-.8.53-1.28s.19-.94.53-1.28L12.75 9M15 11.25L12.75 9" />
@@ -559,9 +559,9 @@ export function ColorField({
               </div>
             )}
           </div>
-          <div className="flex flex-1 flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-1 flex-wrap items-center justify-between gap-inner">
             {CMYK_CHANNELS.map(({ key, label: ch }) => (
-              <label key={key} className="flex items-center gap-1">
+              <label key={key} className="flex items-center gap-tight">
                 <span className="w-4 font-medium">{ch}</span>
                 <input
                   type="number"
@@ -571,7 +571,7 @@ export function ColorField({
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel(key, Number(e.target.value))}
                   className="w-14 rounded border border-gray-300 px-1 py-0.5 text-right focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-xs text-gray-500 dark:text-gray-400">%</span>
+                <span className="text-hint text-gray-500 dark:text-gray-400">%</span>
               </label>
             ))}
           </div>
@@ -598,17 +598,17 @@ export function FileField({
   currentName?: string | null
 }) {
   return (
-    <label className="flex min-w-0 flex-col gap-1 text-sm text-gray-700 dark:text-gray-300">
+    <label className="flex min-w-0 flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
       <span className="font-medium">{label}</span>
       <input
         type="file"
         accept={accept}
         multiple={multiple}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.files)}
-        className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 text-sm file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
+        className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 text-label file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
       />
       {currentName ? (
-        <span className="min-w-0 break-all text-xs text-green-600 dark:text-green-500">
+        <span className="min-w-0 break-all text-hint text-green-600 dark:text-green-500">
           ✓ Fișier selectat: {currentName}
         </span>
       ) : null}
@@ -621,36 +621,38 @@ export function Section({
   children,
   collapsible,
   defaultCollapsed,
+  frame = 'none',
 }: {
   title: string
   children: React.ReactNode
   collapsible?: boolean
   defaultCollapsed?: boolean
+  // 'top': only a top rule under the legend — the outermost, step-level
+  // sections (Fundal/Contur/…). 'none' (default): no border at all — every
+  // other section (nested collapsibles, Previzualizare, Rezultat, …).
+  frame?: 'top' | 'none'
 }) {
   const [open, setOpen] = useState(!defaultCollapsed)
+  const frameClasses =
+    frame === 'top' ? 'border-t border-gray-200 p-block dark:border-gray-700' : 'border-0 p-block'
 
   if (!collapsible) {
     return (
-      <fieldset className="flex flex-col gap-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
-        <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</legend>
+      <fieldset className={'flex flex-col gap-field ' + frameClasses}>
+        <legend className="px-1 text-title font-semibold text-gray-900 dark:text-gray-100">{title}</legend>
         {children}
       </fieldset>
     )
   }
 
   return (
-    <fieldset
-      className={
-        'flex flex-col gap-3 ' +
-        (open ? 'rounded-lg border border-gray-200 p-4 dark:border-gray-700' : 'border-0 p-0')
-      }
-    >
+    <fieldset className={'flex flex-col gap-field ' + (open ? frameClasses : 'border-0 p-0')}>
       <legend className={open ? 'px-1' : 'p-0'}>
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
-          className="inline-flex items-center gap-1 text-sm font-semibold text-gray-900 hover:text-gray-700 dark:text-gray-100 dark:hover:text-gray-300"
+          className="inline-flex items-center gap-tight text-title font-semibold text-gray-900 hover:text-gray-700 dark:text-gray-100 dark:hover:text-gray-300"
         >
           <svg
             viewBox="0 0 24 24"

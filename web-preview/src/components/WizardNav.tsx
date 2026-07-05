@@ -19,7 +19,7 @@ export function WizardNav({
   lockedHint?: string
 }) {
   return (
-    <ol className="flex flex-wrap gap-2">
+    <ol className="flex flex-wrap gap-inner">
       {steps.map((step, index) => {
         const active = step.id === current
         const enabled = active || isEnabled(step, index)
@@ -30,7 +30,7 @@ export function WizardNav({
               onClick={() => enabled && onSelect(step.id)}
               disabled={!enabled}
               title={!enabled ? lockedHint : undefined}
-              className={`flex items-center gap-2 rounded-full px-3 py-1 text-md font-medium ${
+              className={`flex items-center gap-inner rounded-full px-3 py-1 text-label font-medium ${
                 active
                   ? 'bg-blue-600 text-white'
                   : enabled
@@ -39,7 +39,7 @@ export function WizardNav({
               }`}
             >
               <span
-                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-hint ${
                   active ? 'bg-white/20' : 'bg-gray-300 dark:bg-gray-700'
                 }`}
               >
@@ -68,23 +68,23 @@ export function WizardFooter({
   nextDisabled?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between border-t border-gray-200 pt-4 dark:border-gray-700">
+    <div className="flex items-center justify-between border-t border-gray-200 pt-block dark:border-gray-700">
       <button
         type="button"
         onClick={onBack}
         disabled={stepIndex === 0}
-        className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
       >
         ← Înapoi
       </button>
-      <span className="text-sm text-gray-500 dark:text-gray-400">
+      <span className="text-label text-gray-500 dark:text-gray-400">
         Pasul {stepIndex + 1} din {stepCount}
       </span>
       <button
         type="button"
         onClick={onNext}
         disabled={stepIndex === stepCount - 1 || nextDisabled}
-        className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+        className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
       >
         Continuă →
       </button>

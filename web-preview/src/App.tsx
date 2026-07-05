@@ -2902,17 +2902,17 @@ export default function App() {
 
   return (
     <ColorSampleContext.Provider value={background ? requestColorSample : null}>
-    <div className="mx-auto max-w-6xl px-4 py-8 dark:bg-gray-950 dark:text-gray-100">
-      <div className="mb-1 flex items-start justify-between gap-4">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Printare coduri unice / Decupare pe contur</h1>
-        <div className="flex items-center gap-2">
+    <div className="mx-auto max-w-6xl px-block py-section dark:bg-gray-950 dark:text-gray-100">
+      <div className="mb-tight flex items-start justify-between gap-block">
+        <h1 className="text-page font-bold text-gray-900 dark:text-gray-100">Printare coduri unice / Decupare pe contur</h1>
+        <div className="flex items-center gap-inner">
           <button
             type="button"
             onClick={undo}
             disabled={!canUndo}
             title="Anulează (Ctrl+Z)"
             aria-label="Anulează (Ctrl+Z)"
-            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             ↶
           </button>
@@ -2922,29 +2922,29 @@ export default function App() {
             disabled={!canRedo}
             title="Refă (Ctrl+Shift+Z)"
             aria-label="Refă (Ctrl+Shift+Z)"
-            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             ↷
           </button>
           <button
             type="button"
             onClick={toggleTheme}
-            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             {theme === 'dark' ? 'Mod luminos' : 'Mod întunecat'}
           </button>
         </div>
       </div>
-      <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
+      <p className="mb-block text-label text-gray-500 dark:text-gray-400">
         Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
       </p>
 
       <Section title="Setări" collapsible defaultCollapsed>
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-field">
           <button
             type="button"
             onClick={handleSavePreset}
-            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             Salvează setările (.zip)
           </button>
@@ -2954,10 +2954,10 @@ export default function App() {
             onChange={(files) => handleLoadPresetFile(files?.[0] ?? null)}
           />
         </div>
-        {presetError && <p className="text-sm text-red-600 dark:text-red-400">{presetError}</p>}
+        {presetError && <p className="text-label text-red-600 dark:text-red-400">{presetError}</p>}
       </Section>
 
-      <div className="my-4">
+      <div className="my-block">
         <WizardNav
           steps={WIZARD_STEPS}
           current={step}
@@ -2975,10 +2975,10 @@ export default function App() {
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-section lg:grid-cols-2">
+        <div className="flex flex-col gap-block">
           {step === 'fundal' && (
-          <Section title="Fundal">
+          <Section title="Fundal" frame="top">
             <RadioGroupField<BackgroundSource>
               label="Sursă fundal print"
               value={backgroundSource}
@@ -2993,7 +2993,7 @@ export default function App() {
               // File input and its page picker are tightly related: keep them on
               // one row (the file grows, the page field stays narrow) and only let
               // them wrap when the row genuinely can't fit.
-              <div className="flex flex-wrap items-start gap-3">
+              <div className="flex flex-wrap items-start gap-field">
                 <div className="min-w-0 flex-1">
                   <FileField
                     label="PDF de fundal (un card)"
@@ -3054,7 +3054,7 @@ export default function App() {
                     currentName={genBgImageFile?.name}
                   />
                 ) : genBgImageSource === 'url' ? (
-                  <div className="flex items-end gap-2">
+                  <div className="flex items-end gap-inner">
                     <div className="min-w-0 flex-1">
                       <TextField
                         label="URL imagine (PNG, JPEG sau SVG)"
@@ -3067,7 +3067,7 @@ export default function App() {
                       type="button"
                       onClick={handleGenBgUrlLoad}
                       disabled={genBgLoading}
-                      className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
                       Încarcă
                     </button>
@@ -3076,45 +3076,45 @@ export default function App() {
                   <div
                     onPaste={handleBackgroundPaste}
                     tabIndex={0}
-                    className="flex flex-col gap-2 rounded border border-dashed border-gray-300 p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
+                    className="flex flex-col gap-inner rounded border border-dashed border-gray-300 p-field focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
                   >
                     <button
                       type="button"
                       onClick={handlePasteBackgroundFromButton}
                       disabled={genBgLoading}
-                      className="self-start rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                      className="self-start rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
                       📋 Lipește imaginea
                     </button>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
                       Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG/SVG) din clipboard.
                     </p>
                   </div>
                 )}
                 {background && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-hint text-gray-500 dark:text-gray-400">
                     Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
                   </p>
                 )}
                 {genBgSvgTextWarning && (
-                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                  <p className="text-label text-amber-600 dark:text-amber-400">
                     Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.
                   </p>
                 )}
                 {genBgLoading && (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
+                  <p className="text-label text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
                 )}
               </>
             )}
-            {backgroundError && <p className="text-sm text-red-600 dark:text-red-400">{backgroundError}</p>}
+            {backgroundError && <p className="text-label text-red-600 dark:text-red-400">{backgroundError}</p>}
             {backgroundSource === 'upload' && background && (
               <>
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm dark:border-sky-800 dark:bg-sky-950/40">
-                  <span className="text-xs font-medium uppercase tracking-wide text-sky-500 dark:text-sky-500">Dimensiuni detectate</span>
+                <div className="flex flex-wrap items-baseline gap-x-field gap-y-tight rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-label dark:border-sky-800 dark:bg-sky-950/40">
+                  <span className="text-hint font-medium uppercase tracking-wide text-sky-500 dark:text-sky-500">Dimensiuni detectate</span>
                   <span className="font-semibold tabular-nums text-sky-700 dark:text-sky-300">
                     {(background.widthPt / MM).toFixed(1)} × {(background.heightPt / MM).toFixed(1)} mm
                   </span>
-                  <span className="text-xs text-sky-500 dark:text-sky-600">
+                  <span className="text-hint text-sky-500 dark:text-sky-600">
                     ({background.widthPt.toFixed(0)} × {background.heightPt.toFixed(0)} pt)
                   </span>
                 </div>
@@ -3136,16 +3136,16 @@ export default function App() {
                     setBgField('bgTargetHeightMm', w)
                   }}
                 />
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div className="flex flex-wrap items-center gap-x-field gap-y-inner">
                   <button
                     type="button"
                     onClick={rotateBackground}
                     title="Rotește fundalul cu 90° (portret ⇄ peisaj)"
-                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     ↻ Rotește 90°
                   </button>
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                  <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
                   <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => flipUploadBackground('x', v)} />
                   <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => flipUploadBackground('y', v)} />
                 </div>
@@ -3171,16 +3171,16 @@ export default function App() {
                     setBgField('genBgHeightMm', w)
                   }}
                 />
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div className="flex flex-wrap items-center gap-x-field gap-y-inner">
                   <button
                     type="button"
                     onClick={rotateBackground}
                     title="Rotește imaginea cu 90° (portret ⇄ peisaj)"
-                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     ↻ Rotește 90°
                   </button>
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
+                  <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
                   <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => setBgField('bgFlipX', v)} />
                   <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => setBgField('bgFlipY', v)} />
                 </div>
@@ -3194,7 +3194,7 @@ export default function App() {
                       noneLabel="carouri (transparent)"
                       hideWhenNull
                     />
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
                       Culoarea aleasă umple zonele transparente în PDF-ul exportat; „carouri” păstrează transparența.
                     </p>
                   </>
@@ -3202,12 +3202,12 @@ export default function App() {
               </>
             )}
             {background && (
-              <div className="flex flex-col gap-2 border-t border-gray-200 pt-3 dark:border-gray-700">
+              <div className="flex flex-col gap-inner border-t border-gray-200 pt-field dark:border-gray-700">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Poziționare fundal</span>
+                  <span className="text-label font-medium text-gray-700 dark:text-gray-300">Poziționare fundal</span>
                   <CheckboxField label="Mută fundalul" checked={bgNudgeMode} onChange={setBgNudgeMode} />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-field">
                   <NumberField label="Decalaj fundal X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
                   <NumberField label="Decalaj fundal Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
                 </div>
@@ -3220,7 +3220,7 @@ export default function App() {
                   noneLabel="transparent"
                   hideWhenNull
                 />
-                <p className="text-xs text-gray-500 dark:text-gray-400">
+                <p className="text-hint text-gray-500 dark:text-gray-400">
                   Deplasează fundalul în cadrul cardului; zonele rămase libere sunt transparente (sau umplute cu culoarea aleasă mai sus). Activează „Mută fundalul” pentru a trage direct în previzualizare.
                 </p>
               </div>
@@ -3229,7 +3229,7 @@ export default function App() {
           )}
 
           {step === 'contur' && (
-          <Section title="Contur">
+          <Section title="Contur" frame="top">
             {/* "Încarcă PDF" and "Încarcă SVG" are the same internal source
                 ('upload'): an SVG is converted to a vector PDF on pick, so only
                 the file field differs. `contourUploadKind` (UI-only) picks the
@@ -3267,7 +3267,7 @@ export default function App() {
                   />
                 )}
                 {contourSvgTextWarning && (
-                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                  <p className="text-label text-amber-600 dark:text-amber-400">
                     Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.
                   </p>
                 )}
@@ -3278,7 +3278,7 @@ export default function App() {
                       value={contourPageNumber}
                       onChange={handleContourPageChange}
                     />
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
                       {contourPageAutoPicked
                         ? `Aplicația folosește automat pagina ${contourPageNumber} din ${contourPageCount} (diferită de pagina fundalului).`
                         : `Aplicația folosește pagina ${contourPageNumber} din ${contourPageCount}.`}
@@ -3293,7 +3293,7 @@ export default function App() {
                       onChange={handleContourTrimChange}
                     />
                     {contourTrimToPath && (
-                      <p className="text-xs text-amber-600 dark:text-amber-500">
+                      <p className="text-hint text-amber-600 dark:text-amber-500">
                         Atenție: conturul este redus la conturul desenului, ignorând marginile
                         goale ale paginii. Aliniați cu grijă decuparea la print.
                       </p>
@@ -3306,7 +3306,7 @@ export default function App() {
                 {/* Shape and its corner controls are tightly related: keep them on
                     one row (fragments are DOM-transparent, so the conditional fields
                     become direct flex children) and only wrap as a last resort. */}
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                   <SelectField
                     label="Formă"
                     value={shapeKind}
@@ -3335,22 +3335,22 @@ export default function App() {
                   )}
                 </div>
                 {!background && (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
+                  <p className="text-label text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
                 )}
-                {shapeError && <p className="text-sm text-red-600 dark:text-red-400">{shapeError}</p>}
+                {shapeError && <p className="text-label text-red-600 dark:text-red-400">{shapeError}</p>}
               </>
             )}
-            {contourBackgroundError && <p className="text-sm text-red-600 dark:text-red-400">{contourBackgroundError}</p>}
+            {contourBackgroundError && <p className="text-label text-red-600 dark:text-red-400">{contourBackgroundError}</p>}
             {contourBackground && (
               <>
                 {/* Design size — the width/height controls below. The "Redesenează"
                     offset never changes this; it only affects the resulting cut,
                     reported on its own line so the size controls stay stable. */}
-                <p className="text-sm text-gray-500 dark:text-gray-400">
+                <p className="text-label text-gray-500 dark:text-gray-400">
                   Dimensiune contur: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
                 {contourRedrawActive && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-hint text-gray-500 dark:text-gray-400">
                     După redesenare ({contourRedrawMm > 0 ? '+' : ''}{contourRedrawMm} mm): tăiere {activeContourWidthMm.toFixed(1)} × {activeContourHeightMm.toFixed(1)} mm
                   </p>
                 )}
@@ -3391,16 +3391,16 @@ export default function App() {
                         setContourField('contourTargetHeightMm', w)
                       }}
                     />
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-field">
                       <button
                         type="button"
                         onClick={rotateContour}
                         title="Rotește conturul cu 90° (portret ⇄ peisaj)"
-                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                        className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       >
                         ↻ Rotește 90°
                       </button>
-                      <span className="text-sm text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
+                      <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
                     </div>
                     <NumberField label="Rotație contur (grade)" value={contourSpinDeg} onChange={(v) => setContourField('contourSpinDeg', v)} step={1} />
                   </>
@@ -3414,12 +3414,12 @@ export default function App() {
                   step={0.5}
                   onChange={(v) => setContourField('contourRedrawMm', isFinite(v) ? v : 0)}
                 />
-                <p className="text-xs text-gray-500 dark:text-gray-400">
+                <p className="text-hint text-gray-500 dark:text-gray-400">
                   Decalează întregul contur cu aceeași distanță pe tot conturul (die-line). 0 = neschimbat.
                 </p>
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
                   <>
-                    <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                    <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                       <NumberField
                         label={`Decalaj X contur (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetXMm}
@@ -3436,14 +3436,14 @@ export default function App() {
                     {/* Snap the contour to the centre of its available room on each
                         axis: the midpoint of [min, max] (0 for a centred full-card
                         shape, (card − contour)/2 for a resized/corner-anchored one). */}
-                    <div className="flex flex-wrap items-center gap-3">
-                      <span className="text-sm text-gray-600 dark:text-gray-400">Centrează:</span>
+                    <div className="flex flex-wrap items-center gap-field">
+                      <span className="text-label text-gray-600 dark:text-gray-400">Centrează:</span>
                       <button
                         type="button"
                         onClick={() => setContourField('contourOffsetXMm', (contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
                         disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
                         title="Centrează conturul pe orizontală"
-                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                        className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       >
                         ↔ Orizontal
                       </button>
@@ -3452,18 +3452,18 @@ export default function App() {
                         onClick={() => setContourField('contourOffsetYMm', (contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
                         disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
                         title="Centrează conturul pe verticală"
-                        className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                        className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       >
                         ↕ Vertical
                       </button>
                     </div>
                   </>
                 ) : (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                  <p className="text-label text-gray-500 dark:text-gray-400">
                     Conturul ocupă tot fundalul — nu există spațiu pentru decalaj. Folosește un contur mai mic decât fundalul.
                   </p>
                 )}
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                   <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={(v) => setContourField('contourOpacity', v)} step={0.1} min={0} max={1} />
                   <SelectField
                     label="Mod combinare contur"
@@ -3487,35 +3487,35 @@ export default function App() {
 
           {step === 'aspect' && (
           <>
-          <Section title="Text exemplu">
+          <Section title="Text exemplu" frame="top">
             <TextField
               label={`Rând CSV exemplu (separator: ${describeSeparator(codeSeparator)})`}
               value={sampleTextDisplay}
               onChange={(v) => handleSampleTextChange(v, codeSeparator)}
             />
-            <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+            <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine (mm)" value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
               <NumberField label="Distanțăre contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
             </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
+            <p className="text-label text-gray-500 dark:text-gray-400">
               „Distanțare contur” este distanța minimă față de tăietură: e folosită atât pentru
               verificare (codurile trebuie să stea cel puțin atât de departe de tăietură ca să fie
               „sigure”), cât și ca margine pentru alinierile „(contur)”. Se aplică doar când
               folosești un contur de tăiere.
             </p>
-            {fontsError && <p className="text-sm text-red-600 dark:text-red-400">{fontsError}</p>}
-            {fontsNotice && <p className="text-sm text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
+            {fontsError && <p className="text-label text-red-600 dark:text-red-400">{fontsError}</p>}
+            {fontsNotice && <p className="text-label text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
 
-          <Section title="Coduri">
-            <div className="flex flex-wrap gap-2">
+          <Section title="Coduri" frame="top">
+            <div className="flex flex-wrap gap-inner">
               {words.map((word, index) => (
                 <button
                   key={index}
                   type="button"
                   onClick={() => setSelectedIndex(index)}
-                  className={`rounded-full px-3 py-1 text-sm font-medium ${
+                  className={`rounded-full px-3 py-1 text-label font-medium ${
                     selectedIndex === index
                       ? 'bg-blue-600 text-white'
                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
@@ -3527,9 +3527,9 @@ export default function App() {
             </div>
 
             {selected && selectedIndex !== null && (
-              <div className="flex flex-col gap-3 border-t border-gray-200 pt-3 dark:border-gray-700">
+              <div className="flex flex-col gap-field border-t border-gray-200 pt-field dark:border-gray-700">
               <Section title="Tipografie" collapsible>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
                 <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
                 </div>
@@ -3543,7 +3543,7 @@ export default function App() {
                       { value: 'custom', label: 'Fișier propriu (.ttf/.otf)' },
                     ]}
                   />
-                  <div className="mt-2">
+                  <div className="mt-inner">
                     {fontSources[selectedIndex] === 'google' ? (
                       <GoogleFontPicker
                         key={selectedIndex}
@@ -3559,7 +3559,7 @@ export default function App() {
                           onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
                         />
                         {fonts[selectedIndex] && (
-                          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
+                          <p className="mt-tight text-label text-gray-500 dark:text-gray-400">{fonts[selectedIndex]?.fileName}</p>
                         )}
                       </>
                     )}
@@ -3567,7 +3567,7 @@ export default function App() {
                 </div>
               </Section>
               <Section title="Poziție" collapsible>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                 <SelectField<Align | 'custom'>
                   label="Aliniere orizontală"
                   warning={selected.xMm !== null && !selected.align.startsWith('contour-') ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
@@ -3658,7 +3658,7 @@ export default function App() {
                 {/* Opacity, blend mode and rotation are tightly related: a small
                     min-width floor keeps them sharing one row and wrapping only as
                     a last resort when the column is too narrow. */}
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-24 [&>*]:flex-1">
+                <div className="flex flex-wrap gap-field [&>*]:min-w-24 [&>*]:flex-1">
                   <NumberField
                     label="Opacitate (0-1)"
                     value={selected.opacity}
@@ -3675,7 +3675,7 @@ export default function App() {
                   />
                   <NumberField label="Rotație (grade)" value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
                 </div>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                   <CheckboxField label="Oglindire X" checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
                   <CheckboxField label="Oglindire Y" checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />
                 </div>
@@ -3691,7 +3691,7 @@ export default function App() {
                   // Width, transparency and blend mode are tightly related: a small
                   // min-width floor keeps them sharing one row and wrapping only as
                   // a last resort when the column is too narrow.
-                  <div className="flex flex-wrap gap-3 [&>*]:min-w-24 [&>*]:flex-1">
+                  <div className="flex flex-wrap gap-field [&>*]:min-w-24 [&>*]:flex-1">
                     <NumberField
                       label="Lățime (mm, gol = automat)"
                       value={selected.backgroundWidthMm ?? NaN}
@@ -3721,7 +3721,7 @@ export default function App() {
                   onChange={(v) => updateWord(selectedIndex, { contourColor: v })}
                 />
                 {selected.contourColor !== null && (
-                  <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                  <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                     <NumberField label="Lățime contur (mm)" value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
                     <SelectField
                       label="Mod îmbinare contur"
@@ -3778,19 +3778,19 @@ export default function App() {
           <>
           {!generateUnlocked && (
             <Section title="Cere ofertă">
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-label text-gray-600 dark:text-gray-400">
                 Descarcă fișierul cu setările tale (inclusiv fundalurile și fonturile folosite), apoi trimite-ni-l pe
                 email pentru o ofertă personalizată.
               </p>
               <button
                 type="button"
                 onClick={() => void handleRequestQuote()}
-                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
               >
                 Descarcă setările pentru ofertă (.zip)
               </button>
-              {quoteError && <p className="text-sm text-red-600 dark:text-red-400">{quoteError}</p>}
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              {quoteError && <p className="text-label text-red-600 dark:text-red-400">{quoteError}</p>}
+              <p className="text-label text-gray-600 dark:text-gray-400">
                 După descărcare,{' '}
                 <a
                   href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent('Cerere ofertă')}&body=${encodeURIComponent(
@@ -3806,18 +3806,18 @@ export default function App() {
             </Section>
           )}
 
-          <Section title="Generare">
+          <Section title="Generare" frame="top">
             {!generateUnlocked ? (
               <>
                 <TextField label="Parolă" type="password" value={passwordInput} onChange={setPasswordInput} />
                 <button
                   type="button"
                   onClick={handleUnlock}
-                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
+                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
                 >
                   Deblochează
                 </button>
-                {passwordError && <p className="text-sm text-red-600 dark:text-red-400">{passwordError}</p>}
+                {passwordError && <p className="text-label text-red-600 dark:text-red-400">{passwordError}</p>}
               </>
             ) : (
               <>
@@ -3835,8 +3835,8 @@ export default function App() {
             {/* No-cut mode skips imposition, so the host-sheet/circle fields are ignored. */}
             {!pageOptions.noCut && (
               <>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <p className="text-label font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                   <NumberField label="Lățime pagină (mm)" value={pageOptions.hostWidthMm} onChange={(v) => setPageOption('hostWidthMm', v)} />
                   <NumberField label="Înălțime pagină (mm)" value={pageOptions.hostHeightMm} onChange={(v) => setPageOption('hostHeightMm', v)} />
                   <NumberField label="Decalaj X (mm)" value={pageOptions.offsetXMm} onChange={(v) => setPageOption('offsetXMm', Math.max(0, v))} />
@@ -3846,8 +3846,8 @@ export default function App() {
               </>
             )}
 
-            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Opțiuni</p>
-            <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+            <p className="text-label font-medium text-gray-700 dark:text-gray-300">Opțiuni</p>
+            <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
               <CheckboxField
                 label="Non-decupare"
                 checked={pageOptions.noCut}
@@ -3876,13 +3876,13 @@ export default function App() {
               )}
             </div>
             {pageOptions.noCut && (
-              <p className="text-sm text-gray-600 dark:text-gray-400">
+              <p className="text-label text-gray-600 dark:text-gray-400">
                 Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
               </p>
             )}
 
             {bgExceedsSheet && (
-              <p className="text-sm text-amber-600 dark:text-amber-400">
+              <p className="text-label text-amber-600 dark:text-amber-400">
                 ⚠ Fundalul ({effectiveCardWidthMm.toFixed(1)} × {effectiveCardHeightMm.toFixed(1)} mm) nu încape în
                 pagina ({pageOptions.hostWidthMm.toFixed(1)} × {pageOptions.hostHeightMm.toFixed(1)} mm). Mărește pagina
                 sau micșorează cardul.
@@ -3890,7 +3890,7 @@ export default function App() {
             )}
 
             {cutExceedsSheet && (
-              <p className="text-sm text-amber-600 dark:text-amber-400">
+              <p className="text-label text-amber-600 dark:text-amber-400">
                 ⚠ Conturul ({contourFitWidthMm.toFixed(1)} × {contourFitHeightMm.toFixed(1)} mm) nu încape în zona de
                 tăiere a paginii ({Math.max(0, cuttableWidthMm).toFixed(1)} × {Math.max(0, cuttableHeightMm).toFixed(1)}{' '}
                 mm = pagina minus cercurile de reglaj). Mărește pagina, micșorează diametrul cercurilor sau conturul.
@@ -3898,7 +3898,7 @@ export default function App() {
             )}
 
             {contourCappedToFit && (
-              <p className="text-sm text-amber-600 dark:text-amber-400">
+              <p className="text-label text-amber-600 dark:text-amber-400">
                 ⚠ Conturul a fost redus ca să încapă în fundal ({effectiveCardWidthMm.toFixed(1)} ×{' '}
                 {effectiveCardHeightMm.toFixed(1)} mm): {Math.abs(cappedContourSpinDeg - contourSpinDeg) > 1e-3
                   ? `rotația a fost limitată la ${cappedContourSpinDeg.toFixed(0)}° (din ${contourSpinDeg.toFixed(0)}°)`
@@ -3908,7 +3908,7 @@ export default function App() {
             )}
 
             {cutGapTooSmall && (
-              <p className="text-sm text-amber-600 dark:text-amber-400">
+              <p className="text-label text-amber-600 dark:text-amber-400">
                 ⚠ Decalaj X/Y ({pageOptions.offsetXMm.toFixed(1)} × {pageOptions.offsetYMm.toFixed(1)} mm) este prea
                 mic pentru acest contur. Doar un contur dreptunghiular simplu poate avea decalaj 0 (cardurile
                 împart aceeași linie de tăiere). Pentru celelalte forme sau pentru un contur încărcat, un decalaj
@@ -3919,8 +3919,8 @@ export default function App() {
 
             {needsContourInput && pageOptions.measurePaths && (
               <>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Timp de tăiere</p>
-                <div className="flex flex-wrap gap-3 [&>*]:min-w-40 [&>*]:flex-1">
+                <p className="text-label font-medium text-gray-700 dark:text-gray-300">Timp de tăiere</p>
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                   <NumberField label="Viteză de tăiere (mm/s)" value={pageOptions.cuttingSpeedMmS} onChange={(v) => setPageOption('cuttingSpeedMmS', v)} />
                   <NumberField label="Penalizare colț (s)" value={pageOptions.cornerPenaltyS} onChange={(v) => setPageOption('cornerPenaltyS', v)} />
                   <NumberField label="Timp pregătire (s)" value={pageOptions.preparationTimeS} onChange={(v) => setPageOption('preparationTimeS', v)} />
@@ -3930,15 +3930,15 @@ export default function App() {
             )}
 
             {genLoading ? (
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-field">
                 <button
                   type="button"
                   onClick={() => cancelGenRef.current?.()}
-                  className="self-start rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  className="self-start rounded-lg border border-gray-300 px-3 py-2 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                 >
                   Anulează
                 </button>
-                <span className="text-sm text-gray-600 dark:text-gray-400">
+                <span className="text-label text-gray-600 dark:text-gray-400">
                   {genProgress
                     ? `${genProgress.phase === 'contour' ? 'Contur' : 'Print'}: ${genProgress.rowsDone.toLocaleString('ro-RO')}${
                         genProgress.totalRows ? ` / ${genProgress.totalRows.toLocaleString('ro-RO')}` : ''
@@ -3947,12 +3947,12 @@ export default function App() {
                 </span>
               </div>
             ) : (
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-field">
                 <button
                   type="button"
                   onClick={handleGenerate}
                   disabled={sampleLoading}
-                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
+                  className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
                 >
                   Generează PDF
                 </button>
@@ -3961,13 +3961,13 @@ export default function App() {
                   onClick={handleGenerateSample}
                   disabled={sampleLoading}
                   title="Generează un singur card cu conturul deasupra — o probă rapidă, fără tot lotul."
-                  className="self-start rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  className="self-start rounded-lg border border-gray-300 px-4 py-2 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                 >
                   {sampleLoading ? 'Se generează mostra…' : 'Generează o mostră (un card)'}
                 </button>
               </div>
             )}
-            {genError && <p className="text-sm text-red-600 dark:text-red-400">{genError}</p>}
+            {genError && <p className="text-label text-red-600 dark:text-red-400">{genError}</p>}
               </>
             )}
           </Section>
@@ -3975,13 +3975,13 @@ export default function App() {
           )}
 
           {step === 'fundal' && !backgroundDone && (
-            <p className="text-sm text-amber-600 dark:text-amber-400">{backgroundLockedHint}</p>
+            <p className="text-label text-amber-600 dark:text-amber-400">{backgroundLockedHint}</p>
           )}
           {step === 'contur' && !contourDone && (
-            <p className="text-sm text-amber-600 dark:text-amber-400">{contourLockedHint}</p>
+            <p className="text-label text-amber-600 dark:text-amber-400">{contourLockedHint}</p>
           )}
           {step === 'date' && !dataSourceDone && (
-            <p className="text-sm text-amber-600 dark:text-amber-400">{dataSourceLockedHint}</p>
+            <p className="text-label text-amber-600 dark:text-amber-400">{dataSourceLockedHint}</p>
           )}
           <WizardFooter
             stepIndex={stepIndex}
@@ -3996,19 +3996,19 @@ export default function App() {
           />
         </div>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-block">
           <Section title="Previzualizare">
             {background ? (
               <>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-600 dark:text-gray-400">Zoom:</span>
+                <div className="flex items-center gap-inner">
+                  <span className="text-label text-gray-600 dark:text-gray-400">Zoom:</span>
                   <button
                     type="button"
                     onClick={zoomOutPreview}
                     disabled={previewZoom <= PREVIEW_ZOOM_MIN}
                     aria-label="Micșorează previzualizarea"
                     title="Micșorează"
-                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     −
                   </button>
@@ -4017,7 +4017,7 @@ export default function App() {
                     onClick={() => setPreviewZoom(1)}
                     aria-label="Resetează zoom la 100%"
                     title="Resetează la 100%"
-                    className="min-w-14 rounded border border-gray-300 px-2 py-1 text-sm font-medium tabular-nums text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="min-w-14 rounded border border-gray-300 px-2 py-1 text-label font-medium tabular-nums text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     {Math.round(previewZoom * 100)}%
                   </button>
@@ -4027,12 +4027,12 @@ export default function App() {
                     disabled={previewZoom >= PREVIEW_ZOOM_MAX}
                     aria-label="Mărește previzualizarea"
                     title="Mărește"
-                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     +
                   </button>
                   <label
-                    className="ml-auto flex cursor-pointer items-center gap-1 text-sm text-gray-700 dark:text-gray-300"
+                    className="ml-auto flex cursor-pointer items-center gap-tight text-label text-gray-700 dark:text-gray-300"
                     title="Captura descarcă un fișier în loc să copieze în clipboard"
                   >
                     <input
@@ -4044,7 +4044,7 @@ export default function App() {
                     <span className="font-medium">Descarcă</span>
                   </label>
                   <label
-                    className={`flex items-center gap-1 text-sm ${hasContour ? 'cursor-pointer text-gray-700 dark:text-gray-300' : 'cursor-not-allowed text-gray-400 dark:text-gray-600'}`}
+                    className={`flex items-center gap-tight text-label ${hasContour ? 'cursor-pointer text-gray-700 dark:text-gray-300' : 'cursor-not-allowed text-gray-400 dark:text-gray-600'}`}
                     title="Captura decupează doar imprimarea și codurile din interiorul conturului, ca PNG transparent"
                   >
                     <input
@@ -4062,13 +4062,13 @@ export default function App() {
                     disabled={screenshotStatus === 'busy'}
                     aria-label="Captură de ecran a previzualizării (copiază în clipboard)"
                     title="Captură de ecran (copiază în clipboard)"
-                    className="rounded border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     📷 Captură
                   </button>
                   {screenshotStatus !== 'idle' && screenshotStatus !== 'busy' && (
                     <span
-                      className={`text-xs ${screenshotStatus === 'error' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}
+                      className={`text-hint ${screenshotStatus === 'error' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}
                       role="status"
                     >
                       {screenshotStatus === 'copied' ? 'Copiat!' : screenshotStatus === 'downloaded' ? 'Descărcat' : 'Eroare'}
@@ -4120,13 +4120,13 @@ export default function App() {
                   </div>
                 </div>
                 {colorSamplingActive && (
-                  <p className="text-center text-xs text-blue-600 dark:text-blue-400">
+                  <p className="text-center text-hint text-blue-600 dark:text-blue-400">
                     Click pe previzualizare pentru a alege culoarea · Esc pentru anulare
                   </p>
                 )}
               </>
             ) : (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Încarcă un PDF de fundal pentru a vedea previzualizarea.</p>
+              <p className="text-label text-gray-500 dark:text-gray-400">Încarcă un PDF de fundal pentru a vedea previzualizarea.</p>
             )}
           </Section>
 
@@ -4155,8 +4155,8 @@ export default function App() {
                 />
               )}
               {printArtifact && printArtifact.overflowCount > 0 && (
-                <div className="mt-2 flex flex-col gap-1">
-                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                <div className="mt-inner flex flex-col gap-tight">
+                  <p className="text-label text-amber-600 dark:text-amber-400">
                     ⚠ {printArtifact.overflowCount}{' '}
                     {printArtifact.overflowCount === 1
                       ? 'rând conține un cod care depășește'
@@ -4170,7 +4170,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => downloadOverflowCsv(printArtifact.overflowSamples)}
-                      className="self-start text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+                      className="self-start text-label font-medium text-blue-600 hover:underline dark:text-blue-400"
                     >
                       Descarcă depășirile ({printArtifact.overflowSamples.length}, .csv)
                     </button>
