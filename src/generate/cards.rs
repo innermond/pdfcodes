@@ -329,7 +329,7 @@ pub(crate) fn build_card_xobjects(
 
     // "Pe coloană": one uniform, all-codes-fit size per word position. "Pe cod"
     // shrinks each code individually in the render loop below.
-    let uniform_fs: Option<Vec<f32>> = if opts.correct_overflow && opts.overflow_correction_by_column {
+    let uniform_fs: Option<Vec<f32>> = if opts.correct_overflow && opts.overflow_correction_by_column && !opts.skip_codes {
         Some(compute_uniform_fs(&records, opts, embedded_fonts, &y_positions, card_w, safe_margin))
     } else {
         None
@@ -337,7 +337,11 @@ pub(crate) fn build_card_xobjects(
 
     let mut card_ids = Vec::new();
     for record in &records {
-        let texts: Vec<&str> = record.iter().collect();
+        // "Nu printa codurile" (skip_codes): treat every row as having no words —
+        // the imposition (one card per CSV row) and the background cells stay
+        // identical, but no code text is drawn and none of the per-word config
+        // validation below applies.
+        let texts: Vec<&str> = if opts.skip_codes { Vec::new() } else { record.iter().collect() };
         let txt = texts.join(std::str::from_utf8(&[sep]).unwrap_or(" "));
 
         if texts.len() > opts.font_sizes.len() || texts.len() > opts.text_y_mm.len() {

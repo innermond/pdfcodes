@@ -263,6 +263,9 @@ export interface PageOptions {
   // bounding box instead of the background size, so the output is a smaller page
   // tightly bounding the contour. Only has an effect once a contour is loaded.
   minimal: boolean
+  // "Nu printa codurile": draw no code text on the print PDF — imposition,
+  // pages and background cells stay identical (a codes-free proof/print).
+  noCodes: boolean
 }
 
 // Defaults mirror `Options::default()` in src/options.rs, except offsetXMm/offsetYMm
@@ -282,6 +285,7 @@ export const defaultPageOptions: PageOptions = {
   travelSpeedMmS: 16,
   noCut: false,
   minimal: true,
+  noCodes: false,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s
@@ -404,6 +408,8 @@ export function buildJsOptions(
     debug: page.debug,
     noCut: page.noCut,
     minimal: page.minimal,
+    // "Nu printa codurile" → Options::skip_codes; the contour job ignores it.
+    skipCodes: page.noCodes,
     safeMarginMm,
     textColors: words.map((w) => w.color),
     // Text fill opacity, one per word (always sent — text always renders).

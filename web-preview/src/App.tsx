@@ -3742,6 +3742,11 @@ export default function App() {
               {needsPrintInput && !pageOptions.noCut && (
                 <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
               )}
+              {/* "Nu printa codurile" renders the print PDF without code text (same
+                  imposition, backgrounds only), so it needs a print output. */}
+              {needsPrintInput && (
+                <CheckboxField label="Nu printa codurile" checked={pageOptions.noCodes} onChange={(v) => setPageOption('noCodes', v)} />
+              )}
               {/* "Minimal" crops the generated page down to the contour box (needs a contour). */}
               <CheckboxField label="Minimal" checked={pageOptions.minimal} onChange={(v) => setPageOption('minimal', v)} />
               {/* "Contur Dreptunghi" emits plain rectangles instead of the optimized grid

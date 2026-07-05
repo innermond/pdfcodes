@@ -191,6 +191,8 @@ pub fn generate(
         text_blend_modes,
         combine,
         debug,
+        // The positional entry point predates "Nu printa codurile".
+        skip_codes: false,
         safe_margin_mm,
         text_rotations,
         text_flip_x: text_flip_x.iter().map(|v| *v != 0).collect(),
@@ -291,6 +293,8 @@ struct JsOptions {
     align: Vec<String>,
     combine: bool,
     debug: bool,
+    // "Nu printa codurile": background cells only, no code text (Options::skip_codes).
+    skip_codes: bool,
     safe_margin_mm: f32,
     text_colors: Vec<String>,
     text_blend_modes: Vec<String>,
@@ -388,6 +392,7 @@ impl Default for JsOptions {
             align: vec!["center".to_string()],
             combine: base.combine,
             debug: base.debug,
+            skip_codes: base.skip_codes,
             safe_margin_mm: base.safe_margin_mm,
             text_colors: Vec::new(),
             text_blend_modes: Vec::new(),
@@ -592,6 +597,7 @@ pub fn generate_with_options(
         text_blend_modes,
         combine: js_opts.combine,
         debug: js_opts.debug,
+        skip_codes: js_opts.skip_codes,
         safe_margin_mm: js_opts.safe_margin_mm,
         text_rotations: js_opts.text_rotations,
         text_flip_x: js_opts.text_flip_x,

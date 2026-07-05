@@ -1735,6 +1735,62 @@ mod tests {
     }
 
     #[test]
+    fn skip_codes_keeps_imposition_but_draws_no_text() {
+        // "Nu printa codurile": the run with `skip_codes` must produce the same
+        // imposition (pages, card forms, BG cells) as the normal run, with no
+        // text operators anywhere in the cards.
+        let base = Options { font_sizes: vec![9.0], text_y_mm: vec![10.0], ..Options::default() };
+        let csv = "abc\ndef\nghi\n";
+        let with = generate_pdf(Some(csv), BACKGROUND_PDF, None, &base).expect("normal run");
+        let without = generate_pdf(Some(csv), BACKGROUND_PDF, None, &Options { skip_codes: true, ..base.clone() })
+            .expect("skip_codes run");
+
+        // All card Form XObjects (the ones whose resources hold the BG cell).
+        let card_ops = |pdf: &[u8]| -> Vec<Vec<Operation>> {
+            let doc = Document::load_mem(pdf).expect("pdf should parse");
+            let mut all = Vec::new();
+            for object in doc.objects.values() {
+                if let Object::Stream(stream) = object {
+                    if stream.dict.get(b"Subtype").and_then(Object::as_name_str).ok() != Some("Form") {
+                        continue;
+                    }
+                    let Ok(resources) = stream.dict.get(b"Resources").and_then(Object::as_dict) else { continue };
+                    let Ok(xobjects) = resources.get(b"XObject").and_then(Object::as_dict) else { continue };
+                    if xobjects.has(b"BG") {
+                        all.push(stream.decode_content().expect("content should decode").operations);
+                    }
+                }
+            }
+            all
+        };
+        let pages = |pdf: &[u8]| Document::load_mem(pdf).unwrap().get_pages().len();
+
+        let cards_with = card_ops(&with.pdf);
+        let cards_without = card_ops(&without.pdf);
+        assert_eq!(cards_without.len(), cards_with.len(), "same card count");
+        assert_eq!(pages(&without.pdf), pages(&with.pdf), "same page count");
+
+        assert!(
+            cards_with.iter().flatten().any(|op| op.operator == "Tj" || op.operator == "TJ"),
+            "normal run draws text"
+        );
+        for ops in &cards_without {
+            assert!(ops.iter().any(|op| op.operator == "Do"), "BG cell still drawn");
+            assert!(
+                ops.iter().all(|op| op.operator != "Tj" && op.operator != "TJ" && op.operator != "Tf"),
+                "no text operators with skip_codes"
+            );
+        }
+
+        // Per-word config validation is moot without codes: a row with more
+        // words than configured sizes fails normally but passes with skip_codes.
+        let ragged = Options { font_sizes: vec![9.0], text_y_mm: vec![10.0], ..Options::default() };
+        assert!(generate_pdf(Some("a b c\n"), BACKGROUND_PDF, None, &ragged).is_err());
+        let ok = generate_pdf(Some("a b c\n"), BACKGROUND_PDF, None, &Options { skip_codes: true, ..ragged });
+        assert!(ok.is_ok(), "skip_codes ignores per-word config mismatches");
+    }
+
+    #[test]
     fn diacritics_are_written_as_font_glyph_ids() {
         // Render a word with Romanian diacritics and confirm the content stream
         // writes 2-byte glyph IDs (Identity-H), not raw UTF-8 bytes — the latter

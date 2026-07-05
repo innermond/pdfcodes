@@ -49,6 +49,11 @@ pub struct Options {
     pub combine: bool,
     // Outline the bounding box of each text part on the print PDF.
     pub debug: bool,
+    // "Nu printa codurile": draw no code text on the print PDF. The imposition
+    // is unchanged — one card per CSV row, background cells and pages exactly
+    // as with codes — only the text (and its per-word config validation) is
+    // skipped, so the output can serve as a codes-free proof/print.
+    pub skip_codes: bool,
     // Margin (in mm) kept clear of left/right-aligned text and used as the
     // intrusion threshold for the centering warning.
     pub safe_margin_mm: f32,
@@ -256,6 +261,7 @@ impl Default for Options {
             text_blend_modes: Vec::new(),
             combine: false,
             debug: false,
+            skip_codes: false,
             safe_margin_mm: 0.0,
             text_rotations: Vec::new(),
             text_flip_x: Vec::new(),
