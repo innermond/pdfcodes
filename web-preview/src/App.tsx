@@ -12,6 +12,8 @@ import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFo
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
 import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
+import { svgToPdf } from './lib/svgWasm'
+import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
@@ -564,11 +566,15 @@ export default function App() {
     setBgConfig((prev) => ({ ...prev, [key]: value }))
   }
   // "Crează fundal": build the print background from a raster image (PNG/JPEG)
-  // at the chosen card size. `genBgImageFile` is the source-image boundary — any
-  // future image source (e.g. AI generation) just feeds a File in here. It's a
-  // binary/async boundary, not scalar config, so it stays outside BgConfig.
+  // or an SVG at the chosen card size. `genBgImageFile` is the source-image
+  // boundary — any future image source (e.g. AI generation) just feeds a File in
+  // here. It's a binary/async boundary, not scalar config, so it stays outside BgConfig.
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
+  // A loaded SVG contains <text> elements, which the size-trimmed svg-wasm build
+  // drops (no `text` feature) — shown as a warning, not an error, since the rest
+  // of the SVG converts fine.
+  const [genBgSvgTextWarning, setGenBgSvgTextWarning] = useState(false)
   // Whether the loaded source image carries transparency (any non-opaque pixel).
   // Drives the preview's checkerboard backdrop so transparent regions read as
   // transparent, matching the /SMask the generator now embeds (src/generate/image_bg.rs).
@@ -1730,10 +1736,11 @@ export default function App() {
       setBgField('backgroundPageNumber', 1)
       setBackgroundPageCount(1)
     }
-    // The "Fundal imagine" (generate) source holds the raster image
+    // The "Fundal imagine" (generate) source holds the source image
     // (`genBgImageFile`) — including the clipboard sub-source; drop it when leaving.
     if (source !== 'generate') {
       setGenBgImageFile(null)
+      setGenBgSvgTextWarning(false)
     }
   }
 
@@ -1787,8 +1794,27 @@ export default function App() {
   function handleGenBgImageChange(file: File | null) {
     setGenBgImageFile(file)
     setBgField('bgRotation', 0)
+    setGenBgSvgTextWarning(false)
     if (!file) {
       setGenBgTransparent(false)
+      return
+    }
+    if (isSvgFile(file)) {
+      // Vector source: the aspect comes from the parsed viewBox/width/height
+      // (createImageBitmap on SVG blobs is unreliable cross-browser). SVGs are
+      // transparency-capable, so the checkerboard backdrop + backdrop color
+      // control always apply; <text> content gets a warning (see the state doc).
+      setGenBgTransparent(true)
+      file
+        .text()
+        .then((text) => {
+          const info = inspectSvg(text)
+          setGenBgSvgTextWarning(info.hasText)
+          if (info.aspect && info.aspect > 0) {
+            setBgField('genBgHeightMm', Math.round((genBgWidthMm / info.aspect) * 100) / 100)
+          }
+        })
+        .catch(() => {}) // a broken SVG surfaces via the conversion effect's error
       return
     }
     // `imageOrientation: 'from-image'` applies the JPEG's EXIF orientation so the
@@ -1824,12 +1850,15 @@ export default function App() {
       const resp = await fetch(IMAGE_PROXY + encodeURIComponent(url))
       if (!resp.ok) throw new Error(`Nu s-a putut descărca imaginea (HTTP ${resp.status}).`)
       const blob = await resp.blob()
-      const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer())
+      // SVG is text with no magic number, so it gets a prolog-aware sniff instead.
+      const head = new Uint8Array(await blob.slice(0, 1024).arrayBuffer())
       const isPng = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47
       const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff
-      if (!isPng && !isJpeg) throw new Error('Doar imagini PNG sau JPEG sunt acceptate.')
-      const type = isPng ? 'image/png' : 'image/jpeg'
-      const name = url.split('/').pop()?.split('?')[0] || (isPng ? 'fundal.png' : 'fundal.jpg')
+      const isSvg = !isPng && !isJpeg && looksLikeSvg(head)
+      if (!isPng && !isJpeg && !isSvg) throw new Error('Doar imagini PNG, JPEG sau SVG sunt acceptate.')
+      const type = isPng ? 'image/png' : isJpeg ? 'image/jpeg' : 'image/svg+xml'
+      const fallback = isPng ? 'fundal.png' : isJpeg ? 'fundal.jpg' : 'fundal.svg'
+      const name = url.split('/').pop()?.split('?')[0] || fallback
       handleGenBgImageChange(new File([blob], name, { type }))
     } catch (err) {
       // Network failures (proxy down/unreachable) surface as a TypeError.
@@ -1845,7 +1874,8 @@ export default function App() {
   }
 
   // Turn a clipboard image blob into a PNG file and feed it through the shared raster
-  // pipeline (same as an uploaded image). `null` blob → friendly error, no state change.
+  // pipeline (same as an uploaded image) — except SVG, which stays text and goes down
+  // the vector path instead of being rasterized. `null` blob → friendly error.
   async function loadClipboardImageBlob(blob: Blob | null) {
     if (!blob) {
       setBackgroundError('Clipboard-ul nu conține o imagine.')
@@ -1854,7 +1884,10 @@ export default function App() {
     setGenBgLoading(true)
     setBackgroundError(null)
     try {
-      handleGenBgImageChange(await blobToPngFile(blob))
+      const file = blob.type === 'image/svg+xml'
+        ? new File([blob], 'fundal.svg', { type: 'image/svg+xml' })
+        : await blobToPngFile(blob)
+      handleGenBgImageChange(file)
     } catch (err) {
       setBackgroundError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1876,11 +1909,12 @@ export default function App() {
     void loadClipboardImageBlob(blob)
   }
 
-  // Build a print background PDF from a raster image (PNG/JPEG) whenever the
-  // "create background" source is active and the image / dimensions change,
-  // feeding it through the same `backgroundFile`/`background` pipeline as an
-  // uploaded PDF. Unlike the simple source there's no shortcut swatch — the
-  // produced PDF is rasterised via `renderPdfBackground` for the preview.
+  // Build a print background PDF from a raster image (PNG/JPEG) or an SVG
+  // (converted to a vector PDF) whenever the "create background" source is
+  // active and the image / dimensions change, feeding it through the same
+  // `backgroundFile`/`background` pipeline as an uploaded PDF. Unlike the simple
+  // source there's no shortcut swatch — the produced PDF is rasterised via
+  // `renderPdfBackground` for the preview.
   useEffect(() => {
     if (backgroundSource !== 'generate' || !genBgImageFile) return
     let cancelled = false
@@ -1888,24 +1922,44 @@ export default function App() {
     setBackgroundError(null)
     ensureWasmInit()
       .then(async () => {
-        // Build the image PDF once at the image's own aspect (normalized width);
-        // `genBgWidthMm/HeightMm` is the *target* card size (applied as a scale at
-        // generation) and `bgRotation` the rotation — exactly like an uploaded PDF,
-        // so both sources share the same rotate/scale/override machinery and the
-        // build no longer rebuilds on dimension/rotation changes.
-        // Match the generator's EXIF-oriented decode (see handleGenBgImageChange).
-        const bmp = await createImageBitmap(genBgImageFile, { imageOrientation: 'from-image' })
-        const aspect = bmp.width / bmp.height
-        if (typeof bmp.close === 'function') bmp.close()
-        const refW = 100
-        const refH = aspect > 0 ? 100 / aspect : 100
-        const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
-        // Flip X/Y is baked into the image PDF so preview and output match. A chosen
-        // backdrop color (converted to the #RRGGBB the generator parses, via the same
-        // `colorToCss` the preview uses) fills transparent pixels in the exported PDF;
-        // an empty string keeps the transparency (the generator embeds an /SMask).
-        const backdrop = genBgBackdropColor ? colorToCss(genBgBackdropColor) : ''
-        const bytes = generate_image_background_pdf(imageBytes, refW, refH, bgFlipX, bgFlipY, backdrop)
+        let bytes: Uint8Array
+        if (isSvgFile(genBgImageFile)) {
+          // Vector source: flips and the backdrop color are baked into the SVG
+          // text (a mirror <g> / an underlying <rect> — see prepareSvgForBackground),
+          // then the lazily-loaded svg-wasm module converts it to a vector PDF at
+          // the SVG's own size. Downstream is identical to the raster branch: the
+          // target size / rotation are applied by the shared machinery.
+          const svgText = await genBgImageFile.text()
+          const prepared = prepareSvgForBackground(svgText, {
+            flipX: bgFlipX,
+            flipY: bgFlipY,
+            backdropCss: genBgBackdropColor ? colorToCss(genBgBackdropColor) : null,
+          })
+          // Normalize conversion failures to the same user-facing message the
+          // helper's pre-parse throws, keeping the raw usvg detail for diagnosis.
+          bytes = await svgToPdf(prepared).catch((err) => {
+            throw new Error(`Fișierul nu este un SVG valid. (${err instanceof Error ? err.message : String(err)})`)
+          })
+        } else {
+          // Build the image PDF once at the image's own aspect (normalized width);
+          // `genBgWidthMm/HeightMm` is the *target* card size (applied as a scale at
+          // generation) and `bgRotation` the rotation — exactly like an uploaded PDF,
+          // so both sources share the same rotate/scale/override machinery and the
+          // build no longer rebuilds on dimension/rotation changes.
+          // Match the generator's EXIF-oriented decode (see handleGenBgImageChange).
+          const bmp = await createImageBitmap(genBgImageFile, { imageOrientation: 'from-image' })
+          const aspect = bmp.width / bmp.height
+          if (typeof bmp.close === 'function') bmp.close()
+          const refW = 100
+          const refH = aspect > 0 ? 100 / aspect : 100
+          const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())
+          // Flip X/Y is baked into the image PDF so preview and output match. A chosen
+          // backdrop color (converted to the #RRGGBB the generator parses, via the same
+          // `colorToCss` the preview uses) fills transparent pixels in the exported PDF;
+          // an empty string keeps the transparency (the generator embeds an /SMask).
+          const backdrop = genBgBackdropColor ? colorToCss(genBgBackdropColor) : ''
+          bytes = generate_image_background_pdf(imageBytes, refW, refH, bgFlipX, bgFlipY, backdrop)
+        }
         if (cancelled) return null
         const file = new File([bytes.buffer as ArrayBuffer], 'fundal-imagine.pdf', { type: 'application/pdf' })
         setBackgroundFile(file)
@@ -2840,8 +2894,8 @@ export default function App() {
                 />
                 {genBgImageSource === 'file' ? (
                   <FileField
-                    label="Imagine fundal (PNG sau JPEG)"
-                    accept="image/png,image/jpeg"
+                    label="Imagine fundal (PNG, JPEG sau SVG)"
+                    accept="image/png,image/jpeg,image/svg+xml,.svg"
                     onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                     currentName={genBgImageFile?.name}
                   />
@@ -2849,7 +2903,7 @@ export default function App() {
                   <div className="flex items-end gap-2">
                     <div className="min-w-0 flex-1">
                       <TextField
-                        label="URL imagine (PNG sau JPEG)"
+                        label="URL imagine (PNG, JPEG sau SVG)"
                         value={genBgImageUrl}
                         onChange={(v) => setBgField('genBgImageUrl', v)}
                         placeholder="https://exemplu.ro/imagine.png"
@@ -2879,13 +2933,18 @@ export default function App() {
                       📋 Lipește imaginea
                     </button>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG) din clipboard.
+                      Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG/SVG) din clipboard.
                     </p>
                   </div>
                 )}
                 {background && (
                   <p className="text-xs text-gray-500 dark:text-gray-400">
                     Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
+                  </p>
+                )}
+                {genBgSvgTextWarning && (
+                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                    Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.
                   </p>
                 )}
                 {genBgLoading && (

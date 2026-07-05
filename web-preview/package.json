@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "build:wasm": "wasm-pack build .. --target web --out-dir web-preview/src/wasm --out-name pdfcodes",
-    "dev": "npm run build:wasm && vite",
-    "build": "npm run build:wasm && tsc -b && vite build",
+    "build:wasm-svg": "wasm-pack build ../svg-wasm --target web --out-dir ../web-preview/src/wasm-svg --out-name pdfcodes_svg",
+    "dev": "npm run build:wasm && npm run build:wasm-svg && vite",
+    "build": "npm run build:wasm && npm run build:wasm-svg && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

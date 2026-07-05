@@ -1,3 +1,9 @@
+# Workspace root: `svg-wasm` is a separate cdylib (SVG → PDF background) built
+# into its own lazily-loaded wasm module, so the main binary's size is untouched.
+[workspace]
+members = ["svg-wasm"]
+resolver = "3"
+
 [package]
 name = "pdfcodes"
 version = "0.1.0"
