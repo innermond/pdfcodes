@@ -703,6 +703,15 @@ export default function App() {
   // user-picked `backgroundPageNumber` lives in BgConfig.
   const [backgroundPageCount, setBackgroundPageCount] = useState(1)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
+  // Which flavor the "upload" contour source shows in the UI: a PDF file field
+  // or an SVG one ("Încarcă SVG"). UI-only state — an SVG is converted to a PDF
+  // (lib/svgWasm.ts) the moment it's picked and stored in `contourBackgroundFile`,
+  // so ContourSource stays 'upload' and everything downstream (preview, trim,
+  // rotation, generation, presets) reuses the uploaded-PDF path untouched.
+  const [contourUploadKind, setContourUploadKind] = useState<'pdf' | 'svg'>('pdf')
+  // The picked contour SVG contains <text> elements, dropped by the size-trimmed
+  // svg-wasm build (no `text` feature) — warning, not error, like the background's.
+  const [contourSvgTextWarning, setContourSvgTextWarning] = useState(false)
   const [contourPageCount, setContourPageCount] = useState(1)
   // True when the app auto-selected the contour page (a page distinct from the
   // background's) on load, rather than the user picking it. Drives an
@@ -2054,6 +2063,35 @@ export default function App() {
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
+  // "Încarcă SVG": convert the picked SVG to a vector PDF (same lazily-loaded
+  // svg-wasm module as the Step-1 background) and feed it through
+  // `handleContourBackgroundFileChange`, so the whole uploaded-contour machinery
+  // (preview, trim-to-path, rotation, generation) runs on the converted PDF.
+  function handleContourSvgFileChange(file: File | null) {
+    setContourSvgTextWarning(false)
+    if (!file) {
+      handleContourBackgroundFileChange(null)
+      return
+    }
+    setContourBackgroundError(null)
+    file
+      .text()
+      .then(async (text) => {
+        // inspectSvg's parse failure already carries the final user-facing
+        // message; only the wasm conversion error needs normalizing (same
+        // treatment as the background's generate effect).
+        setContourSvgTextWarning(inspectSvg(text).hasText)
+        const bytes = await svgToPdf(text).catch((err) => {
+          throw new Error(`Fișierul nu este un SVG valid. (${err instanceof Error ? err.message : String(err)})`)
+        })
+        // Keep the SVG's name (with a .pdf suffix) so the file field shows what
+        // the user picked, not an internal name.
+        const name = file.name.replace(/\.svg$/i, '') + '.pdf'
+        handleContourBackgroundFileChange(new File([bytes.buffer as ArrayBuffer], name, { type: 'application/pdf' }))
+      })
+      .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
   // Re-render the contour preview from a different page of the uploaded PDF.
   // A new page may have a different MediaBox, so its dimensions are re-detected
   // (same as a fresh upload), keeping the current rotation.
@@ -3076,24 +3114,47 @@ export default function App() {
 
           {step === 'contur' && (
           <Section title="Contur">
-            <RadioGroupField<ContourSource>
+            {/* "Încarcă PDF" and "Încarcă SVG" are the same internal source
+                ('upload'): an SVG is converted to a vector PDF on pick, so only
+                the file field differs. `contourUploadKind` (UI-only) picks the
+                flavor; ContourSource itself stays 'upload' | 'shape'. */}
+            <RadioGroupField<'upload' | 'svg' | 'shape'>
               label="Sursă fundal contur"
-              value={contourSource}
-              onChange={handleContourSourceChange}
+              value={contourSource === 'shape' ? 'shape' : contourUploadKind === 'svg' ? 'svg' : 'upload'}
+              onChange={(v) => {
+                setContourUploadKind(v === 'svg' ? 'svg' : 'pdf')
+                setContourSvgTextWarning(false)
+                handleContourSourceChange(v === 'shape' ? 'shape' : 'upload')
+              }}
               options={[
                 { value: 'upload', label: 'Încarcă PDF' },
+                { value: 'svg', label: 'Încarcă SVG' },
                 { value: 'shape', label: 'Formă presetată' },
               ]}
             />
 
             {contourSource === 'upload' ? (
               <>
-                <FileField
-                  label="PDF de fundal contur (opțional)"
-                  accept="application/pdf"
-                  onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
-                  currentName={contourBackgroundFile?.name}
-                />
+                {contourUploadKind === 'svg' ? (
+                  <FileField
+                    label="SVG de fundal contur (opțional)"
+                    accept="image/svg+xml,.svg"
+                    onChange={(files) => handleContourSvgFileChange(files?.[0] ?? null)}
+                    currentName={contourBackgroundFile?.name}
+                  />
+                ) : (
+                  <FileField
+                    label="PDF de fundal contur (opțional)"
+                    accept="application/pdf"
+                    onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
+                    currentName={contourBackgroundFile?.name}
+                  />
+                )}
+                {contourSvgTextWarning && (
+                  <p className="text-sm text-amber-600 dark:text-amber-400">
+                    Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.
+                  </p>
+                )}
                 {contourPageCount > 1 && (
                   <>
                     <NumberField
