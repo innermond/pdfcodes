@@ -1,4 +1,8 @@
-import montserratBoldUrl from '../assets/fonts/Montserrat-Bold.ttf?url'
+// WOFF2 (~104 kB vs the 336 kB TTF): these bytes are display-only — FontFace
+// registration and the screenshot path's inline @font-face, both of which
+// sniff the format. The generator never sees them; Rust falls back to its own
+// embedded TTF copy (src/assets/fonts/Montserrat-Bold.ttf via src/fonts.rs).
+import montserratBoldUrl from '../assets/fonts/Montserrat-Bold.woff2?url'
 
 export interface LoadedFont {
   family: string

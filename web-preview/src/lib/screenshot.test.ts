@@ -16,7 +16,7 @@ describe('buildFontFaceCss', () => {
     expect(faces).toHaveLength(2)
     expect(faces[0]).toContain("font-family:'fam-a'")
     // "hello" → base64 is "aGVsbG8=".
-    expect(faces[0]).toContain('src:url(data:font/ttf;base64,aGVsbG8=)')
+    expect(faces[0]).toContain('src:url(data:application/octet-stream;base64,aGVsbG8=)')
     expect(faces[1]).toContain("font-family:'fam-b'")
   })
 

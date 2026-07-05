@@ -547,7 +547,14 @@ export default function App() {
   const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
 
   useEffect(() => {
-    void ensureDefaultFont()
+    // Prefetch the default font off the critical first-paint path: every place
+    // that shows preview text already awaits ensureDefaultFont(), so this idle
+    // kickoff only warms the cache instead of competing with the initial load.
+    // (Optional chaining: Safari lacks requestIdleCallback.)
+    const idleId = window.requestIdleCallback?.(() => void ensureDefaultFont())
+    if (idleId !== undefined) return () => window.cancelIdleCallback(idleId)
+    const id = setTimeout(() => void ensureDefaultFont(), 2000)
+    return () => clearTimeout(id)
   }, [])
 
   const [background, setBackground] = useState<PdfBackground | null>(null)

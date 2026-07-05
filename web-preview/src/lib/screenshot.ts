@@ -23,12 +23,14 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 // One `@font-face` per family, with the font bytes inlined as a data-URL so the
-// serialized SVG renders text in the real fonts. Format is left to the browser to sniff
-// (data-URLs make the `format()` hint unnecessary and TTF/OTF/WOFF all work).
+// serialized SVG renders text in the real fonts. Format is left to the browser to
+// sniff (data-URLs make the `format()` hint unnecessary and TTF/OTF/WOFF/WOFF2 all
+// work), so the MIME is a neutral octet-stream — the default font is now WOFF2
+// while uploaded/Google fonts stay TTF/OTF, and one label can't fit them all.
 export function buildFontFaceCss(families: { family: string; bytes: ArrayBuffer }[]): string {
   return families
     .map(({ family, bytes }) =>
-      `@font-face{font-family:'${family}';src:url(data:font/ttf;base64,${arrayBufferToBase64(bytes)});}`,
+      `@font-face{font-family:'${family}';src:url(data:application/octet-stream;base64,${arrayBufferToBase64(bytes)});}`,
     )
     .join('\n')
 }
