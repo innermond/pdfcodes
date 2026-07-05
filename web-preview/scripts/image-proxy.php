@@ -14,7 +14,7 @@
  *   VITE_IMAGE_PROXY at it (e.g. /image-proxy?url=).
  *
  * Safeguards: http(s) only, blocks private/reserved IPs (SSRF), caps the
- * response size, and validates the bytes are actually PNG or JPEG.
+ * response size, and validates the bytes are actually PNG, JPEG or SVG.
  */
 
 // Allow the Vite dev server (different port = cross-origin) to read the response.
@@ -22,6 +22,46 @@
 header('Access-Control-Allow-Origin: *');
 
 const MAX_BYTES = 20 * 1024 * 1024; // 20 MB cap
+
+// Sniff an SVG document: PHP port of the client's `looksLikeSvg`
+// (web-preview/src/lib/svgBackground.ts), so both ends accept the same inputs.
+// SVG is text with no magic number — after dropping a UTF-8 BOM, skip anything
+// that may legally precede the root element (whitespace, comments, an XML
+// prolog, a DOCTYPE) and require the first real element to be <svg>.
+function looks_like_svg(string $body): bool {
+    $head = substr($body, 0, 1024);
+    if (str_starts_with($head, "\xEF\xBB\xBF")) {
+        $head = substr($head, 3);
+    }
+    $i = 0;
+    $len = strlen($head);
+    while ($i < $len) {
+        if (ctype_space($head[$i])) {
+            $i++;
+            continue;
+        }
+        if (substr($head, $i, 4) === '<!--') {
+            $end = strpos($head, '-->', $i + 4);
+            if ($end === false) {
+                return false;
+            }
+            $i = $end + 3;
+            continue;
+        }
+        // XML prolog or DOCTYPE. (Wording avoids writing a PHP close tag here:
+        // one inside a comment still ends PHP mode mid-function.)
+        if (substr($head, $i, 2) === '<?' || substr($head, $i, 2) === '<!') {
+            $end = strpos($head, '>', $i);
+            if ($end === false) {
+                return false;
+            }
+            $i = $end + 1;
+            continue;
+        }
+        return (bool) preg_match('/^<svg[\s>]/', substr($head, $i));
+    }
+    return false;
+}
 
 function fail(int $status, string $message): never {
     http_response_code($status);
@@ -89,14 +129,22 @@ if (strlen($body) > MAX_BYTES) {
     fail(413, 'Image is too large.');
 }
 
-// Validate the bytes are actually PNG or JPEG (matches the client-side check).
+// Validate the bytes are actually PNG, JPEG or SVG (matches the client-side check).
 $head = substr($body, 0, 4);
 $isPng = $head === "\x89PNG";
 $isJpeg = strlen($body) >= 3 && substr($body, 0, 3) === "\xFF\xD8\xFF";
-if (!$isPng && !$isJpeg) {
-    fail(415, 'Only PNG or JPEG images are allowed.');
+$isSvg = !$isPng && !$isJpeg && looks_like_svg($body);
+if (!$isPng && !$isJpeg && !$isSvg) {
+    fail(415, 'Only PNG, JPEG or SVG images are allowed.');
 }
 
-header('Content-Type: ' . ($isPng ? 'image/png' : 'image/jpeg'));
+header('X-Content-Type-Options: nosniff');
+if ($isSvg) {
+    // SVG is an active document (it can carry <script>). The app only reads it
+    // via fetch(), but if the proxy URL is opened directly the browser would
+    // render it in this origin — the CSP keeps any scripts from running there.
+    header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'");
+}
+header('Content-Type: ' . ($isPng ? 'image/png' : ($isJpeg ? 'image/jpeg' : 'image/svg+xml')));
 header('Content-Length: ' . strlen($body));
 echo $body;
