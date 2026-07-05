@@ -13,6 +13,7 @@ import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview }
 import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { svgToPdf } from './lib/svgWasm'
+import { useUndoHistory } from './lib/undoHistory'
 import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
@@ -641,6 +642,13 @@ export default function App() {
   // so a centered contour stays centered and a nudged one stays proportional,
   // instead of keeping a stale absolute mm that drifts off as dimensions change.
   const prevContourBoundsRef = useRef<{ minX: number; maxX: number; minY: number; maxY: number } | null>(null)
+  // Last card dims for the word-position remap on resize (effect further down);
+  // hoisted here so the undo snapshot can capture/re-baseline it.
+  const prevCardDimsRef = useRef<{ w: number; h: number } | null>(null)
+  // Whether a preset shape still fills the available space (auto-tracks the card
+  // as the background is resized) vs. an explicit/frozen size (then preserved).
+  // Hoisted next to its sibling guard refs for the same undo re-baselining.
+  const contourShapeTargetAutoRef = useRef(true)
 
   // Data-step user config, grouped into one object (see DataConfig) with a
   // `setDataField` helper — same pattern as bgConfig/contourConfig. Reads stay
@@ -761,6 +769,90 @@ export default function App() {
   // Forced-duplicate count from the last generation (null until generated): the
   // post-generation uniqueness check shown next to the download link.
   const [codeCsvDuplicates, setCodeCsvDuplicates] = useState<number | null>(null)
+
+  // ---- Undo/redo (Ctrl+Z / Ctrl+Shift+Z, see lib/undoHistory.ts) ----
+  // Flat snapshot of the user-intent state, rebuilt every render from by-
+  // reference atoms (all tracked write sites are immutable, so this is ~30
+  // property reads). ACTIVE atoms create history entries; the PASSIVE tail is
+  // captured and restored alongside but never triggers one: the wizard step and
+  // selection (undo navigates back to where the edit happened), the rendered
+  // backgrounds (held by reference so undoing across an upload restores the
+  // preview instantly — the upload sources render imperatively, not reactively)
+  // and the guard-ref baselines that keep the word-remap / offset-rescale
+  // effects from double-applying on restore. Derived/loading/error state and
+  // generated artifacts are deliberately absent: effects re-derive them.
+  // (`codeCsvUrl` especially must stay out — it's a revocable object URL.)
+  const undoSnapshot = {
+    // ACTIVE
+    bgConfig, contourConfig, dataConfig, styleConfig, pageOptions,
+    words, fonts, fontSources, googleFontSelections,
+    mode, lockAspect, contourLockAspect, contourUploadKind,
+    bgNudgeMode, genBgTransparent, genBgBackdropColor,
+    backgroundFile, genBgImageFile, contourBackgroundFile,
+    csvDataFile, uploadedRawFile,
+    // PASSIVE
+    step, selectedIndex, contourSelected,
+    background, contourBackground, backgroundPageCount, contourPageCount,
+    refCardDims: prevCardDimsRef.current,
+    refContourBounds: prevContourBoundsRef.current,
+    refShapeAuto: contourShapeTargetAutoRef.current,
+  }
+  type UndoSnapshot = typeof undoSnapshot
+
+  function applyUndoSnapshot(s: UndoSnapshot) {
+    // Guard refs first (synchronous): the remap/rescale effects then see the
+    // restored dims/offsets as the established baseline and do nothing.
+    prevCardDimsRef.current = s.refCardDims
+    prevContourBoundsRef.current = s.refContourBounds
+    contourShapeTargetAutoRef.current = s.refShapeAuto
+    // Every tracked setter in one synchronous block — React batches it into a
+    // single commit, so ordering is irrelevant (unlike the field-by-field
+    // preset loader, which interleaves with async re-derivation).
+    setBgConfig(s.bgConfig)
+    setContourConfig(s.contourConfig)
+    setDataConfig(s.dataConfig)
+    setStyleConfig(s.styleConfig)
+    setPageOptions(s.pageOptions)
+    setWords(s.words)
+    setFonts(s.fonts)
+    setFontSources(s.fontSources)
+    setGoogleFontSelections(s.googleFontSelections)
+    setMode(s.mode)
+    setLockAspect(s.lockAspect)
+    setContourLockAspect(s.contourLockAspect)
+    setContourUploadKind(s.contourUploadKind)
+    setBgNudgeMode(s.bgNudgeMode)
+    setGenBgTransparent(s.genBgTransparent)
+    setGenBgBackdropColor(s.genBgBackdropColor)
+    setBackgroundFile(s.backgroundFile)
+    setGenBgImageFile(s.genBgImageFile)
+    setContourBackgroundFile(s.contourBackgroundFile)
+    setCsvDataFile(s.csvDataFile)
+    setUploadedRawFile(s.uploadedRawFile)
+    setStep(s.step)
+    setSelectedIndex(s.selectedIndex)
+    setContourSelected(s.contourSelected)
+    setBackground(s.background)
+    setContourBackground(s.contourBackground)
+    setBackgroundPageCount(s.backgroundPageCount)
+    setContourPageCount(s.contourPageCount)
+  }
+
+  const { undo, redo, canUndo, canRedo } = useUndoHistory({
+    snapshot: undoSnapshot,
+    activeKeys: [
+      'bgConfig', 'contourConfig', 'dataConfig', 'styleConfig', 'pageOptions',
+      'words', 'fonts', 'fontSources', 'googleFontSelections',
+      'mode', 'lockAspect', 'contourLockAspect', 'contourUploadKind',
+      'bgNudgeMode', 'genBgTransparent', 'genBgBackdropColor',
+      'backgroundFile', 'genBgImageFile', 'contourBackgroundFile',
+      'csvDataFile', 'uploadedRawFile',
+    ],
+    // The config clusters are compared per-key: their setters allocate fresh
+    // objects even for no-op writes (and async clamps re-write equal values).
+    shallowKeys: ['bgConfig', 'contourConfig', 'dataConfig', 'styleConfig', 'pageOptions'],
+    restore: applyUndoSnapshot,
+  })
 
   const codeCsvPreview = useMemo(
     () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
@@ -2181,7 +2273,6 @@ export default function App() {
   // machinery, which already tracks the card size — so a word that was dead-centre
   // stays dead-centre across a resize. The first valid size only establishes the
   // baseline (no scaling on initial placement).
-  const prevCardDimsRef = useRef<{ w: number; h: number } | null>(null)
   useEffect(() => {
     const w = effectiveCardWidthMm
     const h = effectiveCardHeightMm
@@ -2217,10 +2308,6 @@ export default function App() {
     }
     prevCardDimsRef.current = w > 0 && h > 0 ? { w, h } : null
   }, [effectiveCardWidthMm, effectiveCardHeightMm, contourSource, shapeKind])
-
-  // Whether a preset shape still fills the available space (auto-tracks the card
-  // as the background is resized) vs. an explicit/frozen size (then preserved).
-  const contourShapeTargetAutoRef = useRef(true)
 
   // Generate a preset-shape contour PDF in its own (design) frame, then let
   // `renderPdfBackground` re-apply `contourRotation`. `effectiveContour*` is the host box
@@ -2811,13 +2898,35 @@ export default function App() {
     <div className="mx-auto max-w-6xl px-4 py-8 dark:bg-gray-950 dark:text-gray-100">
       <div className="mb-1 flex items-start justify-between gap-4">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Printare coduri unice / Decupare pe contur</h1>
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-        >
-          {theme === 'dark' ? 'Mod luminos' : 'Mod întunecat'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={undo}
+            disabled={!canUndo}
+            title="Anulează (Ctrl+Z)"
+            aria-label="Anulează (Ctrl+Z)"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            ↶
+          </button>
+          <button
+            type="button"
+            onClick={redo}
+            disabled={!canRedo}
+            title="Refă (Ctrl+Shift+Z)"
+            aria-label="Refă (Ctrl+Shift+Z)"
+            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            ↷
+          </button>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="rounded-lg border border-gray-300 px-3 py-1 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            {theme === 'dark' ? 'Mod luminos' : 'Mod întunecat'}
+          </button>
+        </div>
       </div>
       <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
         Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
