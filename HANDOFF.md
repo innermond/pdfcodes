@@ -1,50 +1,79 @@
 # Handoff — manual.md sync to the current app
 
-Resume note for continuing the documentation sync on another machine.
+Status note for the documentation sync of `manual.md` (+ `manual-assets/`) against the
+actual 5-step app (`web-preview/src/App.tsx`).
 
-## Goal
-Bring `manual.md` (+ `manual-assets/`) in line with the **actual** 5-step app
-(`web-preview/src/App.tsx`). The old manual described a stale 4-step layout.
+## Status: sync COMPLETE (2026-07-07)
+
+All ten sections of `manual.md` now describe the current UI, and every referenced
+screenshot in `manual-assets/` was retaken against it (no orphans, no missing files).
 
 App wizard steps (source of truth: `WIZARD_STEPS` in `web-preview/src/App.tsx`):
 **1 Fundal · 2 Contur · 3 Date · 4 Coduri · 5 PDF**.
 
-## Done
-- **General overview** — manual §1–§2 rewritten; added `manual-assets/00-privire-generala.png`.
-- **Step 1 — Fundal** (§3): three sources (Încarcă PDF / Simplu / Imagine) + Poziționare block.
-  Assets: `01-fundal.png`, `f1-print-upload.png`, `f2-print-simple.png`, `f7-print-imagine.png`.
-- **Step 2 — Contur** (§4, newly inserted): upload (PDF/SVG, file/URL/clipboard) + preset shapes
-  (7) + reglaje. Assets: `02-contur.png`, `c1-contur-upload.png`, `c2-contur-shape.png`.
-- **Renumbered** downstream sections to keep structure consistent: §5 Pasul 3 … §10, including all
-  subsection numbers and cross-references (color-picker refs → 6.4, generation refs → 7.3).
+- §1–§2 General overview — done earlier (`00-privire-generala.png`).
+- §3 Pasul 1 — Fundal — done earlier (`01-fundal.png`, `f1`, `f2`, `f7`).
+- §4 Pasul 2 — Contur — done earlier (`02-contur.png`, `c1`, `c2`).
+- §5 Pasul 3 — Date — rewritten against `CodeSourceSection.tsx`: source-mode order
+  (Încarcă CSV / Generează coduri), tabbed „Cod” pills + „+ Adaugă cod”, the third
+  code type „Text fix”, renamed fields (Lungime / Completare / Umplutură / Lățime
+  totală), uniqueness warnings + blocked generation + duplicate report, upload
+  extras („Fiecare rând este un singur cod”, the „Câmpuri pe rând” merge editor),
+  and the unlock gate (5.4). Assets: `03-date.png`, `s2-*.png` (incl. new
+  `s2-uniqueness.png`, `s2-fields.png`).
+- §6 Pasul 4 — Coduri — rewritten against the `aspect` step: Text exemplu (3 global
+  margins incl. Distanțare contur), collapsible groups (Tipografie / Poziție / Stil /
+  Fundal text / Contur text), per-word fonts (Google Font picker or .ttf/.otf),
+  „(contur)” align variants and „la punct fix”. Assets: `04-coduri.png`, `s3-*.png`.
+- §7 Pasul 5 — PDF — rewritten against the `generare` step: no CSV field here
+  anymore, corrected meanings of Decalaj X/Y (gap between neighbouring cuts) and
+  Diametru cerc (registration circles), the full options list incl. Non-decupare /
+  Minimal / Contur Dreptunghi / Corectare depășire (+ Font minim, Pe cod/Pe coloană),
+  the size-mismatch warnings (7.3.4), and „Generează o mostră (un card)”.
+  Assets: `05-pdf.png`, `s4-mode.png`, `s4-page-layout.png`, `s4-options.png`,
+  `s4-cut-time.png` (kept: `s4-quote.png`, `s4-unlock.png` — password gate UI).
+- §8–§10 — refreshed: preview toolbar (zoom/pan, Captură + Descarcă/Conturat),
+  Rezultat incl. „Descarcă ambele (print + contur, .zip)”, 5-step workflow.
+  Asset: `06-rezultat.png` retaken.
 
-## Next (not yet done)
-Sections §5–§7 are correctly **numbered/titled** but their **bodies are still the old content** —
-rewrite each against the real UI, one step at a time:
-- **§5 Pasul 3 — Date** — `step === 'date'` in App.tsx (`CodeSourceSection` / generate-vs-CSV).
-- **§6 Pasul 4 — Coduri** — `step === 'aspect'` (Text exemplu, Cuvinte, Tipografie/Poziție, color picker).
-- **§7 Pasul 5 — PDF** — `step === 'generare'` (Print+Contur, Aspect pagină, Opțiuni, Timp de tăiere).
-- Then refresh §8 Previzualizare, §9 Rezultat, §10 Flux.
-Old numbered hero assets (`02-sursa-date.png`, `03-aspect-cuvinte.png`, `05-generare.png`) and the
-orphaned contour assets (`f3`–`f6`) still reflect the old layout — replace as each step is redone.
+Deleted stale assets: `02-sursa-date.png`, `03-aspect-cuvinte.png`, `05-generare.png`,
+`s4-mode-csv.png`, and the orphaned `f3`–`f6`.
 
-## How to reproduce screenshots (what worked here)
-- Build/run: `cd web-preview && npm run dev` (builds both wasm modules, incl. `svg-wasm`, then vite).
-  Or run vite directly on a fixed port: `npx vite --port 5199 --strictPort`.
+## Regenerating screenshots
+
+`web-preview/shoot.mjs` (untracked; commit it if it should persist) retakes **all**
+§5–§9 assets in one run:
+
+```
+cd web-preview && npx vite --port 5199 --strictPort   # wasm must already be built
+node shoot.mjs                                        # ~2.5 min, ends with ALL SHOTS OK
+```
+
+Gotchas learned (beyond the ones below):
+- `SelectField` labels textContent-include their `<option>` texts, so Playwright's
+  `getByLabel('Formă')` never matches — use
+  `page.locator('label:has(span:text-is("Formă")) select')` (the `sel()` helper).
+- The footer „Continuă” click occasionally doesn't navigate; `goToStep()` verifies
+  the „Pasul N din 5” marker and falls back to clicking the step chip.
+- `page.screenshot({ clip })` fails for elements below the fold unless you pass
+  `fullPage: true` and convert boundingBox → document coords (add `window.scrollY`).
+- Uploading a CSV auto-sets the detected separator (space for `demo.csv`), which
+  carries back into generate mode — the sample row in step 4 must use that separator.
+
+## How to reproduce screenshots (original notes, still valid)
 - Playwright's bundled browser is NOT installed. Use **system Chrome** via
   `chromium.launch({ executablePath: '/usr/bin/google-chrome-stable' })`.
-- Gotchas:
-  - `browser.close()` tends to hang → end the script with `process.exit(0)`.
-  - Scripts run from the `web-preview/` cwd, so **write screenshots to ABSOLUTE paths**
-    (`/home/.../pdfcodes/manual-assets/...`) or they land in `web-preview/manual-assets/`.
-  - Left panel locator: `page.locator('.lg\\:grid-cols-2 > div').first()`; whole preview: `.lg\\:grid-cols-2`.
-  - Drive state by clicking radio label text (`getByText('Simplu', {exact:true})`), advance steps with
-    `getByRole('button', { name: /Continuă/ })`, load a card via
-    `input[accept="application/pdf"]` + `setInputFiles('/home/.../pdfcodes/15x15.pdf')`.
-- Renumbering was done with an audited Python script (per-replacement count assertions) — safest
-  approach if inserting another section forces a renumber again.
+- `browser.close()` tends to hang → end the script with `process.exit(0)`.
+- Write screenshots to ABSOLUTE paths or they land in `web-preview/`.
+- Left panel locator: `page.locator('.lg\\:grid-cols-2 > div').first()`; whole
+  preview: `.lg\\:grid-cols-2`.
+- Drive state by clicking radio label text (`getByText('Simplu', {exact:true})`),
+  advance steps with `getByRole('button', { name: /Continuă/ })`.
 
 ## Notes
-- `svg-wasm/` crate source is now committed (previously untracked — it broke `npm run dev`).
-- Untracked test-data files in the working tree (`background.pdf`, `cobai*.csv`, `list.csv`, etc.)
-  are unrelated noise; don't commit them.
+- `svg-wasm/` crate source is committed (previously untracked — it broke `npm run dev`).
+- Untracked test-data files in the working tree (`*.pdf`, `list.csv`, `contour.svg`,
+  etc.) are unrelated noise; don't commit them.
+- Known app quirk seen while shooting `06-rezultat.png`: with „Măsoară traseele de
+  tăiere” checked, the contour result showed only „Carduri pe pagină” (no path/time
+  metrics) for a preset rectangle contour — possibly a bug worth checking separately.
