@@ -3062,6 +3062,13 @@ export default function App() {
         <div className="flex items-center gap-inner">
           <button
             type="button"
+            onClick={handleSavePreset}
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            Salvează setările (.zip)
+          </button>
+          <button
+            type="button"
             onClick={undo}
             disabled={!canUndo}
             title="Anulează (Ctrl+Z)"
@@ -3095,13 +3102,6 @@ export default function App() {
 
       <Section title="Presetări" collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-field">
-          <button
-            type="button"
-            onClick={handleSavePreset}
-            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-          >
-            Salvează setările (.zip)
-          </button>
           <FileField
             label="Încarcă setări (.zip sau .json)"
             accept=".zip,application/zip,application/json,.json"
@@ -3425,12 +3425,27 @@ export default function App() {
                   ]}
                 />
                 {contourUploadSource === 'file' ? (
-                  <FileField
-                    label="PDF sau SVG (opțional)"
-                    accept="application/pdf,image/svg+xml,.svg"
-                    onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
-                    currentName={contourBackgroundFile?.name}
-                  />
+                  // File input and its page picker share one row (file grows, page
+                  // stays narrow, wrapping only when it can't fit) — same as Step 1.
+                  <div className="flex flex-wrap items-start gap-field">
+                    <div className="min-w-0 flex-1">
+                      <FileField
+                        label="PDF sau SVG (opțional)"
+                        accept="application/pdf,image/svg+xml,.svg"
+                        onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
+                        currentName={contourBackgroundFile?.name}
+                      />
+                    </div>
+                    {contourPageCount > 1 && (
+                      <div className="w-28 shrink-0">
+                        <NumberField
+                          label={`Pagina (1–${contourPageCount})`}
+                          value={contourPageNumber}
+                          onChange={handleContourPageChange}
+                        />
+                      </div>
+                    )}
+                  </div>
                 ) : contourUploadSource === 'url' ? (
                   <div className="flex items-end gap-inner">
                     <div className="min-w-0 flex-1">
@@ -3492,11 +3507,15 @@ export default function App() {
                 )}
                 {contourPageCount > 1 && (
                   <>
-                    <NumberField
-                      label={`Pagina (1–${contourPageCount})`}
-                      value={contourPageNumber}
-                      onChange={handleContourPageChange}
-                    />
+                    {/* In 'file' mode the page picker is inline with the file input (above);
+                        for URL/Clipboard it stays here so those modes keep page selection. */}
+                    {contourUploadSource !== 'file' && (
+                      <NumberField
+                        label={`Pagina (1–${contourPageCount})`}
+                        value={contourPageNumber}
+                        onChange={handleContourPageChange}
+                      />
+                    )}
                     <p className="text-hint text-gray-500 dark:text-gray-400">
                       {contourPageAutoPicked
                         ? `Aplicația folosește automat pagina ${contourPageNumber} din ${contourPageCount} (diferită de pagina fundalului).`
