@@ -3073,7 +3073,7 @@ export default function App() {
         Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
       </p>
 
-      <Section title="Setări" collapsible defaultCollapsed>
+      <Section title="Presetări" collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-field">
           <button
             type="button"
@@ -3112,15 +3112,15 @@ export default function App() {
       <div className="grid grid-cols-1 gap-section lg:grid-cols-2">
         <div className="flex flex-col gap-block">
           {step === 'fundal' && (
-          <Section title="Fundal" frame="top">
+          <Section title="Setări" frame="top">
             <RadioGroupField<BackgroundSource>
-              label="Sursă fundal print"
+              label="Sursă"
               value={backgroundSource}
               onChange={handleBackgroundSourceChange}
               options={[
                 { value: 'upload', label: 'Încarcă PDF' },
-                { value: 'simple', label: 'Fundal simplu' },
-                { value: 'generate', label: 'Fundal imagine' },
+                { value: 'simple', label: 'Simplu' },
+                { value: 'generate', label: 'Imagine' },
               ]}
             />
             {backgroundSource === 'upload' ? (
@@ -3130,7 +3130,7 @@ export default function App() {
               <div className="flex flex-wrap items-start gap-field">
                 <div className="min-w-0 flex-1">
                   <FileField
-                    label="PDF de fundal (un card)"
+                    label="PDF (un card)"
                     accept="application/pdf"
                     onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
                     currentName={backgroundFile?.name}
@@ -3161,7 +3161,7 @@ export default function App() {
                   onToggleLock={() => setLockAspect((v) => !v)}
                 />
                 <ColorField
-                  label="Culoare fundal (opțional)"
+                  label="Culoare (opțional)"
                   value={simpleBgColor}
                   onChange={(v) => setBgField('simpleBgColor', v)}
                   allowNone
@@ -3182,7 +3182,7 @@ export default function App() {
                 />
                 {genBgImageSource === 'file' ? (
                   <FileField
-                    label="Imagine fundal (PNG, JPEG sau SVG)"
+                    label="Imagine (PNG, JPEG sau SVG)"
                     accept="image/png,image/jpeg,image/svg+xml,.svg"
                     onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                     currentName={genBgImageFile?.name}
@@ -3334,7 +3334,7 @@ export default function App() {
                 {genBgTransparent && (
                   <>
                     <ColorField
-                      label="Fundal zone transparente"
+                      label="Culoare zone transparente"
                       value={genBgBackdropColor}
                       onChange={setGenBgBackdropColor}
                       allowNone
@@ -3351,14 +3351,14 @@ export default function App() {
             {background && (
               <div className="flex flex-col gap-inner border-t border-gray-200 pt-field dark:border-gray-700">
                 <div className="flex items-center justify-between">
-                  <span className="text-label font-medium text-gray-700 dark:text-gray-300">Poziționare fundal</span>
+                  <span className="text-label font-medium text-gray-700 dark:text-gray-300">Poziționare</span>
                   <CheckboxField label="Mută fundalul" checked={bgNudgeMode} onChange={setBgNudgeMode} />
                 </div>
                 <div className="grid grid-cols-2 gap-field">
-                  <NumberField label="Decalaj fundal X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
-                  <NumberField label="Decalaj fundal Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
+                  <NumberField label="Decalaj X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
+                  <NumberField label="Decalaj Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
                 </div>
-                <NumberField label="Rotație fundal (grade)" value={bgSpinDeg} onChange={(v) => setBgField('bgSpinDeg', v)} step={1} />
+                <NumberField label="Rotație (grade)" value={bgSpinDeg} onChange={(v) => setBgField('bgSpinDeg', v)} step={1} />
                 <ColorField
                   label="Culoare zone libere"
                   value={bgBackdropColor}
@@ -3376,11 +3376,11 @@ export default function App() {
           )}
 
           {step === 'contur' && (
-          <Section title="Contur" frame="top">
+          <Section title="Setări" frame="top">
             {/* An uploaded SVG is converted to a vector PDF on pick
                 (handleContourFileChange), so ContourSource stays 'upload' | 'shape'. */}
             <RadioGroupField<ContourSource>
-              label="Sursă fundal contur"
+              label="Sursă"
               value={contourSource}
               onChange={(v) => {
                 setContourSvgTextWarning(false)
@@ -3406,7 +3406,7 @@ export default function App() {
                 />
                 {contourUploadSource === 'file' ? (
                   <FileField
-                    label="PDF sau SVG de fundal contur (opțional)"
+                    label="PDF sau SVG (opțional)"
                     accept="application/pdf,image/svg+xml,.svg"
                     onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
                     currentName={contourBackgroundFile?.name}
@@ -3473,7 +3473,7 @@ export default function App() {
                 {contourPageCount > 1 && (
                   <>
                     <NumberField
-                      label={`Pagina contur (1–${contourPageCount})`}
+                      label={`Pagina (1–${contourPageCount})`}
                       value={contourPageNumber}
                       onChange={handleContourPageChange}
                     />
@@ -3546,7 +3546,7 @@ export default function App() {
                     offset never changes this; it only affects the resulting cut,
                     reported on its own line so the size controls stay stable. */}
                 <p className="text-label text-gray-500 dark:text-gray-400">
-                  Dimensiune contur: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
+                  Dimensiune: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
                 {contourRedrawActive && (
                   <p className="text-hint text-gray-500 dark:text-gray-400">
@@ -3558,8 +3558,8 @@ export default function App() {
                 {(contourSource === 'upload' || contourSource === 'shape') && (
                   <>
                     <LinkedDimensions
-                      widthLabel="Lățime țintă contur (mm)"
-                      heightLabel="Înălțime țintă contur (mm)"
+                      widthLabel="Lățime țintă (mm)"
+                      heightLabel="Înălțime țintă (mm)"
                       width={contourTargetWidthMm}
                       height={contourTargetHeightMm}
                       // Editing the target is an explicit resize: stop auto-tracking
@@ -3601,7 +3601,7 @@ export default function App() {
                       </button>
                       <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
                     </div>
-                    <NumberField label="Rotație contur (grade)" value={contourSpinDeg} onChange={(v) => setContourField('contourSpinDeg', v)} step={1} />
+                    <NumberField label="Rotație (grade)" value={contourSpinDeg} onChange={(v) => setContourField('contourSpinDeg', v)} step={1} />
                   </>
                 )}
                 {/* "Redesenează": equidistant offset of the cut outline, applied to
@@ -3620,14 +3620,14 @@ export default function App() {
                   <>
                     <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                       <NumberField
-                        label={`Decalaj X contur (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
+                        label={`Decalaj X (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetXMm}
                         // A nudge sets a relative position that's then preserved
                         // proportionally across later resizes (see the effect above).
                         onChange={(v) => setContourField('contourOffsetXMm', Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
                       />
                       <NumberField
-                        label={`Decalaj Y contur (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
+                        label={`Decalaj Y (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
                         value={clampedContourOffsetYMm}
                         onChange={(v) => setContourField('contourOffsetYMm', Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
                       />
@@ -3663,9 +3663,9 @@ export default function App() {
                   </p>
                 )}
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Transparență contur (0-1)" value={contourOpacity} onChange={(v) => setContourField('contourOpacity', v)} step={0.1} min={0} max={1} />
+                  <NumberField label="Transparență (0-1)" value={contourOpacity} onChange={(v) => setContourField('contourOpacity', v)} step={0.1} min={0} max={1} />
                   <SelectField
-                    label="Mod combinare contur"
+                    label="Mod combinare"
                     value={contourBlendMode}
                     options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                     onChange={(v) => setContourField('contourBlendMode', v)}
@@ -3707,7 +3707,7 @@ export default function App() {
             {fontsNotice && <p className="text-label text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
 
-          <Section title="Coduri" frame="top">
+          <Section title="Setări" frame="top">
             <div className="flex flex-wrap gap-inner">
               {words.map((word, index) => (
                 <button
@@ -3999,7 +3999,7 @@ export default function App() {
             </Section>
           )}
 
-          <Section title="Generare" frame="top">
+          <Section title="Setări" frame="top">
             {!generateUnlocked ? (
               <>
                 <TextField label="Parolă" type="password" value={passwordInput} onChange={setPasswordInput} />

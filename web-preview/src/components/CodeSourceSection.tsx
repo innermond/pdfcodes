@@ -281,7 +281,7 @@ export function CodeSourceSection({
   const previewRowCount = dataMode === 'upload' ? uploadRowCount : rowCount
 
   return (
-    <Section title="Date" frame="top">
+    <Section title="Setări" frame="top">
       <RadioGroupField<CodeDataMode>
         label="Mod sursă"
         value={dataMode}
