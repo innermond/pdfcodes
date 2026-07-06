@@ -1,0 +1,25 @@
+# SVG → single-page background PDF, compiled to its own wasm module and loaded
+# lazily by the web preview (only when the user picks an SVG). Kept out of the
+# main `pdfcodes` crate so the primary wasm binary pays no size cost.
+[package]
+name = "pdfcodes-svg"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# No default features: `text` (+1.4 MB: fontdb/rustybuzz/subsetter — and no
+# system fonts exist on wasm anyway), `image` (+0.4 MB: rasters embedded inside
+# SVGs) and `filters` are all left out. Paths, gradients, clips and transparency
+# — the vector core — are in the base crate.
+svg2pdf = { version = "0.13", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+# Same version the main crate uses to load background PDFs, so the tests prove
+# the generated PDF round-trips through the real pipeline's parser.
+lopdf = "0.32"
