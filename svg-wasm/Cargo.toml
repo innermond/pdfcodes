@@ -1,0 +1,17 @@
+[package]
+name = "pdfcodes-svg"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# svg2pdf pulls usvg for parsing and re-exports it as `svg2pdf::usvg`. Its
+# default `text` feature drags in font shaping/embedding — the heaviest part of
+# the wasm binary — and this background path never renders <text> (the UI warns
+# and the conversion drops it), so build without defaults to keep the
+# lazily-loaded module small.
+svg2pdf = { version = "0.13", default-features = false }
+lopdf = "0.32"
+wasm-bindgen = "0.2"
