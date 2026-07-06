@@ -467,16 +467,19 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         }
         _ => None,
     };
-    // "Minimal" bleed: extend the cropped background by 0.5·Decalaj per axis (the page
-    // gutter, clamped ≥0), keeping the contour the same size and centred — a contour on a
-    // slightly larger background. The tiling gutter is halved so the contour pitch (and
-    // thus print/cut alignment) is preserved; `bleed = 0` reproduces the tight crop.
-    let bleed_x = 0.5 * opts.offset_x_mm.max(0.0) * crate::geometry::MM;
-    let bleed_y = 0.5 * opts.offset_y_mm.max(0.0) * crate::geometry::MM;
+    // "Minimal" bleed: extend the cropped background by 0.5·Decalaj on *every* side (a full
+    // Decalaj total per axis, the page gutter clamped ≥0), keeping the contour the same size and
+    // centred — a contour on a larger background. Two neighbours each contribute half the gap and
+    // together fill it edge-to-edge; edge cards gain the same margin, so the page grows outward by
+    // 0.5·Decalaj per outer side. The tiling gutter drops to 0 because the whole gap now lives
+    // inside the enlarged cell, so the contour pitch (mw + Decalaj) — and thus print/cut
+    // alignment — is unchanged; `bleed = 0` reproduces the tight crop.
+    let bleed_x = opts.offset_x_mm.max(0.0) * crate::geometry::MM;
+    let bleed_y = opts.offset_y_mm.max(0.0) * crate::geometry::MM;
     let minimal_layout = minimal_box.map(|(mw, mh)| {
         let tile_opts = Options {
-            offset_x_mm: 0.5 * opts.offset_x_mm.max(0.0),
-            offset_y_mm: 0.5 * opts.offset_y_mm.max(0.0),
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
             ..opts.clone()
         };
         CardLayout::compute(mw + bleed_x, mh + bleed_y, &tile_opts)
@@ -1258,9 +1261,9 @@ mod tests {
     #[test]
     fn minimal_bleed_extends_background_and_centers_contour() {
         use crate::geometry::MM;
-        // With Minimal + a page gutter (Decalaj), the cropped background grows by
-        // 0.5·Decalaj per axis while the contour stays the same size and is centred
-        // (bleed/2 of background on each side).
+        // With Minimal + a page gutter (Decalaj), the cropped background grows by a full
+        // Decalaj per axis (0.5·Decalaj on each side) while the contour stays the same size and
+        // is centred (bleed/2 of background on each side), so two neighbours fill a whole gap.
         let contour = multi_page_pdf(&[(72.0, 72.0)]);
         let opts = Options {
             no_cut: true,
@@ -1268,8 +1271,8 @@ mod tests {
             minimal: true,
             minimal_width_mm: Some(25.4),
             minimal_height_mm: Some(25.4),
-            offset_x_mm: 10.0, // bleed_x total = 5mm
-            offset_y_mm: 6.0,  // bleed_y total = 3mm
+            offset_x_mm: 10.0, // bleed_x total = 10mm (5mm each side)
+            offset_y_mm: 6.0,  // bleed_y total = 6mm (3mm each side)
             ..Options::default()
         };
         let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(&contour), &opts)
@@ -1280,13 +1283,26 @@ mod tests {
         let page = doc.get_object(page_id).unwrap().as_dict().unwrap();
         let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
 
-        // Page = contour box + 0.5·Decalaj per axis.
+        // Page = contour box + a full Decalaj per axis.
         let mb = page.get(b"MediaBox").unwrap().as_array().unwrap();
         let (pw, ph) = (n(&mb[2]) - n(&mb[0]), n(&mb[3]) - n(&mb[1]));
-        assert!((pw - (25.4 + 5.0) * MM).abs() < 0.5, "page width should be contour + 0.5·Decalaj X, got {pw}");
-        assert!((ph - (25.4 + 3.0) * MM).abs() < 0.5, "page height should be contour + 0.5·Decalaj Y, got {ph}");
+        assert!((pw - (25.4 + 10.0) * MM).abs() < 0.5, "page width should be contour + Decalaj X, got {pw}");
+        assert!((ph - (25.4 + 6.0) * MM).abs() < 0.5, "page height should be contour + Decalaj Y, got {ph}");
 
-        // Overlay contour is centred: placed at (bleed/2) = (2.5mm, 1.5mm).
+        // The per-cell clip is the full enlarged cell (contour + Decalaj), so backgrounds tile
+        // edge-to-edge and fully fill the gaps.
+        let content_ref = page.get(b"Contents").unwrap().as_reference().unwrap();
+        let content_stream = doc.get_object(content_ref).unwrap().as_stream().unwrap();
+        let page_content = content_stream.decompressed_content().unwrap_or_else(|_| content_stream.content.clone());
+        let page_ops = Content::decode(&page_content).unwrap();
+        let clip = page_ops.operations.iter()
+            .find(|op| op.operator == "re")
+            .expect("minimal page should emit a clip rectangle");
+        let (cw, ch) = (n(&clip.operands[2]), n(&clip.operands[3]));
+        assert!((cw - (25.4 + 10.0) * MM).abs() < 0.5, "clip width should be contour + Decalaj X, got {cw}");
+        assert!((ch - (25.4 + 6.0) * MM).abs() < 0.5, "clip height should be contour + Decalaj Y, got {ch}");
+
+        // Overlay contour is centred: placed at (bleed/2) = (5mm, 3mm).
         let ov_ref = page.get(b"Resources").unwrap().as_dict().unwrap()
             .get(b"XObject").unwrap().as_dict().unwrap()
             .get(b"OV").unwrap().as_reference().unwrap();
@@ -1306,8 +1322,8 @@ mod tests {
             }
         }
         let (tx, ty) = placement.expect("overlay should place the BGC contour");
-        assert!((tx - 2.5 * MM).abs() < 0.5, "overlay X should be bleed/2 (2.5mm), got {tx}");
-        assert!((ty - 1.5 * MM).abs() < 0.5, "overlay Y should be bleed/2 (1.5mm), got {ty}");
+        assert!((tx - 5.0 * MM).abs() < 0.5, "overlay X should be bleed/2 (5mm), got {tx}");
+        assert!((ty - 3.0 * MM).abs() < 0.5, "overlay Y should be bleed/2 (3mm), got {ty}");
     }
 
     #[test]
