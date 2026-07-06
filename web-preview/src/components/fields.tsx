@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
 import { ColorSampleContext } from '../lib/colorSample'
 
@@ -581,6 +581,23 @@ export function ColorField({
   )
 }
 
+// Whether a dropped file passes the field's `accept` filter. Drops bypass the
+// native input's own filtering (which only applies to the browse picker), so
+// this re-implements the accept grammar: `.ext` tokens match the file name,
+// `type/subtype` tokens match the declared MIME exactly, `type/*` by prefix.
+// A file with no declared MIME can still match by extension (common when the
+// OS didn't map it — same caveat as isSvgFile in lib/svgBackground.ts).
+function fileMatchesAccept(file: File, accept?: string): boolean {
+  if (!accept) return true
+  return accept.split(',').some((raw) => {
+    const token = raw.trim().toLowerCase()
+    if (!token) return false
+    if (token.startsWith('.')) return file.name.toLowerCase().endsWith(token)
+    if (token.endsWith('/*')) return file.type.toLowerCase().startsWith(token.slice(0, -1))
+    return file.type.toLowerCase() === token
+  })
+}
+
 export function FileField({
   label,
   accept,
@@ -597,15 +614,44 @@ export function FileField({
   // the retained filename from state here instead of relying on the browser UI.
   currentName?: string | null
 }) {
+  // Dragging a file over the field highlights it and dropping picks the file —
+  // the drop feeds the same `onChange(FileList)` contract as browsing, so call
+  // sites don't know the difference. Non-matching drops are ignored (no error
+  // channel here; each surface's own handler reports downstream problems).
+  const [dragOver, setDragOver] = useState(false)
+  function handleDrop(e: ReactDragEvent) {
+    e.preventDefault()
+    setDragOver(false)
+    const file = [...e.dataTransfer.files].find((f) => fileMatchesAccept(f, accept))
+    if (!file) return
+    const dt = new DataTransfer()
+    dt.items.add(file)
+    onChange(dt.files)
+  }
   return (
-    <label className="flex min-w-0 flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
+    <label
+      className="flex min-w-0 flex-col gap-tight text-label text-gray-700 dark:text-gray-300"
+      onDragOver={(e) => {
+        e.preventDefault() // required to make the label a drop target
+        setDragOver(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false)
+      }}
+      onDrop={handleDrop}
+    >
       <span className="font-medium">{label}</span>
       <input
         type="file"
         accept={accept}
         multiple={multiple}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.files)}
-        className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 text-label file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:border-gray-600 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200"
+        className={
+          'w-full min-w-0 rounded border px-2 py-1 text-label file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:file:bg-blue-900 dark:file:text-blue-200 ' +
+          (dragOver
+            ? 'border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40'
+            : 'border-gray-300 dark:border-gray-600 dark:text-gray-300')
+        }
       />
       {currentName ? (
         <span className="min-w-0 break-all text-hint text-green-600 dark:text-green-500">

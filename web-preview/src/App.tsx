@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { CardCanvas, type ContourCutShape } from './components/CardCanvas'
 import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
@@ -618,6 +618,8 @@ export default function App() {
   // here. It's a binary/async boundary, not scalar config, so it stays outside BgConfig.
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
+  // A file is being dragged over the Step-1 clipboard/drop zone (highlight only).
+  const [bgPasteZoneDragOver, setBgPasteZoneDragOver] = useState(false)
   // A loaded SVG contains <text> elements, which the size-trimmed svg-wasm build
   // drops (no `text` feature) — shown as a warning, not an error, since the rest
   // of the SVG converts fine.
@@ -763,6 +765,8 @@ export default function App() {
   const [contourSvgTextWarning, setContourSvgTextWarning] = useState(false)
   // Fetching the contour PDF/SVG from a URL (mirrors genBgLoading for Step 1).
   const [contourUrlLoading, setContourUrlLoading] = useState(false)
+  // A file is being dragged over the Step-2 clipboard/drop zone (highlight only).
+  const [contourPasteZoneDragOver, setContourPasteZoneDragOver] = useState(false)
   const [contourPageCount, setContourPageCount] = useState(1)
   // True when the app auto-selected the contour page (a page distinct from the
   // background's) on load, rather than the user picking it. Drives an
@@ -2046,6 +2050,20 @@ export default function App() {
     void loadClipboardImageBlob(blob)
   }
 
+  // A file dropped on the same zone rides the paste pipeline (a drop's
+  // DataTransfer is read identically) — only the "nothing usable" message
+  // differs, since here the user dragged a concrete file, not the clipboard.
+  function handleBackgroundDrop(e: ReactDragEvent) {
+    e.preventDefault()
+    setBgPasteZoneDragOver(false)
+    const blob = imageBlobFromDataTransfer(e.dataTransfer)
+    if (!blob) {
+      setBackgroundError('Fișierul tras nu este o imagine (PNG, JPEG sau SVG).')
+      return
+    }
+    void loadClipboardImageBlob(blob)
+  }
+
   // Build a print background PDF from a raster image (PNG/JPEG) or an SVG
   // (converted to a vector PDF) whenever the "create background" source is
   // active and the image / dimensions change, feeding it through the same
@@ -2221,11 +2239,18 @@ export default function App() {
   }
 
   // Unified entry point for the "Încarcă PDF/SVG" source: every acquisition path
-  // (local file, URL, clipboard) lands here and is routed by kind — an SVG goes
-  // through the convert-to-PDF path, anything else is treated as a PDF.
+  // (local file, URL, clipboard, drop) lands here and is routed by kind — an SVG
+  // goes through the convert-to-PDF path, anything else is treated as a PDF.
   function handleContourFileChange(file: File | null) {
-    if (file && isSvgFile(file)) handleContourSvgFileChange(file)
-    else handleContourBackgroundFileChange(file)
+    if (file && isSvgFile(file)) {
+      handleContourSvgFileChange(file)
+    } else {
+      // Clear a previous SVG's <text> warning here, not in the PDF handler: the
+      // SVG path computes the new warning and then delegates to that handler,
+      // which would wipe it again.
+      setContourSvgTextWarning(false)
+      handleContourBackgroundFileChange(file)
+    }
   }
 
   // Fetch a remote PDF/SVG (via `fetchProxiedFile`) and feed it through the same
@@ -2284,6 +2309,19 @@ export default function App() {
     const file = vectorFileFromDataTransfer(e.clipboardData)
     if (!file) return // let non-matching pastes fall through untouched
     e.preventDefault()
+    loadContourClipboardFile(file)
+  }
+
+  // A file dropped on the same zone rides the paste pipeline — only the
+  // "nothing usable" message differs (the user dragged a concrete file).
+  function handleContourDrop(e: ReactDragEvent) {
+    e.preventDefault()
+    setContourPasteZoneDragOver(false)
+    const file = vectorFileFromDataTransfer(e.dataTransfer)
+    if (!file) {
+      setContourBackgroundError('Fișierul tras nu este un PDF sau SVG.')
+      return
+    }
     loadContourClipboardFile(file)
   }
 
@@ -3171,8 +3209,21 @@ export default function App() {
                 ) : (
                   <div
                     onPaste={handleBackgroundPaste}
+                    onDragOver={(e) => {
+                      e.preventDefault()
+                      setBgPasteZoneDragOver(true)
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) setBgPasteZoneDragOver(false)
+                    }}
+                    onDrop={handleBackgroundDrop}
                     tabIndex={0}
-                    className="flex flex-col gap-inner rounded border border-dashed border-gray-300 p-field focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
+                    className={
+                      'flex flex-col gap-inner rounded border border-dashed p-field focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ' +
+                      (bgPasteZoneDragOver
+                        ? 'border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40'
+                        : 'border-gray-300 dark:border-gray-600')
+                    }
                   >
                     <button
                       type="button"
@@ -3183,7 +3234,7 @@ export default function App() {
                       📋 Lipește imaginea
                     </button>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Apasă butonul sau Ctrl+V pentru a lipi o imagine (PNG/JPEG/SVG) din clipboard.
+                      Apasă butonul, Ctrl+V sau trage o imagine (PNG/JPEG/SVG) aici.
                     </p>
                   </div>
                 )}
@@ -3382,8 +3433,21 @@ export default function App() {
                 ) : (
                   <div
                     onPaste={handleContourPaste}
+                    onDragOver={(e) => {
+                      e.preventDefault()
+                      setContourPasteZoneDragOver(true)
+                    }}
+                    onDragLeave={(e) => {
+                      if (!e.currentTarget.contains(e.relatedTarget as Node)) setContourPasteZoneDragOver(false)
+                    }}
+                    onDrop={handleContourDrop}
                     tabIndex={0}
-                    className="flex flex-col gap-inner rounded border border-dashed border-gray-300 p-field focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
+                    className={
+                      'flex flex-col gap-inner rounded border border-dashed p-field focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ' +
+                      (contourPasteZoneDragOver
+                        ? 'border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40'
+                        : 'border-gray-300 dark:border-gray-600')
+                    }
                   >
                     <button
                       type="button"
@@ -3394,7 +3458,7 @@ export default function App() {
                       📋 Lipește fișierul
                     </button>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Apasă butonul sau Ctrl+V pentru a lipi un fișier PDF/SVG sau cod SVG din clipboard.
+                      Apasă butonul, Ctrl+V sau trage un fișier PDF/SVG (sau cod SVG) aici.
                     </p>
                   </div>
                 )}
@@ -3875,12 +3939,6 @@ export default function App() {
 
           {step === 'date' && (
           <CodeSourceSection
-            correctOverflow={correctOverflow}
-            onCorrectOverflowChange={(v) => setStyleField('correctOverflow', v)}
-            minFontSizePt={minFontSizePt}
-            onMinFontSizeChange={(v) => setStyleField('minFontSizePt', v)}
-            overflowCorrectionMode={overflowCorrectionMode}
-            onOverflowCorrectionModeChange={(v) => setStyleField('overflowCorrectionMode', v)}
             dataMode={codeDataMode}
             onDataModeChange={handleCodeDataModeChange}
             onCsvUpload={(f) => void handleCsvUpload(f)}
@@ -4005,11 +4063,44 @@ export default function App() {
               {needsContourInput && contourSource === 'shape' && shapeKind === 'rectangle' && (
                 <CheckboxField label="Contur Dreptunghi" checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
               )}
+              {/* "Corectare depășire" shrinks overflowing code text in the print
+                  output, so it needs a print output (like "Nu printa codurile"). */}
+              {needsPrintInput && (
+                <CheckboxField
+                  label="Corectare depășire"
+                  checked={correctOverflow}
+                  onChange={(v) => setStyleField('correctOverflow', v)}
+                />
+              )}
               <CheckboxField label="Contururi de depanare" checked={pageOptions.debug} onChange={(v) => setPageOption('debug', v)} />
               {needsContourInput && (
                 <CheckboxField label="Măsoară traseele de tăiere" checked={pageOptions.measurePaths} onChange={(v) => setPageOption('measurePaths', v)} />
               )}
             </div>
+            {needsPrintInput && correctOverflow && (
+              <div className="-mt-tight flex flex-col gap-inner border-l-2 border-gray-200 pl-3 dark:border-gray-700">
+                <p className="text-label text-gray-500 dark:text-gray-400">
+                  Codurile care depășesc conturul (sau cardul) sunt micșorate automat până încap, dar nu sub
+                  dimensiunea minimă. Cele care tot nu încap rămân semnalate.
+                </p>
+                <NumberField
+                  label="Font minim (pt)"
+                  value={minFontSizePt}
+                  onChange={(v) => setStyleField('minFontSizePt', v)}
+                  min={1}
+                  step={0.5}
+                />
+                <RadioGroupField<'per-code' | 'column'>
+                  label="Aplică micșorarea"
+                  value={overflowCorrectionMode}
+                  onChange={(v) => setStyleField('overflowCorrectionMode', v)}
+                  options={[
+                    { value: 'per-code', label: 'Pe cod' },
+                    { value: 'column', label: 'Pe coloană' },
+                  ]}
+                />
+              </div>
+            )}
             {pageOptions.noCut && (
               <p className="text-label text-gray-600 dark:text-gray-400">
                 Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.

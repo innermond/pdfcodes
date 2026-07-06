@@ -195,12 +195,6 @@ function FieldBoundaryEditor({
 }
 
 export function CodeSourceSection({
-  correctOverflow,
-  onCorrectOverflowChange,
-  minFontSizePt,
-  onMinFontSizeChange,
-  overflowCorrectionMode,
-  onOverflowCorrectionModeChange,
   dataMode,
   onDataModeChange,
   onCsvUpload,
@@ -227,15 +221,6 @@ export function CodeSourceSection({
   blocked,
   duplicates,
 }: {
-  /** "Corectare depășire": auto-shrink overflowing codes to fit the cut/card. */
-  correctOverflow: boolean
-  onCorrectOverflowChange: (value: boolean) => void
-  /** Lowest font size (pt) the correction is allowed to shrink a code to. */
-  minFontSizePt: number
-  onMinFontSizeChange: (value: number) => void
-  /** Shrink each code on its own card, or a whole column uniformly. */
-  overflowCorrectionMode: 'per-code' | 'column'
-  onOverflowCorrectionModeChange: (mode: 'per-code' | 'column') => void
   dataMode: CodeDataMode
   onDataModeChange: (mode: CodeDataMode) => void
   onCsvUpload: (file: File | null) => void
@@ -297,36 +282,6 @@ export function CodeSourceSection({
 
   return (
     <Section title="Date" frame="top">
-      <CheckboxField
-        label="Corectare depășire"
-        checked={correctOverflow}
-        onChange={onCorrectOverflowChange}
-      />
-      {correctOverflow && (
-        <div className="-mt-tight flex flex-col gap-inner border-l-2 border-gray-200 pl-3 dark:border-gray-700">
-          <p className="text-label text-gray-500 dark:text-gray-400">
-            Codurile care depășesc conturul (sau cardul) sunt micșorate automat până încap, dar nu sub
-            dimensiunea minimă. Cele care tot nu încap rămân semnalate.
-          </p>
-          <NumberField
-            label="Font minim (pt)"
-            value={minFontSizePt}
-            onChange={onMinFontSizeChange}
-            min={1}
-            step={0.5}
-          />
-          <RadioGroupField<'per-code' | 'column'>
-            label="Aplică micșorarea"
-            value={overflowCorrectionMode}
-            onChange={onOverflowCorrectionModeChange}
-            options={[
-              { value: 'per-code', label: 'Pe cod' },
-              { value: 'column', label: 'Pe coloană' },
-            ]}
-          />
-        </div>
-      )}
-
       <RadioGroupField<CodeDataMode>
         label="Mod sursă"
         value={dataMode}
