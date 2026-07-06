@@ -10,7 +10,7 @@ import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleF
 import { fetchGoogleFont } from './lib/googleFonts'
 import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
-import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard } from './lib/clipboardImage'
+import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard, readVectorFileFromClipboard, vectorFileFromDataTransfer } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { svgToPdf } from './lib/svgWasm'
 import { useUndoHistory } from './lib/undoHistory'
@@ -150,6 +150,40 @@ const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | und
 // (local PHP during dev). If unset, remote-URL background fetching is disabled.
 const IMAGE_PROXY = import.meta.env.VITE_IMAGE_PROXY as string | undefined
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
+
+// Fetch a remote file through the server-side IMAGE_PROXY (sidestepping CORS)
+// and wrap it in a File. The payload is identified by `sniff` from its first
+// bytes (never the server's content-type); a null sniff rejects the download
+// with `rejectMessage`. All failure modes throw Errors carrying the final
+// user-facing Romanian message. Shared by the Step-1 image URL source and the
+// Step-2 contour PDF/SVG URL source, which differ only in sniff + messages.
+async function fetchProxiedFile(opts: {
+  url: string
+  sniff: (head: Uint8Array) => { type: string; fallbackName: string } | null
+  rejectMessage: string
+  httpMessage: (status: number) => string
+}): Promise<File> {
+  if (!IMAGE_PROXY) {
+    throw new Error('Descărcarea după URL nu este configurată (lipsește proxy-ul de imagini).')
+  }
+  let blob: Blob
+  try {
+    const resp = await fetch(IMAGE_PROXY + encodeURIComponent(opts.url))
+    if (!resp.ok) throw new Error(opts.httpMessage(resp.status))
+    blob = await resp.blob()
+  } catch (err) {
+    // Network failures (proxy down/unreachable) surface as a TypeError.
+    if (err instanceof TypeError) {
+      throw new Error('Nu s-a putut contacta proxy-ul de imagini.', { cause: err })
+    }
+    throw err
+  }
+  const head = new Uint8Array(await blob.slice(0, 1024).arrayBuffer())
+  const sniffed = opts.sniff(head)
+  if (!sniffed) throw new Error(opts.rejectMessage)
+  const name = opts.url.split('/').pop()?.split('?')[0] || sniffed.fallbackName
+  return new File([blob], name, { type: sniffed.type })
+}
 
 // True if any pixel of the bitmap is non-opaque (alpha < 255). The bitmap is
 // drawn into a size-capped canvas first: downscaling never turns a fully-opaque
@@ -389,6 +423,9 @@ type CornerOrientation = 'out' | 'in'
 // groups with the overflow-correction controls in the Coduri step.
 interface ContourConfig {
   contourSource: ContourSource
+  // Where the 'upload' source gets its PDF/SVG from (mirrors genBgImageSource).
+  contourUploadSource: GenBgImageSource
+  contourUploadUrl: string
   contourPageNumber: number
   contourOpacity: number
   contourBlendMode: BlendMode
@@ -422,6 +459,8 @@ interface ContourConfig {
 }
 const defaultContourConfig: ContourConfig = {
   contourSource: 'upload',
+  contourUploadSource: 'file',
+  contourUploadUrl: '',
   contourPageNumber: 1,
   contourOpacity: 1.0,
   contourBlendMode: 'normal',
@@ -604,7 +643,8 @@ export default function App() {
   // stay via the destructured names below; only write sites go through the helper.
   const [contourConfig, setContourConfig] = useState<ContourConfig>(defaultContourConfig)
   const {
-    contourSource, contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
+    contourSource, contourUploadSource, contourUploadUrl,
+    contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
     shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
     contourTargetWidthMm, contourTargetHeightMm, contourRotation, contourSpinDeg, contourRedrawMm,
@@ -718,15 +758,11 @@ export default function App() {
   // user-picked `backgroundPageNumber` lives in BgConfig.
   const [backgroundPageCount, setBackgroundPageCount] = useState(1)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
-  // Which flavor the "upload" contour source shows in the UI: a PDF file field
-  // or an SVG one ("Încarcă SVG"). UI-only state — an SVG is converted to a PDF
-  // (lib/svgWasm.ts) the moment it's picked and stored in `contourBackgroundFile`,
-  // so ContourSource stays 'upload' and everything downstream (preview, trim,
-  // rotation, generation, presets) reuses the uploaded-PDF path untouched.
-  const [contourUploadKind, setContourUploadKind] = useState<'pdf' | 'svg'>('pdf')
   // The picked contour SVG contains <text> elements, dropped by the size-trimmed
   // svg-wasm build (no `text` feature) — warning, not error, like the background's.
   const [contourSvgTextWarning, setContourSvgTextWarning] = useState(false)
+  // Fetching the contour PDF/SVG from a URL (mirrors genBgLoading for Step 1).
+  const [contourUrlLoading, setContourUrlLoading] = useState(false)
   const [contourPageCount, setContourPageCount] = useState(1)
   // True when the app auto-selected the contour page (a page distinct from the
   // background's) on load, rather than the user picking it. Drives an
@@ -793,7 +829,7 @@ export default function App() {
     // ACTIVE
     bgConfig, contourConfig, dataConfig, styleConfig, pageOptions,
     words, fonts, fontSources, googleFontSelections,
-    mode, lockAspect, contourLockAspect, contourUploadKind,
+    mode, lockAspect, contourLockAspect,
     bgNudgeMode, genBgTransparent, genBgBackdropColor,
     backgroundFile, genBgImageFile, contourBackgroundFile,
     csvDataFile, uploadedRawFile,
@@ -827,7 +863,6 @@ export default function App() {
     setMode(s.mode)
     setLockAspect(s.lockAspect)
     setContourLockAspect(s.contourLockAspect)
-    setContourUploadKind(s.contourUploadKind)
     setBgNudgeMode(s.bgNudgeMode)
     setGenBgTransparent(s.genBgTransparent)
     setGenBgBackdropColor(s.genBgBackdropColor)
@@ -850,7 +885,7 @@ export default function App() {
     activeKeys: [
       'bgConfig', 'contourConfig', 'dataConfig', 'styleConfig', 'pageOptions',
       'words', 'fonts', 'fontSources', 'googleFontSelections',
-      'mode', 'lockAspect', 'contourLockAspect', 'contourUploadKind',
+      'mode', 'lockAspect', 'contourLockAspect',
       'bgNudgeMode', 'genBgTransparent', 'genBgBackdropColor',
       'backgroundFile', 'genBgImageFile', 'contourBackgroundFile',
       'csvDataFile', 'uploadedRawFile',
@@ -1941,40 +1976,34 @@ export default function App() {
       .catch(() => {})
   }
 
-  // Fetch a remote PNG/JPEG (always through the server-side `IMAGE_PROXY` to
-  // sidestep CORS) and feed it through the same pipeline as a local file. The
-  // bytes are validated by magic number (not the server's content-type) and
-  // wrapped in a File so `handleGenBgImageChange` drives the rest unchanged.
+  // Fetch a remote PNG/JPEG/SVG (via `fetchProxiedFile`) and feed it through
+  // the same pipeline as a local file, so `handleGenBgImageChange` drives the
+  // rest unchanged.
   async function handleGenBgUrlLoad() {
     const url = genBgImageUrl.trim()
     if (!url) return
-    if (!IMAGE_PROXY) {
-      setBackgroundError('Descărcarea după URL nu este configurată (lipsește proxy-ul de imagini).')
-      return
-    }
     setGenBgLoading(true)
     setBackgroundError(null)
     try {
-      const resp = await fetch(IMAGE_PROXY + encodeURIComponent(url))
-      if (!resp.ok) throw new Error(`Nu s-a putut descărca imaginea (HTTP ${resp.status}).`)
-      const blob = await resp.blob()
-      // SVG is text with no magic number, so it gets a prolog-aware sniff instead.
-      const head = new Uint8Array(await blob.slice(0, 1024).arrayBuffer())
-      const isPng = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47
-      const isJpeg = head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff
-      const isSvg = !isPng && !isJpeg && looksLikeSvg(head)
-      if (!isPng && !isJpeg && !isSvg) throw new Error('Doar imagini PNG, JPEG sau SVG sunt acceptate.')
-      const type = isPng ? 'image/png' : isJpeg ? 'image/jpeg' : 'image/svg+xml'
-      const fallback = isPng ? 'fundal.png' : isJpeg ? 'fundal.jpg' : 'fundal.svg'
-      const name = url.split('/').pop()?.split('?')[0] || fallback
-      handleGenBgImageChange(new File([blob], name, { type }))
+      const file = await fetchProxiedFile({
+        url,
+        sniff: (head) => {
+          if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+            return { type: 'image/png', fallbackName: 'fundal.png' }
+          }
+          if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+            return { type: 'image/jpeg', fallbackName: 'fundal.jpg' }
+          }
+          // SVG is text with no magic number, so it gets a prolog-aware sniff instead.
+          if (looksLikeSvg(head)) return { type: 'image/svg+xml', fallbackName: 'fundal.svg' }
+          return null
+        },
+        rejectMessage: 'Doar imagini PNG, JPEG sau SVG sunt acceptate.',
+        httpMessage: (status) => `Nu s-a putut descărca imaginea (HTTP ${status}).`,
+      })
+      handleGenBgImageChange(file)
     } catch (err) {
-      // Network failures (proxy down/unreachable) surface as a TypeError.
-      setBackgroundError(
-        err instanceof TypeError
-          ? 'Nu s-a putut contacta proxy-ul de imagini.'
-          : err instanceof Error ? err.message : String(err),
-      )
+      setBackgroundError(err instanceof Error ? err.message : String(err))
       setGenBgImageFile(null)
     } finally {
       setGenBgLoading(false)
@@ -2189,6 +2218,73 @@ export default function App() {
         handleContourBackgroundFileChange(new File([bytes.buffer as ArrayBuffer], name, { type: 'application/pdf' }))
       })
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+  }
+
+  // Unified entry point for the "Încarcă PDF/SVG" source: every acquisition path
+  // (local file, URL, clipboard) lands here and is routed by kind — an SVG goes
+  // through the convert-to-PDF path, anything else is treated as a PDF.
+  function handleContourFileChange(file: File | null) {
+    if (file && isSvgFile(file)) handleContourSvgFileChange(file)
+    else handleContourBackgroundFileChange(file)
+  }
+
+  // Fetch a remote PDF/SVG (via `fetchProxiedFile`) and feed it through the same
+  // pipeline as a locally picked file.
+  async function handleContourUrlLoad() {
+    const url = contourUploadUrl.trim()
+    if (!url) return
+    setContourUrlLoading(true)
+    setContourBackgroundError(null)
+    try {
+      const file = await fetchProxiedFile({
+        url,
+        sniff: (head) => {
+          // %PDF
+          if (head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46) {
+            return { type: 'application/pdf', fallbackName: 'contur.pdf' }
+          }
+          if (looksLikeSvg(head)) return { type: 'image/svg+xml', fallbackName: 'contur.svg' }
+          return null
+        },
+        rejectMessage: 'Doar fișiere PDF sau SVG sunt acceptate.',
+        httpMessage: (status) => `Nu s-a putut descărca fișierul (HTTP ${status}).`,
+      })
+      handleContourFileChange(file)
+    } catch (err) {
+      setContourBackgroundError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setContourUrlLoading(false)
+    }
+  }
+
+  // Feed a PDF/SVG File pulled off the clipboard into the shared pipeline.
+  // `null` (nothing usable on the clipboard) → friendly error. The Ctrl+V hint
+  // matters: browsers never expose OS-copied files to the button's async
+  // Clipboard API, only to a real paste event.
+  function loadContourClipboardFile(file: File | null) {
+    if (!file) {
+      setContourBackgroundError(
+        'Clipboard-ul nu conține un fișier PDF sau SVG accesibil. Pentru un fișier copiat din managerul de fișiere, apasă Ctrl+V aici.',
+      )
+      return
+    }
+    setContourBackgroundError(null)
+    handleContourFileChange(file)
+  }
+
+  // "Lipește fișierul" button: read the clipboard via the async Clipboard API.
+  async function handleContourPasteFromButton() {
+    loadContourClipboardFile(await readVectorFileFromClipboard())
+  }
+
+  // Ctrl/Cmd+V over the clipboard-source area: read the file from the paste event
+  // (works where the async Clipboard API is unavailable, and is the only path that
+  // sees files copied from a file manager).
+  function handleContourPaste(e: ReactClipboardEvent) {
+    const file = vectorFileFromDataTransfer(e.clipboardData)
+    if (!file) return // let non-matching pastes fall through untouched
+    e.preventDefault()
+    loadContourClipboardFile(file)
   }
 
   // Re-render the contour preview from a different page of the uploaded PDF.
@@ -3230,41 +3326,80 @@ export default function App() {
 
           {step === 'contur' && (
           <Section title="Contur" frame="top">
-            {/* "Încarcă PDF" and "Încarcă SVG" are the same internal source
-                ('upload'): an SVG is converted to a vector PDF on pick, so only
-                the file field differs. `contourUploadKind` (UI-only) picks the
-                flavor; ContourSource itself stays 'upload' | 'shape'. */}
-            <RadioGroupField<'upload' | 'svg' | 'shape'>
+            {/* An uploaded SVG is converted to a vector PDF on pick
+                (handleContourFileChange), so ContourSource stays 'upload' | 'shape'. */}
+            <RadioGroupField<ContourSource>
               label="Sursă fundal contur"
-              value={contourSource === 'shape' ? 'shape' : contourUploadKind === 'svg' ? 'svg' : 'upload'}
+              value={contourSource}
               onChange={(v) => {
-                setContourUploadKind(v === 'svg' ? 'svg' : 'pdf')
                 setContourSvgTextWarning(false)
-                handleContourSourceChange(v === 'shape' ? 'shape' : 'upload')
+                handleContourSourceChange(v)
               }}
               options={[
-                { value: 'upload', label: 'Încarcă PDF' },
-                { value: 'svg', label: 'Încarcă SVG' },
+                { value: 'upload', label: 'Încarcă PDF/SVG' },
                 { value: 'shape', label: 'Formă presetată' },
               ]}
             />
 
             {contourSource === 'upload' ? (
               <>
-                {contourUploadKind === 'svg' ? (
+                <RadioGroupField<GenBgImageSource>
+                  label="Sursă fișier"
+                  value={contourUploadSource}
+                  onChange={(v) => setContourField('contourUploadSource', v)}
+                  options={[
+                    { value: 'file', label: 'Fișier local' },
+                    { value: 'url', label: 'URL' },
+                    { value: 'clipboard', label: 'Clipboard' },
+                  ]}
+                />
+                {contourUploadSource === 'file' ? (
                   <FileField
-                    label="SVG de fundal contur (opțional)"
-                    accept="image/svg+xml,.svg"
-                    onChange={(files) => handleContourSvgFileChange(files?.[0] ?? null)}
+                    label="PDF sau SVG de fundal contur (opțional)"
+                    accept="application/pdf,image/svg+xml,.svg"
+                    onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
                     currentName={contourBackgroundFile?.name}
                   />
+                ) : contourUploadSource === 'url' ? (
+                  <div className="flex items-end gap-inner">
+                    <div className="min-w-0 flex-1">
+                      <TextField
+                        label="URL fișier (PDF sau SVG)"
+                        value={contourUploadUrl}
+                        onChange={(v) => setContourField('contourUploadUrl', v)}
+                        placeholder="https://exemplu.ro/contur.pdf"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleContourUrlLoad}
+                      disabled={contourUrlLoading}
+                      className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      Încarcă
+                    </button>
+                  </div>
                 ) : (
-                  <FileField
-                    label="PDF de fundal contur (opțional)"
-                    accept="application/pdf"
-                    onChange={(files) => handleContourBackgroundFileChange(files?.[0] ?? null)}
-                    currentName={contourBackgroundFile?.name}
-                  />
+                  <div
+                    onPaste={handleContourPaste}
+                    tabIndex={0}
+                    className="flex flex-col gap-inner rounded border border-dashed border-gray-300 p-field focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-600"
+                  >
+                    <button
+                      type="button"
+                      onClick={handleContourPasteFromButton}
+                      disabled={contourUrlLoading}
+                      className="self-start rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      📋 Lipește fișierul
+                    </button>
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      Apasă butonul sau Ctrl+V pentru a lipi un fișier PDF/SVG sau cod SVG din clipboard.
+                    </p>
+                  </div>
+                )}
+                {contourUrlLoading && (
+                  <p className="text-label text-gray-500 dark:text-gray-400">Se încarcă…</p>
                 )}
                 {contourSvgTextWarning && (
                   <p className="text-label text-amber-600 dark:text-amber-400">
