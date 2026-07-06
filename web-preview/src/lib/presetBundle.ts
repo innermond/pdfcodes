@@ -10,6 +10,7 @@ export interface ResourceManifest {
   background?: string
   contour?: string
   csv?: string
+  thumbnail?: string
   fonts?: Record<string, string>
 }
 
@@ -17,6 +18,9 @@ export interface PresetResources {
   background?: File
   contour?: File
   csv?: File
+  // A PNG preview of how the generated output looks, saved as a viewing aid.
+  // Optional: omitted when the current settings can't produce a preview.
+  thumbnail?: Blob
   fonts: Map<number, File>
 }
 
@@ -42,11 +46,13 @@ function downloadBlob(filename: string, blob: Blob) {
   URL.revokeObjectURL(url)
 }
 
-export async function downloadPresetBundle<T extends object>(
-  filename: string,
+// Pure, DOM-free zip assembly: turns a preset + its resources into the zip bytes.
+// Split out from `downloadPresetBundle` so it can be unit-tested without a browser
+// (the download itself needs the DOM and is verified manually).
+export async function buildPresetZip<T extends object>(
   preset: T,
   resources: PresetResources,
-): Promise<void> {
+): Promise<Uint8Array<ArrayBuffer>> {
   const files: Zippable = {}
   const manifest: ResourceManifest = {}
 
@@ -68,6 +74,11 @@ export async function downloadPresetBundle<T extends object>(
     manifest.csv = path
   }
 
+  if (resources.thumbnail) {
+    files['thumbnail.png'] = new Uint8Array(await resources.thumbnail.arrayBuffer())
+    manifest.thumbnail = 'thumbnail.png'
+  }
+
   if (resources.fonts.size > 0) {
     manifest.fonts = {}
     for (const [index, file] of resources.fonts) {
@@ -79,7 +90,15 @@ export async function downloadPresetBundle<T extends object>(
 
   files['settings.json'] = strToU8(JSON.stringify({ ...preset, resources: manifest }, null, 2))
 
-  const zipped = zipSync(files, { level: 6 })
+  return zipSync(files, { level: 6 })
+}
+
+export async function downloadPresetBundle<T extends object>(
+  filename: string,
+  preset: T,
+  resources: PresetResources,
+): Promise<void> {
+  const zipped = await buildPresetZip(preset, resources)
   downloadBlob(filename, new Blob([zipped], { type: 'application/zip' }))
 }
 
