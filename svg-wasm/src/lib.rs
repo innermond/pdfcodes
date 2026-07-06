@@ -73,7 +73,10 @@ mod tests {
         // right), not the 4/3-inflated 96-dpi px size.
         let (_, w, h) = load_single_page(&pdf);
         assert!((w - 86.0 * MM).abs() < 0.05, "width {w} pt should be 86 mm");
-        assert!((h - 54.0 * MM).abs() < 0.05, "height {h} pt should be 54 mm");
+        assert!(
+            (h - 54.0 * MM).abs() < 0.05,
+            "height {h} pt should be 54 mm"
+        );
     }
 
     #[test]
@@ -103,8 +106,14 @@ mod tests {
         </svg>"##;
         let pdf = convert_svg_to_pdf(svg).expect("should convert");
         let (_, w, h) = load_single_page(&pdf);
-        assert!((w - 72.0).abs() < 0.05, "96 css px should be 72 pt, got {w}");
-        assert!((h - 72.0).abs() < 0.05, "96 css px should be 72 pt, got {h}");
+        assert!(
+            (w - 72.0).abs() < 0.05,
+            "96 css px should be 72 pt, got {w}"
+        );
+        assert!(
+            (h - 72.0).abs() < 0.05,
+            "96 css px should be 72 pt, got {h}"
+        );
     }
 
     #[test]

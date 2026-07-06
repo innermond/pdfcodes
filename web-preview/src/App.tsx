@@ -1630,7 +1630,14 @@ export default function App() {
     // background is a generated simple one or absent.
     const stem = backgroundSource === 'upload' && backgroundFile ? sanitizeFileStem(backgroundFile.name) : ''
     const filename = stem ? `${stem}-setari.zip` : 'pdfcodes-preview-setari.zip'
-    await downloadPresetBundle(filename, preset, resources)
+    // Also bundle a thumbnail of the current preview (contour-cropped when a contour is
+    // loaded), scaled so its longest side is ~512px. Null — e.g. no background, so no
+    // preview to capture — simply omits thumbnail.png without blocking the save.
+    const svg = previewRef.current?.querySelector('svg') as SVGSVGElement | null
+    const longestPt = svg ? Math.max(svg.viewBox.baseVal.width, svg.viewBox.baseVal.height) : 0
+    const thumbScale = longestPt > 0 ? Math.min(2, 512 / longestPt) : 1
+    const thumbnail = await capturePreviewPng(hasContour, thumbScale)
+    await downloadPresetBundle(filename, preset, { ...resources, thumbnail: thumbnail ?? undefined })
   }
 
   async function handleRequestQuote() {
@@ -2927,10 +2934,14 @@ export default function App() {
   // "Descarcă": force the capture to download a file instead of copying to the
   // clipboard. Also a capture-time modifier, so it stays out of the Preset.
   const [captureDownload, setCaptureDownload] = useState(false)
-  async function handleScreenshot() {
+  // Rasterize the live preview SVG to a PNG Blob, reused by the 📷 screenshot and by
+  // the settings-preset thumbnail. Returns null when there's no preview to capture
+  // (no background ⇒ no mounted SVG) or if rasterization fails, so callers can just
+  // skip rather than error. `scale` overrides the default resolution (used to keep the
+  // preset thumbnail small); `clipToContour` renders the transparent contour cut-out.
+  async function capturePreviewPng(clipToContour: boolean, scale?: number): Promise<Blob | null> {
     const svg = previewRef.current?.querySelector('svg')
-    if (!svg) return
-    setScreenshotStatus('busy')
+    if (!svg) return null
     try {
       // Gather bytes for every font family the preview actually uses: the default for
       // words without a custom font, plus each uploaded font in play.
@@ -2946,16 +2957,25 @@ export default function App() {
         }
       }
       const css = buildFontFaceCss([...families].map(([family, bytes]) => ({ family, bytes })))
-      const blob = await rasterizePreview(svg as SVGSVGElement, css, undefined, captureCutout)
-      const filename = captureCutout ? 'previzualizare-contur.png' : 'previzualizare.png'
-      // "Descarcă" forces a download; otherwise copy to the clipboard and only fall
-      // back to a download when the browser can't.
-      const copied = captureDownload ? false : await copyBlobToClipboard(blob)
-      if (!copied) downloadBlob(blob, filename)
-      setScreenshotStatus(copied ? 'copied' : 'downloaded')
+      return await rasterizePreview(svg as SVGSVGElement, css, scale, clipToContour)
     } catch {
-      setScreenshotStatus('error')
+      return null
     }
+  }
+  async function handleScreenshot() {
+    if (!previewRef.current?.querySelector('svg')) return
+    setScreenshotStatus('busy')
+    const blob = await capturePreviewPng(captureCutout)
+    if (!blob) {
+      setScreenshotStatus('error')
+      return
+    }
+    const filename = captureCutout ? 'previzualizare-contur.png' : 'previzualizare.png'
+    // "Descarcă" forces a download; otherwise copy to the clipboard and only fall
+    // back to a download when the browser can't.
+    const copied = captureDownload ? false : await copyBlobToClipboard(blob)
+    if (!copied) downloadBlob(blob, filename)
+    setScreenshotStatus(copied ? 'copied' : 'downloaded')
   }
   // Clear the transient screenshot feedback after a moment.
   useEffect(() => {
@@ -3042,6 +3062,13 @@ export default function App() {
         <div className="flex items-center gap-inner">
           <button
             type="button"
+            onClick={handleSavePreset}
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            Salvează setările (.zip)
+          </button>
+          <button
+            type="button"
             onClick={undo}
             disabled={!canUndo}
             title="Anulează (Ctrl+Z)"
@@ -3075,13 +3102,6 @@ export default function App() {
 
       <Section title="Presetări" collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-field">
-          <button
-            type="button"
-            onClick={handleSavePreset}
-            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-          >
-            Salvează setările (.zip)
-          </button>
           <FileField
             label="Încarcă setări (.zip sau .json)"
             accept=".zip,application/zip,application/json,.json"
@@ -3405,12 +3425,27 @@ export default function App() {
                   ]}
                 />
                 {contourUploadSource === 'file' ? (
-                  <FileField
-                    label="PDF sau SVG (opțional)"
-                    accept="application/pdf,image/svg+xml,.svg"
-                    onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
-                    currentName={contourBackgroundFile?.name}
-                  />
+                  // File input and its page picker share one row (file grows, page
+                  // stays narrow, wrapping only when it can't fit) — same as Step 1.
+                  <div className="flex flex-wrap items-start gap-field">
+                    <div className="min-w-0 flex-1">
+                      <FileField
+                        label="PDF sau SVG (opțional)"
+                        accept="application/pdf,image/svg+xml,.svg"
+                        onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
+                        currentName={contourBackgroundFile?.name}
+                      />
+                    </div>
+                    {contourPageCount > 1 && (
+                      <div className="w-28 shrink-0">
+                        <NumberField
+                          label={`Pagina (1–${contourPageCount})`}
+                          value={contourPageNumber}
+                          onChange={handleContourPageChange}
+                        />
+                      </div>
+                    )}
+                  </div>
                 ) : contourUploadSource === 'url' ? (
                   <div className="flex items-end gap-inner">
                     <div className="min-w-0 flex-1">
@@ -3472,11 +3507,15 @@ export default function App() {
                 )}
                 {contourPageCount > 1 && (
                   <>
-                    <NumberField
-                      label={`Pagina (1–${contourPageCount})`}
-                      value={contourPageNumber}
-                      onChange={handleContourPageChange}
-                    />
+                    {/* In 'file' mode the page picker is inline with the file input (above);
+                        for URL/Clipboard it stays here so those modes keep page selection. */}
+                    {contourUploadSource !== 'file' && (
+                      <NumberField
+                        label={`Pagina (1–${contourPageCount})`}
+                        value={contourPageNumber}
+                        onChange={handleContourPageChange}
+                      />
+                    )}
                     <p className="text-hint text-gray-500 dark:text-gray-400">
                       {contourPageAutoPicked
                         ? `Aplicația folosește automat pagina ${contourPageNumber} din ${contourPageCount} (diferită de pagina fundalului).`
