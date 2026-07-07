@@ -17,7 +17,17 @@
 // Returns null when the outline isn't usefully closed: an open path lets the fill
 // leak into the interior, leaving almost nothing "inside", so callers fall back
 // to dimming the bounding box rather than the whole card.
-export async function computeContourInteriorMaskPath(imageUrl: string): Promise<string | null> {
+//
+// `alphaWall` is the alpha level (0..255) at/above which a pixel counts as solid
+// (the fill can't pass it); `eps` is the Douglas–Peucker simplification tolerance in
+// pixels. Both default to the values tuned for the uploaded-contour fallback; the
+// PNG-trace contour source exposes them as user sliders.
+export async function computeContourInteriorMaskPath(
+  imageUrl: string,
+  opts: { alphaWall?: number; eps?: number } = {},
+): Promise<string | null> {
+  const ALPHA_WALL = opts.alphaWall ?? 16
+  const EPS = opts.eps ?? 1.0
   const img = await loadImage(imageUrl)
   const w = img.naturalWidth
   const h = img.naturalHeight
@@ -31,10 +41,9 @@ export async function computeContourInteriorMaskPath(imageUrl: string): Promise<
   ctx.drawImage(img, 0, 0)
   const data = ctx.getImageData(0, 0, w, h).data
 
-  // A pixel belongs to the drawn outline ("wall") once its alpha clears this
-  // threshold; anything fainter is empty space the fill can flow through. The
+  // A pixel belongs to the drawn outline ("wall") once its alpha clears
+  // `ALPHA_WALL`; anything fainter is empty space the fill can flow through. The
   // contour is rendered onto a transparent canvas, so the exterior is alpha 0.
-  const ALPHA_WALL = 16
   const n = w * h
   // keep[i] = 1 for pixels the fill can't reach (interior + the outline itself),
   // i.e. the region to leave bright; 0 for the flood-filled exterior.
@@ -124,7 +133,6 @@ export async function computeContourInteriorMaskPath(imageUrl: string): Promise<
   // of straight runs into clean lines yet keeps curved outlines smooth (a circle
   // stays a fine many-segment polygon rather than a coarse facet count) and
   // preserves real corners, whose deviation is far larger.
-  const EPS = 1.0
   const f = (v: number) => +v.toFixed(5)
   let d = ''
   for (const loop of loops) {

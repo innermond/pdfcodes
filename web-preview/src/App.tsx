@@ -10,7 +10,7 @@ import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleF
 import { fetchGoogleFont } from './lib/googleFonts'
 import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
-import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard, readVectorFileFromClipboard, vectorFileFromDataTransfer } from './lib/clipboardImage'
+import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard, readVectorFileFromClipboard, vectorFileFromDataTransfer, SUPPORTED_IMAGE_TYPES } from './lib/clipboardImage'
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { svgToPdf } from './lib/svgWasm'
 import { useUndoHistory } from './lib/undoHistory'
@@ -19,8 +19,8 @@ import type { PresetResources } from './lib/presetBundle'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
-import { offsetPolygons, polygonsBBox, polygonsToPathD } from './lib/contourOffset'
-import { polygonAspectExtent } from './lib/contourMask'
+import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
+import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
@@ -64,6 +64,33 @@ function renderContourVectorImage(
 ): ReturnType<typeof import('./lib/contourVectorImage').renderContourVectorImage> {
   contourVectorImageMod ??= import('./lib/contourVectorImage')
   return contourVectorImageMod.then((m) => m.renderContourVectorImage(...args))
+}
+
+// A raster image the contour step can trace (PNG/JPEG/…). SVG is excluded — it goes
+// through the vector convert-to-PDF path instead. Falls back to the extension when the
+// browser reports an empty MIME type (e.g. some drops).
+function isRasterImageFile(file: File): boolean {
+  if (SUPPORTED_IMAGE_TYPES.includes(file.type)) return true
+  return !file.type && /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name)
+}
+
+// Whether a decoded image carries any real transparency (some pixel below full alpha).
+// A JPEG (or opaque PNG) is all-opaque, so a trace would just be its rectangle — we
+// surface a soft warning in that case.
+async function imageHasTransparency(file: File): Promise<boolean> {
+  const bmp = await createImageBitmap(file)
+  const w = Math.min(bmp.width, 256)
+  const h = Math.min(bmp.height, 256)
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
+  if (!ctx) { bmp.close(); return false }
+  ctx.drawImage(bmp, 0, 0, w, h)
+  bmp.close()
+  const data = ctx.getImageData(0, 0, w, h).data
+  for (let i = 3; i < data.length; i += 4) if (data[i] < 250) return true
+  return false
 }
 
 let csvImportMod: Promise<typeof import('./lib/csvImport')> | null = null
@@ -130,11 +157,20 @@ interface Preset {
   contourSource: ContourSource
   contourPageNumber: number
   contourTrimToPath?: boolean
+  contourNoSelfIntersect?: boolean
+  // Present when the uploaded contour was traced from a raster image (bundled as the
+  // `contour` resource): the alpha / smoothing settings to re-trace it on load.
+  contourTraceAlpha?: number
+  contourTraceSmooth?: number
   shapeKind: ShapeKind
   shapeCornerRadiusMm: number
   shapeCornerOrientation: CornerOrientation
   polygonSides?: number
   polygonStar?: boolean
+  polygonStarInnerRatio?: number
+  polygonStarTipsOnly?: boolean
+  polygonStarRefWMm?: number
+  polygonStarRefHMm?: number
   rectangleContour: boolean
 }
 
@@ -438,6 +474,15 @@ interface ContourConfig {
   polygonSides: number
   // Turn the 'polygon' shape into an N-pointed star (ignored by the other shapes).
   polygonStar: boolean
+  // Star spike depth: inner-ring radius as a fraction of the outer (0.05–0.95);
+  // `0` = automatic (`starInnerRatio(sides)`). Only used for a polygon star.
+  polygonStarInnerRatio: number
+  // "Redimensionează doar vârfurile": while on, resizing moves only the outer tips;
+  // the inner ring keeps the absolute size it had when the mode was enabled — held
+  // per axis via the reference box below (`0` = inactive).
+  polygonStarTipsOnly: boolean
+  polygonStarRefWMm: number
+  polygonStarRefHMm: number
   // Draw a rectangle contour as plain tiled rectangles vs. the optimized grid.
   rectangleContour: boolean
   // Nudge the contour within the background (right/up positive, mm), clamped.
@@ -456,6 +501,14 @@ interface ContourConfig {
   // grows it outward (bleed), negative shrinks it inward (safety margin), the
   // same amount everywhere along the outline — applied to both contour sources.
   contourRedrawMm: number
+  // Remove self-intersections from the generated cut path (traced outline + Redesenează
+  // offset) so a cutter can physically follow it. Opt-in; off by default.
+  contourNoSelfIntersect: boolean
+  // PNG-trace source (a raster image dropped into the 'upload' picker): the alpha
+  // level (0..255) above which a pixel counts as solid, and the trace smoothing
+  // tolerance (px). Feed `computeContourInteriorMaskPath`'s `alphaWall`/`eps`.
+  contourTraceAlpha: number
+  contourTraceSmooth: number
 }
 const defaultContourConfig: ContourConfig = {
   contourSource: 'upload',
@@ -470,6 +523,10 @@ const defaultContourConfig: ContourConfig = {
   shapeCornerOrientation: 'out',
   polygonSides: 6,
   polygonStar: false,
+  polygonStarInnerRatio: 0,
+  polygonStarTipsOnly: false,
+  polygonStarRefWMm: 0,
+  polygonStarRefHMm: 0,
   rectangleContour: false,
   contourOffsetXMm: 0,
   contourOffsetYMm: 0,
@@ -479,6 +536,9 @@ const defaultContourConfig: ContourConfig = {
   contourRotation: 0,
   contourSpinDeg: 0,
   contourRedrawMm: 0,
+  contourNoSelfIntersect: false,
+  contourTraceAlpha: 16,
+  contourTraceSmooth: 1.0,
 }
 
 // Data-step user config, grouped into one object (mirrors BgConfig/ContourConfig).
@@ -647,9 +707,11 @@ export default function App() {
   const {
     contourSource, contourUploadSource, contourUploadUrl,
     contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
-    shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, rectangleContour,
+    shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar,
+    polygonStarInnerRatio, polygonStarTipsOnly, polygonStarRefWMm, polygonStarRefHMm, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
     contourTargetWidthMm, contourTargetHeightMm, contourRotation, contourSpinDeg, contourRedrawMm,
+    contourNoSelfIntersect, contourTraceAlpha, contourTraceSmooth,
   } = contourConfig
   // Accepts a plain value or an updater fn (like a raw setState). None of the
   // config fields are functions, so the typeof check safely tells them apart —
@@ -698,6 +760,12 @@ export default function App() {
   // as the background is resized) vs. an explicit/frozen size (then preserved).
   // Hoisted next to its sibling guard refs for the same undo re-baselining.
   const contourShapeTargetAutoRef = useRef(true)
+  // True while the next trace of `contourTraceImage` is the first for a freshly picked
+  // image (so it prefills size); a slider re-trace clears it to preserve the user's size.
+  const contourTraceFirstRef = useRef(true)
+  // True once the user has set the star spike depth explicitly, so the "auto-follow"
+  // effect stops resetting it to the classic ratio when the side count changes.
+  const starInnerRatioTouchedRef = useRef(false)
 
   // Data-step user config, grouped into one object (see DataConfig) with a
   // `setDataField` helper — same pattern as bgConfig/contourConfig. Reads stay
@@ -760,6 +828,14 @@ export default function App() {
   // user-picked `backgroundPageNumber` lives in BgConfig.
   const [backgroundPageCount, setBackgroundPageCount] = useState(1)
   const [contourBackgroundFile, setContourBackgroundFile] = useState<File | null>(null)
+  // A raster image (PNG/JPEG) dropped into the contour 'upload' picker: kept as the
+  // original image so the trace can re-run when the alpha/smoothing sliders move. Its
+  // alpha border is traced into a polygon cut PDF that becomes `contourBackgroundFile`;
+  // non-null marks the current uploaded contour as "traced from an image".
+  const [contourTraceImage, setContourTraceImage] = useState<File | null>(null)
+  // Soft warning when a traced image has no meaningful transparency (the trace then
+  // degenerates to the image's rectangle) — informational, not an error.
+  const [contourTraceNoAlpha, setContourTraceNoAlpha] = useState(false)
   // The picked contour SVG contains <text> elements, dropped by the size-trimmed
   // svg-wasm build (no `text` feature) — warning, not error, like the background's.
   const [contourSvgTextWarning, setContourSvgTextWarning] = useState(false)
@@ -835,7 +911,7 @@ export default function App() {
     words, fonts, fontSources, googleFontSelections,
     mode, lockAspect, contourLockAspect,
     bgNudgeMode, genBgTransparent, genBgBackdropColor,
-    backgroundFile, genBgImageFile, contourBackgroundFile,
+    backgroundFile, genBgImageFile, contourBackgroundFile, contourTraceImage,
     csvDataFile, uploadedRawFile,
     // PASSIVE
     step, selectedIndex, contourSelected,
@@ -873,6 +949,7 @@ export default function App() {
     setBackgroundFile(s.backgroundFile)
     setGenBgImageFile(s.genBgImageFile)
     setContourBackgroundFile(s.contourBackgroundFile)
+    setContourTraceImage(s.contourTraceImage)
     setCsvDataFile(s.csvDataFile)
     setUploadedRawFile(s.uploadedRawFile)
     setStep(s.step)
@@ -891,7 +968,7 @@ export default function App() {
       'words', 'fonts', 'fontSources', 'googleFontSelections',
       'mode', 'lockAspect', 'contourLockAspect',
       'bgNudgeMode', 'genBgTransparent', 'genBgBackdropColor',
-      'backgroundFile', 'genBgImageFile', 'contourBackgroundFile',
+      'backgroundFile', 'genBgImageFile', 'contourBackgroundFile', 'contourTraceImage',
       'csvDataFile', 'uploadedRawFile',
     ],
     // The config clusters are compared per-key: their setters allocate fresh
@@ -1053,6 +1130,52 @@ export default function App() {
   // mask path is the shape spanning the whole rect (frac = full). `rotation` lets
   // CardCanvas rotate the mask to match the rendered contour image. An uploaded
   // contour has no fillable region → null (CardCanvas dims outside its bbox).
+  // Effective per-axis star inner-ring radius (fraction of the outer radius), shared by
+  // the preview cut-shape and the generated cut. `baseR` is the spike-depth (the slider,
+  // or the automatic ratio). With "resize only the tips" on, the inner ring is held at
+  // its absolute size (captured as `polygonStarRef{W,H}Mm`), so the effective ratio =
+  // baseR * refSize / currentSize per axis — as the box grows the ratio shrinks and only
+  // the outer tips move. `[0, 0]` (auto) when it's not a star.
+  const starInnerRatioXY = useMemo<[number, number]>(() => {
+    if (!(shapeKind === 'polygon' && polygonStar)) return [0, 0]
+    const autoR = starInnerRatio(Math.max(3, Math.round(polygonSides)))
+    const clamp = (v: number) => Math.min(0.95, Math.max(0.05, v))
+    const baseR = polygonStarInnerRatio > 0 ? clamp(polygonStarInnerRatio) : autoR
+    // Work in the shape's own (unrotated) "design" frame — the frame both the cut
+    // (`generate_shape_pdf` at genW/genH) and the preview (CardCanvas boxW/boxH) draw
+    // in — so rx always means the design X axis. `[rx, ry]` map to genW/genH directly.
+    const rot = (((contourRotation % 360) + 360) % 360)
+    const swapped = rot === 90 || rot === 270
+    const designW = swapped ? effectiveContourHeightMm : effectiveContourWidthMm
+    const designH = swapped ? effectiveContourWidthMm : effectiveContourHeightMm
+    if (!polygonStarTipsOnly || !(polygonStarRefWMm > 0) || !(polygonStarRefHMm > 0) ||
+        !(designW > 0) || !(designH > 0)) {
+      return [baseR, baseR]
+    }
+    return [
+      clamp((baseR * polygonStarRefWMm) / designW),
+      clamp((baseR * polygonStarRefHMm) / designH),
+    ]
+  }, [
+    shapeKind, polygonStar, polygonSides, polygonStarInnerRatio, polygonStarTipsOnly,
+    polygonStarRefWMm, polygonStarRefHMm, effectiveContourWidthMm, effectiveContourHeightMm, contourRotation,
+  ])
+
+  // Toggle "resize only the tips". Turning it on captures the current design-frame size
+  // as the reference so the inner ring's absolute size is held from here on (no jump);
+  // turning it off reverts to uniform scaling.
+  function setPolygonStarTipsOnly(on: boolean) {
+    if (on) {
+      const rot = (((contourRotation % 360) + 360) % 360)
+      const swapped = rot === 90 || rot === 270
+      const designW = swapped ? effectiveContourHeightMm : effectiveContourWidthMm
+      const designH = swapped ? effectiveContourWidthMm : effectiveContourHeightMm
+      setContourField('polygonStarRefWMm', designW > 0 ? designW : 0)
+      setContourField('polygonStarRefHMm', designH > 0 ? designH : 0)
+    }
+    setContourField('polygonStarTipsOnly', on)
+  }
+
   const contourCutShape: ContourCutShape | null = useMemo(
     () =>
       contourSource === 'shape' && contourBackground && effectiveContourWidthMm > 0 && effectiveContourHeightMm > 0
@@ -1065,11 +1188,13 @@ export default function App() {
             ryFrac: shapeCornerRadiusMm / effectiveContourHeightMm,
             sides: polygonSides,
             star: polygonStar,
+            starInnerRx: starInnerRatioXY[0],
+            starInnerRy: starInnerRatioXY[1],
           }
         : null,
     [
       contourSource, contourBackground, effectiveContourWidthMm, effectiveContourHeightMm,
-      shapeKind, shapeCornerOrientation, contourRotation, shapeCornerRadiusMm, polygonSides, polygonStar,
+      shapeKind, shapeCornerOrientation, contourRotation, shapeCornerRadiusMm, polygonSides, polygonStar, starInnerRatioXY,
     ],
   )
 
@@ -1256,6 +1381,10 @@ export default function App() {
       setContourInteriorMaskPath(null)
       return
     }
+    // A traced-image contour already has its exact interior path set by the trace
+    // effect (from the original pixels, honoring the sliders); re-tracing the
+    // generated stroked PDF here would be lossy and ignore the sliders.
+    if (contourTraceImage) return
     let cancelled = false
     const traceFallback = () => {
       const maxSidePt = Math.max(contourBackground.widthPt, contourBackground.heightPt)
@@ -1268,7 +1397,90 @@ export default function App() {
       .then((d) => { if (!cancelled) setContourInteriorMaskPath(d) })
       .catch(() => { if (!cancelled) setContourInteriorMaskPath(null) })
     return () => { cancelled = true }
-  }, [contourSource, contourBackgroundFile, contourBackground, contourPageNumber, contourRotation, contourTrimToPath])
+  }, [contourSource, contourBackgroundFile, contourBackground, contourPageNumber, contourRotation, contourTrimToPath, contourTraceImage])
+
+  // Trace a raster contour image (PNG/JPEG dropped into the 'upload' picker) into a
+  // cut PDF: flood-fill the transparent exterior and trace the alpha border into a
+  // normalized outline (`computeContourInteriorMaskPath`, honoring the alpha /
+  // smoothing sliders), then emit it as a polygon cut PDF the exact same way the
+  // "Redesenează" offset does. Re-runs when the image or a slider changes; moving a
+  // slider re-traces in place (via `contourTraceFirstRef`) so the user's target
+  // size / rotation survive. The traced `d` is also set directly as the interior
+  // mask (the derive-from-PDF effect above bails for traced images).
+  useEffect(() => {
+    if (!contourTraceImage) return
+    let cancelled = false
+    const url = URL.createObjectURL(contourTraceImage)
+    ;(async () => {
+      try {
+        const img = await createImageBitmap(contourTraceImage)
+        const pw = img.width
+        const ph = img.height
+        img.close()
+        if (cancelled || pw <= 0 || ph <= 0) return
+        const d = await computeContourInteriorMaskPath(url, {
+          alphaWall: contourTraceAlpha,
+          eps: contourTraceSmooth,
+        })
+        if (cancelled) return
+        if (!d) {
+          setContourBackgroundError('Conturul nu s-a putut trasa din imagine. Încearcă un prag de transparență mai mic.')
+          return
+        }
+        // Contour box from the pixel dims at 96 dpi (same convention as the SVG→PDF
+        // converter), so the traced outline keeps the image's aspect. mm for the cut
+        // PDF; the user resizes afterwards via the target width/height fields.
+        const Wmm = (pw * 72) / 96 / MM
+        const Hmm = (ph * 72) / 96 / MM
+        let polys = contourLocalPolygons({ width: Wmm, height: Hmm, cutShape: null, interiorMaskPath: d })
+        // "Fără autointersectare": drop the nodes that make the traced outline cross
+        // itself, and re-derive the interior mask from the cleaned polys so the preview,
+        // text-fit keep-region and the redraw base all use the simple outline.
+        let maskD = d
+        if (contourNoSelfIntersect) {
+          polys = removeSelfIntersections(polys)
+          maskD = polygonsToPathD(polys.map((sp) => sp.map(([x, y]): Pt => [x / Wmm, y / Hmm]))) || d
+        }
+        const coords: number[] = []
+        const lens: number[] = []
+        for (const sp of polys) {
+          if (sp.length < 3) continue
+          for (const [x, y] of sp) coords.push(x * MM, (Hmm - y) * MM) // flip to PDF y-up
+          lens.push(sp.length)
+        }
+        if (coords.length === 0) {
+          setContourBackgroundError('Conturul nu s-a putut trasa din imagine. Încearcă un prag de transparență mai mic.')
+          return
+        }
+        await ensureWasmInit()
+        if (cancelled) return
+        const bytes = generate_polygon_pdf(Wmm, Hmm, new Float32Array(coords), new Uint32Array(lens), '0:1:0:0')
+        const name = contourTraceImage.name.replace(/\.[^.]+$/, '') + '.pdf'
+        const file = new File([bytes.buffer as ArrayBuffer], name || 'contur-din-imagine.pdf', { type: 'application/pdf' })
+        if (cancelled) return
+        if (contourTraceFirstRef.current) {
+          // First trace for a freshly picked image: route through the normal handler so
+          // it prefills the target size and slots into all downstream state.
+          contourTraceFirstRef.current = false
+          handleContourBackgroundFileChange(file)
+        } else {
+          // Slider re-trace: swap the cut PDF in place, keeping the user's size/rotation.
+          setContourBackgroundFile(file)
+          renderContourPreview(file, 1, contourRotation)
+            .then((bg) => { if (!cancelled) setContourBackground(bg) })
+            .catch(() => {})
+        }
+        setContourInteriorMaskPath(maskD)
+      } catch (err) {
+        if (!cancelled) setContourBackgroundError(err instanceof Error ? err.message : String(err))
+      }
+    })()
+    return () => {
+      cancelled = true
+      URL.revokeObjectURL(url)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contourTraceImage, contourTraceAlpha, contourTraceSmooth, contourNoSelfIntersect])
 
   // "Redesenează": equidistant-offset the base contour outline by `contourRedrawMm`
   // and re-emit it as a fresh cut PDF, a preview mask, and a footprint — the same way
@@ -1288,7 +1500,11 @@ export default function App() {
     // Base outline in the contour's own box (mm, SVG y-down), then offset it. 1 local
     // unit = 1 card mm on both axes, so `dist` mm is a true equidistant offset.
     const base = contourLocalPolygons({ width: Wc, height: Hc, cutShape: contourCutShape, interiorMaskPath: contourInteriorMaskPath })
-    const offset = offsetPolygons(base, dist)
+    // Offset can self-intersect on concave shapes; "Fără autointersectare" cleans the
+    // result so the redrawn cut path stays simple.
+    const offset = contourNoSelfIntersect
+      ? removeSelfIntersections(offsetPolygons(base, dist))
+      : offsetPolygons(base, dist)
     const bb = polygonsBBox(offset)
     if (!bb || bb.maxX - bb.minX <= 0 || bb.maxY - bb.minY <= 0) {
       setRedrawnContourFile(null); setRedrawnContour(null); setRedrawnMaskPath(null); setRedrawnFootprint(null)
@@ -1324,7 +1540,7 @@ export default function App() {
       .then((bg) => { if (!cancelled && bg) setRedrawnContour(bg) })
       .catch((err) => { if (!cancelled) setShapeError(err instanceof Error ? err.message : String(err)) })
     return () => { cancelled = true }
-  }, [contourRedrawMm, effectiveContourWidthMm, effectiveContourHeightMm, contourBackground, contourCutShape, contourInteriorMaskPath])
+  }, [contourRedrawMm, effectiveContourWidthMm, effectiveContourHeightMm, contourBackground, contourCutShape, contourInteriorMaskPath, contourNoSelfIntersect])
 
   // "top"/"middle"/"bottom" snap a word's baseline using the font's ascent and
   // descent, so the snapped `yMm` only matches the chosen edge for the font and
@@ -1593,11 +1809,18 @@ export default function App() {
       contourSource,
       contourPageNumber,
       contourTrimToPath,
+      contourNoSelfIntersect,
+      contourTraceAlpha,
+      contourTraceSmooth,
       shapeKind,
       shapeCornerRadiusMm,
       shapeCornerOrientation,
       polygonSides,
       polygonStar,
+      polygonStarInnerRatio,
+      polygonStarTipsOnly,
+      polygonStarRefWMm,
+      polygonStarRefHMm,
       rectangleContour,
     }
 
@@ -1612,7 +1835,11 @@ export default function App() {
       preset,
       {
         background: backgroundFile ?? undefined,
-        contour: contourSource === 'upload' ? (contourBackgroundFile ?? undefined) : undefined,
+        // A traced-image contour bundles the *original* image (re-traced on load with the
+        // saved sliders); any other upload bundles the contour PDF itself.
+        contour: contourSource === 'upload'
+          ? (contourTraceImage ?? contourBackgroundFile ?? undefined)
+          : undefined,
         // For an uploaded source bundle the *original* file (not the processed,
         // UPLOAD_SEPARATOR-joined `csvDataFile`, which `parseUploadedCsv` can't
         // round-trip): on load it's re-parsed and the saved merges/single-code
@@ -1712,6 +1939,10 @@ export default function App() {
           setContourField('shapeCornerOrientation', preset.shapeCornerOrientation)
         if (typeof preset.polygonSides === 'number') setContourField('polygonSides', preset.polygonSides)
         if (typeof preset.polygonStar === 'boolean') setContourField('polygonStar', preset.polygonStar)
+        if (typeof preset.polygonStarInnerRatio === 'number') { setContourField('polygonStarInnerRatio', preset.polygonStarInnerRatio); starInnerRatioTouchedRef.current = preset.polygonStarInnerRatio > 0 }
+        if (typeof preset.polygonStarTipsOnly === 'boolean') setContourField('polygonStarTipsOnly', preset.polygonStarTipsOnly)
+        if (typeof preset.polygonStarRefWMm === 'number') setContourField('polygonStarRefWMm', preset.polygonStarRefWMm)
+        if (typeof preset.polygonStarRefHMm === 'number') setContourField('polygonStarRefHMm', preset.polygonStarRefHMm)
         if (typeof preset.rectangleContour === 'boolean') setContourField('rectangleContour', preset.rectangleContour)
 
         // Restore the print/contour background PDFs bundled in the archive, if any.
@@ -1737,16 +1968,25 @@ export default function App() {
         }
         const savedContourTrim = preset.contourTrimToPath === true
         setContourField('contourTrimToPath', savedContourTrim)
+        if (typeof preset.contourNoSelfIntersect === 'boolean') setContourField('contourNoSelfIntersect', preset.contourNoSelfIntersect)
+        if (typeof preset.contourTraceAlpha === 'number') setContourField('contourTraceAlpha', preset.contourTraceAlpha)
+        if (typeof preset.contourTraceSmooth === 'number') setContourField('contourTraceSmooth', preset.contourTraceSmooth)
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
-          setContourBackgroundFile(contourFile)
-          setContourField('contourPageNumber', savedContourPage)
-          renderContourPreview(contourFile, savedContourPage, 0, savedContourTrim)
-            .then((bg) => {
-              setContourBackground(bg)
-              setContourPageCount(bg.pageCount)
-              setContourField('contourPageNumber', Math.min(Math.max(1, savedContourPage), bg.pageCount))
-            })
-            .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+          if (isRasterImageFile(contourFile)) {
+            // A traced-image contour: re-trace the bundled image with the saved sliders
+            // (the trace effect regenerates the cut PDF, preview and interior mask).
+            handleContourTraceImageChange(contourFile)
+          } else {
+            setContourBackgroundFile(contourFile)
+            setContourField('contourPageNumber', savedContourPage)
+            renderContourPreview(contourFile, savedContourPage, 0, savedContourTrim)
+              .then((bg) => {
+                setContourBackground(bg)
+                setContourPageCount(bg.pageCount)
+                setContourField('contourPageNumber', Math.min(Math.max(1, savedContourPage), bg.pageCount))
+              })
+              .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+          }
         }
         const loadedDataMode: CodeDataMode = preset.codeDataMode === 'upload' ? 'upload' : 'generate'
         setDataField('codeDataMode', loadedDataMode)
@@ -2245,17 +2485,38 @@ export default function App() {
       .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
   }
 
-  // Unified entry point for the "Încarcă PDF/SVG" source: every acquisition path
-  // (local file, URL, clipboard, drop) lands here and is routed by kind — an SVG
-  // goes through the convert-to-PDF path, anything else is treated as a PDF.
+  // "Trasare din imagine": a raster image (PNG/JPEG) picked as the contour. Store the
+  // original image (the trace effect turns its alpha border into a cut PDF and re-runs
+  // when the alpha/smoothing sliders move) and reset the "first trace" flag so the
+  // effect prefills the target size. Also probe transparency for the soft warning.
+  function handleContourTraceImageChange(file: File) {
+    setContourBackgroundError(null)
+    setContourSvgTextWarning(false)
+    setContourTraceNoAlpha(false)
+    contourTraceFirstRef.current = true
+    imageHasTransparency(file)
+      .then((has) => setContourTraceNoAlpha(!has))
+      .catch(() => {})
+    setContourTraceImage(file)
+  }
+
+  // Unified entry point for the "Încarcă PDF/SVG/PNG" source: every acquisition path
+  // (local file, URL, clipboard, drop) lands here and is routed by kind — an SVG goes
+  // through the convert-to-PDF path, a raster image is traced, anything else is a PDF.
   function handleContourFileChange(file: File | null) {
     if (file && isSvgFile(file)) {
+      setContourTraceImage(null)
+      setContourTraceNoAlpha(false)
       handleContourSvgFileChange(file)
+    } else if (file && isRasterImageFile(file)) {
+      handleContourTraceImageChange(file)
     } else {
       // Clear a previous SVG's <text> warning here, not in the PDF handler: the
       // SVG path computes the new warning and then delegates to that handler,
       // which would wipe it again.
       setContourSvgTextWarning(false)
+      setContourTraceImage(null)
+      setContourTraceNoAlpha(false)
       handleContourBackgroundFileChange(file)
     }
   }
@@ -2276,9 +2537,16 @@ export default function App() {
             return { type: 'application/pdf', fallbackName: 'contur.pdf' }
           }
           if (looksLikeSvg(head)) return { type: 'image/svg+xml', fallbackName: 'contur.svg' }
+          // PNG (89 50 4E 47) / JPEG (FF D8 FF) — traced into a cut outline.
+          if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+            return { type: 'image/png', fallbackName: 'contur.png' }
+          }
+          if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+            return { type: 'image/jpeg', fallbackName: 'contur.jpg' }
+          }
           return null
         },
-        rejectMessage: 'Doar fișiere PDF sau SVG sunt acceptate.',
+        rejectMessage: 'Doar fișiere PDF, SVG, PNG sau JPEG sunt acceptate.',
         httpMessage: (status) => `Nu s-a putut descărca fișierul (HTTP ${status}).`,
       })
       handleContourFileChange(file)
@@ -2289,14 +2557,14 @@ export default function App() {
     }
   }
 
-  // Feed a PDF/SVG File pulled off the clipboard into the shared pipeline.
+  // Feed a PDF/SVG/image File pulled off the clipboard into the shared pipeline.
   // `null` (nothing usable on the clipboard) → friendly error. The Ctrl+V hint
   // matters: browsers never expose OS-copied files to the button's async
   // Clipboard API, only to a real paste event.
   function loadContourClipboardFile(file: File | null) {
     if (!file) {
       setContourBackgroundError(
-        'Clipboard-ul nu conține un fișier PDF sau SVG accesibil. Pentru un fișier copiat din managerul de fișiere, apasă Ctrl+V aici.',
+        'Clipboard-ul nu conține un fișier PDF, SVG sau imagine accesibil. Pentru un fișier copiat din managerul de fișiere, apasă Ctrl+V aici.',
       )
       return
     }
@@ -2304,9 +2572,13 @@ export default function App() {
     handleContourFileChange(file)
   }
 
-  // "Lipește fișierul" button: read the clipboard via the async Clipboard API.
+  // "Lipește fișierul" button: read the clipboard via the async Clipboard API —
+  // a vector file (PDF/SVG) first, else a raster image (traced into a cut outline).
   async function handleContourPasteFromButton() {
-    loadContourClipboardFile(await readVectorFileFromClipboard())
+    const vec = await readVectorFileFromClipboard()
+    if (vec) { loadContourClipboardFile(vec); return }
+    const blob = await readImageBlobFromClipboard()
+    loadContourClipboardFile(blob ? await blobToPngFile(blob, 'contur.png') : null)
   }
 
   // Ctrl/Cmd+V over the clipboard-source area: read the file from the paste event
@@ -2314,9 +2586,11 @@ export default function App() {
   // sees files copied from a file manager).
   function handleContourPaste(e: ReactClipboardEvent) {
     const file = vectorFileFromDataTransfer(e.clipboardData)
-    if (!file) return // let non-matching pastes fall through untouched
+    if (file) { e.preventDefault(); loadContourClipboardFile(file); return }
+    const blob = imageBlobFromDataTransfer(e.clipboardData)
+    if (!blob) return // let non-matching pastes fall through untouched
     e.preventDefault()
-    loadContourClipboardFile(file)
+    blobToPngFile(blob, 'contur.png').then(loadContourClipboardFile)
   }
 
   // A file dropped on the same zone rides the paste pipeline — only the
@@ -2325,11 +2599,13 @@ export default function App() {
     e.preventDefault()
     setContourPasteZoneDragOver(false)
     const file = vectorFileFromDataTransfer(e.dataTransfer)
-    if (!file) {
-      setContourBackgroundError('Fișierul tras nu este un PDF sau SVG.')
+    if (file) { loadContourClipboardFile(file); return }
+    const blob = imageBlobFromDataTransfer(e.dataTransfer)
+    if (!blob) {
+      setContourBackgroundError('Fișierul tras nu este un PDF, SVG sau imagine.')
       return
     }
-    loadContourClipboardFile(file)
+    blobToPngFile(blob, 'contur.png').then(loadContourClipboardFile)
   }
 
   // Re-render the contour preview from a different page of the uploaded PDF.
@@ -2472,7 +2748,8 @@ export default function App() {
     const strokeColor = '0:1:0:0'
     ensureWasmInit()
       .then(() => {
-        const bytes = generate_shape_pdf(genW, genH, shapeKind, 0, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor, Math.max(3, Math.round(polygonSides)), polygonStar)
+        // genW/genH are already the design (unrotated) dims, matching starInnerRatioXY's frame.
+        const bytes = generate_shape_pdf(genW, genH, shapeKind, 0, shapeCornerRadiusMm, shapeCornerOrientation, strokeColor, Math.max(3, Math.round(polygonSides)), polygonStar, starInnerRatioXY[0], starInnerRatioXY[1])
         const file = new File([bytes.buffer as ArrayBuffer], `${shapeKind}.pdf`, { type: 'application/pdf' })
         if (cancelled) return null
         setContourBackgroundFile(file)
@@ -2500,7 +2777,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [contourSource, shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, contourRotation, background, backgroundSource, simpleBgColor, effectiveContourWidthMm, effectiveContourHeightMm, contourAvailWidthMm, contourAvailHeightMm])
+  }, [contourSource, shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar, starInnerRatioXY, contourRotation, background, backgroundSource, simpleBgColor, effectiveContourWidthMm, effectiveContourHeightMm, contourAvailWidthMm, contourAvailHeightMm])
 
   // Auto-track: while a shape auto-fits, keep its target equal to the shape's
   // tight box (min(w,h) square for a circle, the full card for shapes that fill
@@ -3421,7 +3698,7 @@ export default function App() {
                 handleContourSourceChange(v)
               }}
               options={[
-                { value: 'upload', label: 'Încarcă PDF/SVG' },
+                { value: 'upload', label: 'Încarcă PDF/SVG/PNG' },
                 { value: 'shape', label: 'Formă presetată' },
               ]}
             />
@@ -3444,10 +3721,10 @@ export default function App() {
                   <div className="flex flex-wrap items-start gap-field">
                     <div className="min-w-0 flex-1">
                       <FileField
-                        label="PDF sau SVG (opțional)"
-                        accept="application/pdf,image/svg+xml,.svg"
+                        label="PDF, SVG, PNG sau JPEG (opțional)"
+                        accept="application/pdf,image/svg+xml,.svg,image/png,image/jpeg,.png,.jpg,.jpeg"
                         onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
-                        currentName={contourBackgroundFile?.name}
+                        currentName={contourTraceImage?.name ?? contourBackgroundFile?.name}
                       />
                     </div>
                     {contourPageCount > 1 && (
@@ -3464,7 +3741,7 @@ export default function App() {
                   <div className="flex items-end gap-inner">
                     <div className="min-w-0 flex-1">
                       <TextField
-                        label="URL fișier (PDF sau SVG)"
+                        label="URL fișier (PDF, SVG, PNG sau JPEG)"
                         value={contourUploadUrl}
                         onChange={(v) => setContourField('contourUploadUrl', v)}
                         placeholder="https://exemplu.ro/contur.pdf"
@@ -3507,7 +3784,7 @@ export default function App() {
                       📋 Lipește fișierul
                     </button>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Apasă butonul, Ctrl+V sau trage un fișier PDF/SVG (sau cod SVG) aici.
+                      Apasă butonul, Ctrl+V sau trage un fișier PDF/SVG/PNG/JPEG (sau cod SVG) aici.
                     </p>
                   </div>
                 )}
@@ -3537,7 +3814,9 @@ export default function App() {
                     </p>
                   </>
                 )}
-                {contourBackgroundFile && (
+                {/* Trim-to-path is meaningless for a traced image (the outline already
+                    is the drawing's bbox); show it only for a real PDF/SVG upload. */}
+                {contourBackgroundFile && !contourTraceImage && (
                   <>
                     <CheckboxField
                       label="Dimensiunea conturului (nu a paginii)"
@@ -3551,6 +3830,44 @@ export default function App() {
                       </p>
                     )}
                   </>
+                )}
+                {/* Trace-from-image controls: the outline follows the visible pixels
+                    (alpha border); the two knobs feed computeContourInteriorMaskPath. */}
+                {contourTraceImage && (
+                  <div className="flex flex-col gap-inner rounded border border-gray-200 p-field dark:border-gray-700">
+                    <p className="text-label font-medium text-gray-700 dark:text-gray-300">Trasare din imagine</p>
+                    {contourTraceNoAlpha && (
+                      <p className="text-hint text-amber-600 dark:text-amber-500">
+                        Imaginea nu are zone transparente — conturul va fi dreptunghiul imaginii.
+                      </p>
+                    )}
+                    <div className="flex flex-wrap items-start gap-field">
+                      <div className="w-40 shrink-0">
+                        <NumberField
+                          label="Prag transparență (0–255)"
+                          value={contourTraceAlpha}
+                          onChange={(v) => setContourField('contourTraceAlpha', Math.max(1, Math.min(255, v)))}
+                          step={1}
+                          min={1}
+                          max={255}
+                        />
+                      </div>
+                      <div className="w-40 shrink-0">
+                        <NumberField
+                          label="Netezire contur"
+                          value={contourTraceSmooth}
+                          onChange={(v) => setContourField('contourTraceSmooth', Math.max(0, Math.min(8, v)))}
+                          step={0.25}
+                          min={0}
+                          max={8}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      Conturul urmărește pixelii vizibili; zonele transparente interioare devin
+                      goluri. Pentru bleed, folosește „Redesenează (+mm)".
+                    </p>
+                  </div>
                 )}
               </>
             ) : (
@@ -3586,6 +3903,34 @@ export default function App() {
                     <CheckboxField label="Stea (vârfuri spre interior)" checked={polygonStar} onChange={(v) => setContourField('polygonStar', v)} />
                   )}
                 </div>
+                {shapeKind === 'polygon' && polygonStar && (
+                  <div className="flex flex-col gap-inner rounded border border-gray-200 p-field dark:border-gray-700">
+                    <div className="w-44">
+                      <NumberField
+                        label="Adâncime vârfuri (0.05–0.95)"
+                        value={polygonStarInnerRatio > 0 ? polygonStarInnerRatio : starInnerRatio(Math.max(3, Math.round(polygonSides)))}
+                        step={0.05}
+                        min={0.05}
+                        max={0.95}
+                        onChange={(v) => {
+                          starInnerRatioTouchedRef.current = true
+                          setContourField('polygonStarInnerRatio', Math.min(0.95, Math.max(0.05, isFinite(v) ? v : 0.05)))
+                        }}
+                      />
+                    </div>
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      Cât de adânc intră golurile stelei (mai mic = vârfuri mai lungi/ascuțite).
+                    </p>
+                    <CheckboxField
+                      label="Redimensionează doar vârfurile"
+                      checked={polygonStarTipsOnly}
+                      onChange={setPolygonStarTipsOnly}
+                    />
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      La redimensionare mișcă doar vârfurile exterioare; miezul stelei rămâne fix.
+                    </p>
+                  </div>
+                )}
                 {!background && (
                   <p className="text-label text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
                 )}
@@ -3669,6 +4014,21 @@ export default function App() {
                 <p className="text-hint text-gray-500 dark:text-gray-400">
                   Decalează întregul contur cu aceeași distanță pe tot conturul (die-line). 0 = neschimbat.
                 </p>
+                {/* Only meaningful for the paths we generate: the traced outline and the
+                    Redesenează offset (both can self-intersect). */}
+                {(contourTraceImage || contourRedrawMm !== 0) && (
+                  <>
+                    <CheckboxField
+                      label="Fără autointersectare"
+                      checked={contourNoSelfIntersect}
+                      onChange={(v) => setContourField('contourNoSelfIntersect', v)}
+                    />
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      Elimină nodurile care fac traseul de tăiere să se autointersecteze
+                      (pentru contur trasat din imagine sau Redesenează).
+                    </p>
+                  </>
+                )}
                 {contourOffsetMaxXMm > 0 || contourOffsetMaxYMm > 0 ? (
                   <>
                     <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
@@ -3747,7 +4107,6 @@ export default function App() {
             />
             <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine (mm)" value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
-              <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
               <NumberField label="Distanțare contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
             </div>
             <p className="text-label text-gray-500 dark:text-gray-400">
@@ -3939,6 +4298,13 @@ export default function App() {
                   allowNone
                   onChange={(v) => updateWord(selectedIndex, { background: v })}
                 />
+                {/* Padding is a global text-background style (applies to every code's
+                    background), not per-word — hence setStyleField, not updateWord. Shown
+                    always so it's discoverable, though it only has effect once a background
+                    color is set. */}
+                <div className="w-44">
+                  <NumberField label="Padding (mm)" value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
+                </div>
                 {selected.background !== null && (
                   // Width, transparency and blend mode are tightly related: a small
                   // min-width floor keeps them sharing one row and wrapping only as

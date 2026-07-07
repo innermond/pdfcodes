@@ -23,6 +23,9 @@ export type ContourCutShape = {
   // Vertex count + star flag for the 'polygon' kind (ignored by the other kinds).
   sides?: number
   star?: boolean
+  // Star inner-ring radius per axis (fraction of outer); 0 ⇒ automatic depth.
+  starInnerRx?: number
+  starInnerRy?: number
 }
 
 export function CardCanvas({
@@ -132,7 +135,7 @@ export function CardCanvas({
   // (still rectangular) selection envelops the real shape — e.g. a polygon, which
   // is inscribed in its box and so is smaller than the contour's bounding rect.
   const contourCutOutline = contourImageUrl && contourCutShape ? (() => {
-    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star } = contourCutShape
+    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star, starInnerRx, starInnerRy } = contourCutShape
     // The rendered contour image is the unrotated shape rotated `rot` clockwise
     // and scaled into [ix,iy,iw,ih]. Reproduce that: build the shape in its
     // unrotated footprint (dims swapped for 90/270) centered on the rect, then
@@ -147,7 +150,7 @@ export function CardCanvas({
       kind,
       // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
       { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
-      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
+      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star, starInnerRx, starInnerRy },
     )
     // Tight bounding rect of the fully-transformed outline: flatten the path, apply the
     // reorient *and* the free spin (matching the drawn image), then take the extents — so

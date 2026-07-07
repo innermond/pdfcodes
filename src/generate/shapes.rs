@@ -233,19 +233,25 @@ fn star_inner_ratio(n: u32) -> f32 {
 
 // Point-up regular polygon (or star) vertices at circumradius 1, in PDF y-up
 // coords (first vertex at the top). For a star an inner vertex is inserted
-// between each pair of outer points. Mirrored by `polygonUnitVertices` in
+// between each pair of outer points, at per-axis radii `inner_rx`/`inner_ry`
+// (a non-positive value falls back to `star_inner_ratio(n)` on that axis). The
+// per-axis split lets the "resize only the tips" mode hold the inner ring's
+// absolute size on a non-square box. Outer vertices stay at radius 1 so they
+// always define the bounding box. Mirrored by `polygonUnitVertices` in
 // web-preview/src/lib/contourMask.ts.
-fn polygon_unit_vertices(sides: u32, star: bool) -> Vec<(f32, f32)> {
+fn polygon_unit_vertices(sides: u32, star: bool, inner_rx: f32, inner_ry: f32) -> Vec<(f32, f32)> {
     let n = sides.max(3);
     let step = std::f32::consts::TAU / (n as f32);
-    let r_in = if star { star_inner_ratio(n) } else { 0.0 };
+    let auto = star_inner_ratio(n);
+    let rx = if inner_rx > 0.0 { inner_rx } else { auto };
+    let ry = if inner_ry > 0.0 { inner_ry } else { auto };
     let mut verts = Vec::with_capacity((if star { 2 * n } else { n }) as usize);
     for i in 0..n {
         let ao = std::f32::consts::FRAC_PI_2 + (i as f32) * step;
         verts.push((ao.cos(), ao.sin()));
         if star {
             let ai = ao + step / 2.0;
-            verts.push((r_in * ai.cos(), r_in * ai.sin()));
+            verts.push((rx * ai.cos(), ry * ai.sin()));
         }
     }
     verts
@@ -254,8 +260,8 @@ fn polygon_unit_vertices(sides: u32, star: bool) -> Vec<(f32, f32)> {
 // Stroked regular polygon (or star) scaled to *fill* the box (x, y, w, h): its
 // bounding box maps onto the box, so a non-square box stretches it — matching how
 // the ellipse fills its inset rectangle. The first vertex points straight up.
-fn polygon_stroke_ops(x: f32, y: f32, w: f32, h: f32, sides: u32, star: bool) -> Vec<Operation> {
-    let verts = polygon_unit_vertices(sides, star);
+fn polygon_stroke_ops(x: f32, y: f32, w: f32, h: f32, sides: u32, star: bool, inner_rx: f32, inner_ry: f32) -> Vec<Operation> {
+    let verts = polygon_unit_vertices(sides, star, inner_rx, inner_ry);
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
     for &(vx, vy) in &verts {
         min_x = min_x.min(vx);
@@ -322,9 +328,11 @@ fn build_single_page_pdf(card_w: f32, card_h: f32, operations: Vec<Operation>) -
 // leg length for BeveledRectangle; it's ignored by the other shapes.
 // `corner_concave` flips RoundedRectangle's corners to curve inward (ignored by
 // the other shapes). `sides` is the vertex count for Polygon and `star` turns it
-// into an N-pointed star (both ignored by the other shapes). Used as a generated
+// into an N-pointed star (both ignored by the other shapes). `star_inner_rx`/
+// `star_inner_ry` set the star's inner-ring radius per axis (non-positive ⇒ the
+// automatic `star_inner_ratio`); ignored unless `star`. Used as a generated
 // stand-in for a user-supplied contour background PDF.
-pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32, corner_radius_mm: f32, corner_concave: bool, stroke: TextColor, sides: u32, star: bool) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32, corner_radius_mm: f32, corner_concave: bool, stroke: TextColor, sides: u32, star: bool, star_inner_rx: f32, star_inner_ry: f32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let inset = (inset_mm * MM).max(0.0);
     let x = inset;
     let y = inset;
@@ -351,7 +359,7 @@ pub fn build_shape_pdf(card_w: f32, card_h: f32, shape: ShapeKind, inset_mm: f32
         ShapeKind::RoundedRectangle => rounded_rect_stroke_ops(x, y, w, h, corner_radius_mm * MM, corner_concave),
         ShapeKind::BeveledRectangle => beveled_rect_stroke_ops(x, y, w, h, corner_radius_mm * MM),
         ShapeKind::Heart => heart_stroke_ops(x, y, w, h),
-        ShapeKind::Polygon => polygon_stroke_ops(x, y, w, h, sides, star),
+        ShapeKind::Polygon => polygon_stroke_ops(x, y, w, h, sides, star, star_inner_rx, star_inner_ry),
     });
 
     build_single_page_pdf(card_w, card_h, operations)
@@ -474,7 +482,7 @@ mod tests {
     #[test]
     fn ellipse_fills_the_inset_rectangle_and_is_stroked_not_filled() {
         // 200x100 card, no inset: rx=100, ry=50, centered at (100, 50).
-        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false).unwrap();
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Ellipse, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false, 0.0, 0.0).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -511,7 +519,7 @@ mod tests {
     fn beveled_rectangle_chamfers_each_corner_with_straight_lines() {
         // 200x100 card, no inset, 10pt bevel. The path is moveto + 7 lineto +
         // close + stroke; no curves, no fill.
-        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::BeveledRectangle, 0.0, 10.0 / MM, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false).unwrap();
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::BeveledRectangle, 0.0, 10.0 / MM, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false, 0.0, 0.0).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -526,7 +534,7 @@ mod tests {
     #[test]
     fn heart_starts_at_the_bottom_tip_and_is_built_from_curves() {
         // 200x100 card, no inset: tip is centered at the bottom, (100, 0).
-        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Heart, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false).unwrap();
+        let pdf = build_shape_pdf(200.0, 100.0, ShapeKind::Heart, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false, 0.0, 0.0).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -541,7 +549,7 @@ mod tests {
     fn polygon_has_one_vertex_per_side_pointing_up_and_is_stroked_not_filled() {
         // 100x100 card, no inset, 6 sides: a hexagon filling the box, so its top
         // vertex sits at the top-center, (50, 100).
-        let pdf = build_shape_pdf(100.0, 100.0, ShapeKind::Polygon, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 6, false).unwrap();
+        let pdf = build_shape_pdf(100.0, 100.0, ShapeKind::Polygon, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 6, false, 0.0, 0.0).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -557,7 +565,7 @@ mod tests {
 
     #[test]
     fn polygon_clamps_sides_below_three_to_a_triangle() {
-        let pdf = build_shape_pdf(100.0, 100.0, ShapeKind::Polygon, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 1, false).unwrap();
+        let pdf = build_shape_pdf(100.0, 100.0, ShapeKind::Polygon, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 1, false, 0.0, 0.0).unwrap();
         let ops = page_operations(&pdf);
         assert_eq!(ops.iter().filter(|op| op.operator == "l").count(), 2, "1 moveto + 2 lineto = triangle");
     }
@@ -566,7 +574,7 @@ mod tests {
     fn polygon_star_doubles_the_vertices_with_alternating_inner_points() {
         // 100x100 card, 5-point star: 10 vertices (5 outer + 5 inner), so
         // moveto + 9 lineto. The first (outer) vertex still points straight up.
-        let pdf = build_shape_pdf(100.0, 100.0, ShapeKind::Polygon, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 5, true).unwrap();
+        let pdf = build_shape_pdf(100.0, 100.0, ShapeKind::Polygon, 0.0, 0.0, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 5, true, 0.0, 0.0).unwrap();
         let ops = page_operations(&pdf);
 
         let m = ops.iter().find(|op| op.operator == "m").expect("moveto");
@@ -585,6 +593,26 @@ mod tests {
     }
 
     #[test]
+    fn star_inner_ratio_is_explicit_and_falls_back_to_auto() {
+        // Unit vertices for a 5-point star: outer at radius 1, inner at the given ratio.
+        let explicit = polygon_unit_vertices(5, true, 0.2, 0.2);
+        let r = |(x, y): (f32, f32)| (x * x + y * y).sqrt();
+        // Even indices are outer (radius ~1), odd indices are inner (radius ~0.2).
+        assert!((r(explicit[0]) - 1.0).abs() < 1e-4, "outer at radius 1");
+        assert!((r(explicit[1]) - 0.2).abs() < 1e-4, "inner at the explicit ratio");
+
+        // A non-positive ratio falls back to star_inner_ratio(n) on that axis.
+        let auto = polygon_unit_vertices(5, true, 0.0, 0.0);
+        assert!((r(auto[1]) - star_inner_ratio(5)).abs() < 1e-4, "sentinel ⇒ auto ratio");
+
+        // Per-axis: a wide inner_rx / narrow inner_ry stretches the inner ring.
+        let per_axis = polygon_unit_vertices(4, true, 0.6, 0.3);
+        // Inner vertex 1 is at angle 90°+45° = 135°: (0.6*cos135, 0.3*sin135).
+        assert!((per_axis[1].0 - 0.6 * (135f32).to_radians().cos()).abs() < 1e-4);
+        assert!((per_axis[1].1 - 0.3 * (135f32).to_radians().sin()).abs() < 1e-4);
+    }
+
+    #[test]
     fn rounded_rectangle_concave_centers_corner_arcs_on_the_outer_corner() {
         // 200x100 card, no inset, r=10. Both orientations share the same edge
         // endpoints (4 lines + 4 curves); only the control points differ. The
@@ -592,8 +620,8 @@ mod tests {
         // its first control point sits at (x+w-r, y+k) = (190, k).
         let r = 10.0;
         let k = 0.5522847498 * r;
-        let concave = build_shape_pdf(200.0, 100.0, ShapeKind::RoundedRectangle, 0.0, r / MM, true, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false).unwrap();
-        let convex = build_shape_pdf(200.0, 100.0, ShapeKind::RoundedRectangle, 0.0, r / MM, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false).unwrap();
+        let concave = build_shape_pdf(200.0, 100.0, ShapeKind::RoundedRectangle, 0.0, r / MM, true, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false, 0.0, 0.0).unwrap();
+        let convex = build_shape_pdf(200.0, 100.0, ShapeKind::RoundedRectangle, 0.0, r / MM, false, TextColor::Cmyk(0.0, 0.0, 0.0, 1.0), 3, false, 0.0, 0.0).unwrap();
 
         let concave_ops = page_operations(&concave);
         let convex_ops = page_operations(&convex);

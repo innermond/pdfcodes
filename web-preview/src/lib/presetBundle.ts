@@ -37,6 +37,26 @@ function extOf(name: string, fallback: string): string {
   return match ? match[1] : fallback
 }
 
+// Content-type for a bundled resource, keyed by extension. The contour slot can hold a
+// PDF, an SVG, or a raster image (a traced contour bundles its original PNG/JPEG), and
+// the loader must report the right type so App can route it back through the same kind
+// detection as a fresh pick.
+function mimeForExt(name: string, fallback: string): string {
+  const ext = extOf(name, '').toLowerCase()
+  switch (ext) {
+    case 'pdf': return 'application/pdf'
+    case 'svg': return 'image/svg+xml'
+    case 'png': return 'image/png'
+    case 'jpg':
+    case 'jpeg': return 'image/jpeg'
+    case 'webp': return 'image/webp'
+    case 'gif': return 'image/gif'
+    case 'bmp': return 'image/bmp'
+    case 'csv': return 'text/csv'
+    default: return fallback
+  }
+}
+
 function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -130,8 +150,9 @@ export async function loadPresetBundle(file: File): Promise<LoadedPresetBundle> 
   }
 
   if (manifest.contour && entries[manifest.contour]) {
-    result.contour = new File([entries[manifest.contour]], manifest.contour.split('/').pop()!, {
-      type: 'application/pdf',
+    const name = manifest.contour.split('/').pop()!
+    result.contour = new File([entries[manifest.contour]], name, {
+      type: mimeForExt(name, 'application/pdf'),
     })
   }
 

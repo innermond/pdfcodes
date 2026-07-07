@@ -695,6 +695,11 @@ pub fn generate_shape_pdf(
     sides: u32,
     // Turn "polygon" into an N-pointed star (ignored by the other shapes).
     star: bool,
+    // Star inner-ring radius per axis (fraction of the outer radius); non-positive
+    // ⇒ the automatic star_inner_ratio. Lets the UI control spike depth and the
+    // "resize only the tips" mode. Ignored unless `star`.
+    star_inner_rx: f32,
+    star_inner_ry: f32,
 ) -> Result<Vec<u8>, JsError> {
     let shape: ShapeKind = shape.parse().map_err(|e: String| JsError::new(&e))?;
     let corner_concave = match corner_orientation.as_str() {
@@ -710,7 +715,7 @@ pub fn generate_shape_pdf(
     };
     let card_w = card_width_mm * crate::geometry::MM;
     let card_h = card_height_mm * crate::geometry::MM;
-    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, corner_concave, stroke, sides, star)
+    build_shape_pdf(card_w, card_h, shape, inset_mm, corner_radius_mm, corner_concave, stroke, sides, star, star_inner_rx, star_inner_ry)
         .map_err(|e| JsError::new(&e.to_string()))
 }
 

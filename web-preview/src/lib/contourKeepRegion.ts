@@ -118,7 +118,7 @@ function contourLocalPolygonsUnspun(params: {
 }): Pt[][] {
   const { width: iw, height: ih } = params
   if (params.cutShape) {
-    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star } = params.cutShape
+    const { frac, rxFrac, ryFrac, kind, orientation, rotation, sides, star, starInnerRx, starInnerRy } = params.cutShape
     const rot = ((rotation % 360) + 360) % 360
     const cx = iw / 2
     const cy = ih / 2
@@ -131,7 +131,7 @@ function contourLocalPolygonsUnspun(params: {
       kind,
       // Flip Y: the normalized box is PDF y-up; the footprint is SVG y-down.
       { x: x0 + frac.x * boxW, y: y0 + (1 - (frac.y + frac.h)) * boxH, w: frac.w * boxW, h: frac.h * boxH },
-      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star },
+      { rx: rxFrac * boxW, ry: ryFrac * boxH, orientation, sides, star, starInnerRx, starInnerRy },
     )
     return flattenPathD(d).map((sp) => sp.map((p) => rotate(p, cx, cy, rot)))
   }

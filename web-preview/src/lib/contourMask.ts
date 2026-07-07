@@ -11,7 +11,7 @@ const K = 0.5522847498
 const f = (n: number) => n.toFixed(3)
 
 type Box = { x: number; y: number; w: number; h: number }
-type Opts = { rx: number; ry: number; orientation: 'out' | 'in'; sides?: number; star?: boolean }
+type Opts = { rx: number; ry: number; orientation: 'out' | 'in'; sides?: number; star?: boolean; starInnerRx?: number; starInnerRy?: number }
 
 // Ellipse (also used for circle, whose box is already square) as 4 cubic béziers.
 function ellipsePath(box: Box): string {
@@ -117,24 +117,29 @@ function heartPath(box: Box): string {
 
 // Inner-vertex depth for a star, as a fraction of the outer radius. Kept
 // identical to `star_inner_ratio` in src/generate/shapes.rs.
-function starInnerRatio(n: number): number {
+export function starInnerRatio(n: number): number {
   const ratio = n >= 5 ? Math.cos((2 * Math.PI) / n) / Math.cos(Math.PI / n) : 0.5
   return Math.min(0.95, Math.max(0.05, ratio))
 }
 
 // Vertices of a point-up regular polygon (or star) at circumradius 1, in math
-// coords (y-up, first vertex at the top). For a star an inner vertex (radius
-// `starInnerRatio`) is inserted between each pair of outer points. Mirrored by
-// polygon_stroke_ops in src/generate/shapes.rs.
-function polygonUnitVertices(sides: number, star: boolean): Array<[number, number]> {
+// coords (y-up, first vertex at the top). For a star an inner vertex is inserted
+// between each pair of outer points, at per-axis radii `innerRx`/`innerRy` (a
+// non-positive value falls back to `starInnerRatio` on that axis). The per-axis
+// split lets the "resize only the tips" mode hold the inner ring's absolute size
+// on a non-square box. Outer vertices stay at radius 1 so they define the bbox.
+// Mirrored by polygon_unit_vertices in src/generate/shapes.rs.
+export function polygonUnitVertices(sides: number, star: boolean, innerRx = 0, innerRy = 0): Array<[number, number]> {
   const n = Math.max(3, Math.round(sides))
   const step = (2 * Math.PI) / n
-  const rIn = star ? starInnerRatio(n) : 0
+  const auto = starInnerRatio(n)
+  const rx = innerRx > 0 ? innerRx : auto
+  const ry = innerRy > 0 ? innerRy : auto
   const verts: Array<[number, number]> = []
   for (let i = 0; i < n; i++) {
     const ao = Math.PI / 2 + i * step
     verts.push([Math.cos(ao), Math.sin(ao)])
-    if (star) verts.push([rIn * Math.cos(ao + step / 2), rIn * Math.sin(ao + step / 2)])
+    if (star) verts.push([rx * Math.cos(ao + step / 2), ry * Math.sin(ao + step / 2)])
   }
   return verts
 }
@@ -163,8 +168,8 @@ export function polygonAspectExtent(sides: number, star: boolean): { spanX: numb
 // box. Mirrors polygon_stroke_ops in src/generate/shapes.rs: the unit vertices
 // are the same, and a point-up shape is symmetric about the vertical axis, so the
 // SVG (y-down) and PDF (y-up) vertex sets coincide.
-function polygonPath(box: Box, sides: number, star: boolean): string {
-  const verts = polygonUnitVertices(sides, star)
+function polygonPath(box: Box, sides: number, star: boolean, innerRx = 0, innerRy = 0): string {
+  const verts = polygonUnitVertices(sides, star, innerRx, innerRy)
   const { minX, maxX, minY, maxY } = polygonUnitBBox(verts)
   const spanX = Math.max(1e-6, maxX - minX)
   const spanY = Math.max(1e-6, maxY - minY)
@@ -190,7 +195,7 @@ export function contourMaskPathD(kind: string, box: Box, opts: Opts): string {
     case 'heart':
       return heartPath(box)
     case 'polygon':
-      return polygonPath(box, opts.sides ?? 3, opts.star ?? false)
+      return polygonPath(box, opts.sides ?? 3, opts.star ?? false, opts.starInnerRx ?? 0, opts.starInnerRy ?? 0)
     case 'rectangle':
     default:
       return rectPath(box)

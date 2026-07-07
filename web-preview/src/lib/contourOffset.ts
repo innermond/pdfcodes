@@ -156,6 +156,83 @@ export function offsetPolygons(subpaths: Pt[][], dist: number): Pt[][] {
   })
 }
 
+// Proper intersection point of segments a→b and c→d, or null when they don't cross
+// in their interiors. Shared endpoints (adjacent edges) and collinear overlaps return
+// null: those aren't the self-crossings we clean. Mirrors the intent of Rust
+// `segments_cross` (src/geometry.rs) but returns the crossing point.
+export function segsCross(a: Pt, b: Pt, c: Pt, d: Pt): Pt | null {
+  const r: Pt = [b[0] - a[0], b[1] - a[1]]
+  const s: Pt = [d[0] - c[0], d[1] - c[1]]
+  const denom = r[0] * s[1] - r[1] * s[0]
+  if (Math.abs(denom) < 1e-12) return null // parallel or collinear
+  const t = ((c[0] - a[0]) * s[1] - (c[1] - a[1]) * s[0]) / denom
+  const u = ((c[0] - a[0]) * r[1] - (c[1] - a[1]) * r[0]) / denom
+  // Strictly interior on both segments (open interval) → a genuine crossing, not a
+  // shared vertex that merely touches.
+  const EPS = 1e-9
+  if (t <= EPS || t >= 1 - EPS || u <= EPS || u >= 1 - EPS) return null
+  return [a[0] + t * r[0], a[1] + t * r[1]]
+}
+
+// Remove self-intersections from each closed subpath so the cut is a simple polygon a
+// cutter can physically follow. Greedy winding-based loop removal: at the first crossing
+// of two non-adjacent edges, split the loop into the two sub-loops that meet at the
+// crossing point and keep the one whose winding matches the original (ties → larger
+// area), dropping the spurious loop's nodes. Repeat to convergence. Subpaths (incl.
+// holes) are cleaned independently, each against its own winding. Not a full boolean
+// self-union — enough for the small die-line offsets and traced outlines this targets.
+export function removeSelfIntersections(subpaths: Pt[][]): Pt[][] {
+  const out: Pt[][] = []
+  for (const sp of subpaths) {
+    const cleaned = cleanLoop(sp)
+    if (cleaned.length >= 3) out.push(cleaned)
+  }
+  return out
+}
+
+function cleanLoop(polyIn: Pt[]): Pt[] {
+  let poly = dedupe(polyIn)
+  if (poly.length < 4) return poly
+  const wantSign = Math.sign(signedArea(poly)) || 1
+  // Each pass removes one crossing; bound the work in case of degenerate geometry.
+  const maxPasses = poly.length * 2 + 16
+  for (let pass = 0; pass < maxPasses; pass++) {
+    const n = poly.length
+    let found: { i: number; j: number; x: Pt } | null = null
+    for (let i = 0; i < n && !found; i++) {
+      const a = poly[i]
+      const b = poly[(i + 1) % n]
+      // Start j at i+2 so adjacent edges are skipped; stop before the edge that wraps
+      // back to i (that pair is adjacent to edge i through vertex i).
+      for (let j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue // edges (n-1→0) and (0→1) are adjacent
+        const x = segsCross(a, b, poly[j], poly[(j + 1) % n])
+        if (x) { found = { i, j, x }; break }
+      }
+    }
+    if (!found) break
+    const { i, j, x } = found
+    // Inner loop: crossing → v[i+1..j] → back to crossing. Outer loop: crossing →
+    // v[j+1..n-1], v[0..i] → back to crossing.
+    const inner: Pt[] = [x]
+    for (let k = i + 1; k <= j; k++) inner.push(poly[k])
+    const outer: Pt[] = [x]
+    for (let k = j + 1; k < n; k++) outer.push(poly[k])
+    for (let k = 0; k <= i; k++) outer.push(poly[k])
+    const innerA = signedArea(inner)
+    const outerA = signedArea(outer)
+    const innerOk = Math.sign(innerA) === wantSign
+    const outerOk = Math.sign(outerA) === wantSign
+    let keep: Pt[]
+    if (innerOk && !outerOk) keep = inner
+    else if (outerOk && !innerOk) keep = outer
+    else keep = Math.abs(outerA) >= Math.abs(innerA) ? outer : inner // both/neither → larger
+    poly = dedupe(keep)
+    if (poly.length < 4) break
+  }
+  return poly
+}
+
 export function polygonsBBox(subpaths: Pt[][]): { minX: number; minY: number; maxX: number; maxY: number } | null {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const sp of subpaths) {
