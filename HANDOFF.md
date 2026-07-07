@@ -96,6 +96,11 @@ Gotchas learned (beyond the ones below):
 - `svg-wasm/` crate source is committed (previously untracked — it broke `npm run dev`).
 - Untracked test-data files in the working tree (`*.pdf`, `list.csv`, `contour.svg`,
   etc.) are unrelated noise; don't commit them.
-- Known app quirk seen while shooting `06-rezultat.png`: with „Măsoară traseele de
-  tăiere” checked, the contour result showed only „Carduri pe pagină” (no path/time
-  metrics) for a preset rectangle contour — possibly a bug worth checking separately.
+- FIXED (2026-07-07): the „Măsoară traseele de tăiere” quirk seen while shooting
+  `06-rezultat.png` (contour result showed only „Carduri pe pagină” for a preset
+  rectangle contour). Root cause: grid-mode contours (`contour_as_grid`) skipped
+  cutting metrics entirely (`src/generate/mod.rs`). Now computed analytically from
+  the grid's line geometry (`grid_page_metrics` in `src/generate/contour.rs`,
+  combined by `compute_grid_cutting_metrics` in `src/generate/mod.rs`; partial
+  last sheets use the per-card outline). Covered by two new Rust tests; wasm
+  rebuilt into `web-preview/src/wasm/` and verified end-to-end in the UI.

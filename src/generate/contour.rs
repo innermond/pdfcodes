@@ -155,18 +155,20 @@ fn circle_properties(ocg_id: ObjectId) -> Object {
 // hairlines that share no edges. With no gutter the card edges coincide into a
 // (cols + 1) × (rows + 1) grid; with a gutter (Decalaj) each card keeps its own
 // edges, so adjacent cards get two lines a gutter apart.
-pub(crate) fn build_grid_contour_page(
-    doc: &mut Document,
-    pages_id: ObjectId,
-    catalog_id: ObjectId,
-    layout: &CardLayout,
-    stroke: TextColor,
-    // Translate the whole grid by (offset_x, offset_y) PDF points. In practice
-    // grid contour only runs when the contour fills the card (zero clamp slack),
-    // so this is normally 0; kept for consistency with the tiled path.
-    offset_x: f32,
-    offset_y: f32,
-) -> Result<ObjectId, Box<dyn std::error::Error>> {
+// Cut-line geometry of the optimized grid page: the deduped vertical (`xs`)
+// and horizontal (`ys`) line positions, and the extents every line spans after
+// the bleed extension. Shared by the drawing (`build_grid_contour_page`) and
+// the analytic cutting metrics (`grid_page_metrics`) so they can't drift apart.
+pub(crate) struct GridLines {
+    pub xs: Vec<f32>,
+    pub ys: Vec<f32>,
+    pub lx0: f32,
+    pub lx1: f32,
+    pub ly0: f32,
+    pub ly1: f32,
+}
+
+fn grid_lines(layout: &CardLayout, offset_x: f32, offset_y: f32) -> GridLines {
     let rows = layout.rows;
     let cols = layout.cols;
     let grid_w = cols as f32 * layout.card_w + (cols as f32 - 1.0) * layout.gutter_x;
@@ -185,16 +187,6 @@ pub(crate) fn build_grid_contour_page(
     let lx1 = (x1 + bleed).min(layout.host_w - safe);
     let ly0 = (y0 - bleed).max(safe);
     let ly1 = (y1 + bleed).min(layout.host_h - safe);
-
-    let stroke_op = match stroke {
-        TextColor::Rgb(r, g, b) => Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]),
-        TextColor::Cmyk(c, m, y, k) => Operation::new("K", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]),
-    };
-
-    let mut operations = vec![
-        Operation::new("w", vec![Object::Real(0.0)]), // hairline — same as build_shape_pdf
-        stroke_op,
-    ];
 
     // Distinct vertical/horizontal line positions = each card's two edges per axis.
     // With a gutter (Decalaj) > 0 the left/right (and bottom/top) edges of adjacent
@@ -216,6 +208,61 @@ pub(crate) fn build_grid_contour_page(
         ys.push(bottom + layout.card_h);
     }
     ys.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
+
+    GridLines { xs, ys, lx0, lx1, ly0, ly1 }
+}
+
+// Analytic cut metrics of one full grid page. The grid shares cut lines
+// between neighbouring cards, so measuring one card's outline and scaling it
+// by the card count (the tiled path's model) would overcount — instead the
+// page's real line geometry is totalled: every line is a straight two-node
+// subpath (no sharp turns), and the serpentine cutting order makes the
+// between-line travel telescope to the grid's span on each axis.
+pub(crate) struct GridPageMetrics {
+    // Total stroked length of the page's cut lines (PDF points).
+    pub length: f32,
+    // Path nodes: two per line.
+    pub node_count: usize,
+    // Non-cutting travel between successive lines (PDF points).
+    pub travel: f32,
+}
+
+pub(crate) fn grid_page_metrics(layout: &CardLayout, offset_x: f32, offset_y: f32) -> GridPageMetrics {
+    let g = grid_lines(layout, offset_x, offset_y);
+    let span = |v: &[f32]| match (v.first(), v.last()) {
+        (Some(first), Some(last)) => last - first,
+        _ => 0.0,
+    };
+    GridPageMetrics {
+        length: g.xs.len() as f32 * (g.ly1 - g.ly0) + g.ys.len() as f32 * (g.lx1 - g.lx0),
+        node_count: 2 * (g.xs.len() + g.ys.len()),
+        travel: span(&g.xs) + span(&g.ys),
+    }
+}
+
+pub(crate) fn build_grid_contour_page(
+    doc: &mut Document,
+    pages_id: ObjectId,
+    catalog_id: ObjectId,
+    layout: &CardLayout,
+    stroke: TextColor,
+    // Translate the whole grid by (offset_x, offset_y) PDF points. In practice
+    // grid contour only runs when the contour fills the card (zero clamp slack),
+    // so this is normally 0; kept for consistency with the tiled path.
+    offset_x: f32,
+    offset_y: f32,
+) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let GridLines { xs, ys, lx0, lx1, ly0, ly1 } = grid_lines(layout, offset_x, offset_y);
+
+    let stroke_op = match stroke {
+        TextColor::Rgb(r, g, b) => Operation::new("RG", vec![Object::Real(r), Object::Real(g), Object::Real(b)]),
+        TextColor::Cmyk(c, m, y, k) => Operation::new("K", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]),
+    };
+
+    let mut operations = vec![
+        Operation::new("w", vec![Object::Real(0.0)]), // hairline — same as build_shape_pdf
+        stroke_op,
+    ];
 
     // --- Vertical lines in serpentine order ---
     // Line 0: bottom → top (ly0 → ly1); each subsequent line alternates direction

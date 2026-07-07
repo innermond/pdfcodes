@@ -107,6 +107,56 @@ fn compute_cutting_metrics(pm: &PathMetrics, opts: &Options, total_cards: usize,
     }
 }
 
+// Grid-mode counterpart of `compute_cutting_metrics`. The optimized grid cuts
+// shared lines once per *page*, so totals come from the page's line geometry
+// (`GridPageMetrics`) times the number of full sheets, and the "per card"
+// figures are those totals averaged over the cards. When an explicit card
+// count leaves a partially-filled last sheet, that sheet is emitted as stamped
+// per-card outlines (see the page-emission logic in `generate_pdf`), so its
+// `rem` cards are measured from the card `outline` exactly like the tiled path.
+fn compute_grid_cutting_metrics(
+    grid: &contour::GridPageMetrics,
+    outline: &PathMetrics,
+    opts: &Options,
+    total_cards: usize,
+    layout: &CardLayout,
+) -> CuttingMetrics {
+    let cpp = layout.cards_per_page.max(1);
+    // Mirrors which pages are emitted: only an explicit total (the web worker's
+    // row count) gets the partial outline sheet; otherwise the full grid page
+    // is rerun for every sheet, remainder included.
+    let rem = if opts.contour_total_cards.is_some() { total_cards % cpp } else { 0 };
+    let full_pages = if rem > 0 { total_cards / cpp } else { ((total_cards + cpp - 1) / cpp).max(1) };
+    let num_pages = full_pages + usize::from(rem > 0);
+
+    let mm = crate::geometry::MM;
+    let length_total_mm = full_pages as f32 * (grid.length / mm) + rem as f32 * (outline.length / mm);
+    let node_count_total = full_pages * grid.node_count + rem * outline.node_count;
+    let sharp_turn_count_total = rem * outline.sharp_turn_count;
+
+    // Travel: the serpentine line walk on each full grid page, plus the usual
+    // card-to-card hops on the partial outline sheet.
+    let travel_total_mm = full_pages as f32 * (grid.travel / mm)
+        + rem.saturating_sub(1) as f32 * layout.pitch_mm();
+
+    let total_time = length_total_mm / opts.cutting_speed_mm_s
+        + sharp_turn_count_total as f32 * opts.corner_penalty_s
+        + num_pages as f32 * opts.preparation_time_s
+        + travel_total_mm / opts.travel_speed_mm_s;
+
+    let cards = total_cards.max(1) as f32;
+    CuttingMetrics {
+        path_length_per_card_mm: length_total_mm / cards,
+        path_length_total_mm: length_total_mm,
+        node_count_per_card: (node_count_total as f32 / cards).round() as usize,
+        node_count_total,
+        sharp_turn_count_per_card: (sharp_turn_count_total as f32 / cards).round() as usize,
+        sharp_turn_count_total,
+        time_cutting_per_card_s: total_time / cards,
+        time_cutting_total_s: total_time,
+    }
+}
+
 // Generate a print or contour PDF in memory.
 //
 // `csv_data` is the raw CSV text (one label per row); required unless
@@ -377,12 +427,23 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             .or_else(|| csv_data.map(count_csv_records))
             .unwrap_or(layout.cards_per_page);
 
-        let cutting_metrics = if opts.measure_paths && !opts.contour_as_grid {
-            let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
-            // The contour PDF is a single sheet, but the cutting machine
-            // will run it once per sheet needed to cover every CSV record.
-            let num_pages = (total_cards as f32 / layout.cards_per_page as f32).ceil().max(1.0);
-            Some(compute_cutting_metrics(&path_metrics, opts, total_cards, num_pages, layout.pitch_mm()))
+        let cutting_metrics = if opts.measure_paths {
+            if opts.contour_as_grid {
+                // The grid page shares cut lines between neighbouring cards, so its
+                // totals come from the page's drawn line geometry, not from scaling
+                // one card's outline. A partially-filled last sheet is emitted below
+                // as stamped per-card outlines, so those cards are measured from the
+                // outline exactly like the tiled path.
+                let grid = contour::grid_page_metrics(&layout, offset_x, offset_y);
+                let outline = measure_stroked_paths(&bg_content_bytes)?;
+                Some(compute_grid_cutting_metrics(&grid, &outline, opts, total_cards, &layout))
+            } else {
+                let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
+                // The contour PDF is a single sheet, but the cutting machine
+                // will run it once per sheet needed to cover every CSV record.
+                let num_pages = (total_cards as f32 / layout.cards_per_page as f32).ceil().max(1.0);
+                Some(compute_cutting_metrics(&path_metrics, opts, total_cards, num_pages, layout.pitch_mm()))
+            }
         } else {
             None
         };
@@ -1390,6 +1451,95 @@ mod tests {
         let two_sheets_total = out_two_sheets.time_cutting_total_s.expect("total cutting time should be set");
 
         assert!((two_sheets_total - single_sheet_total * 2.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn grid_contour_with_measure_paths_reports_grid_metrics() {
+        use crate::geometry::MM;
+        // Regression for the "Măsoară traseele de tăiere shows only cards-per-page"
+        // quirk: grid mode used to skip cutting metrics entirely. They now come from
+        // the grid page's own line geometry.
+        //
+        // 15×15 mm card on a 100×100 mm sheet, no gutters or circles → a 6×6 grid
+        // with 7 shared lines per axis (the 90 mm grid + 3 mm bleed on both ends,
+        // so each line spans 96 mm).
+        let opts = Options {
+            contour: true,
+            contour_as_grid: true,
+            measure_paths: true,
+            host_width_mm: 100.0,
+            host_height_mm: 100.0,
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            circle_diameter_mm: 0.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("grid contour generation should succeed");
+        assert_eq!(out.cards_per_page, 36);
+
+        let total_len = out.path_length_total_mm.expect("grid metrics should include path length");
+        assert!((total_len - 14.0 * 96.0).abs() < 0.5, "expected 14 lines × 96 mm, got {total_len}");
+        assert_eq!(out.node_count_total, Some(28), "two nodes per line");
+        assert_eq!(out.sharp_turn_count_total, Some(0), "straight grid lines have no sharp turns");
+        let per_card_len = out.path_length_per_card_mm.unwrap();
+        assert!((per_card_len - total_len / 36.0).abs() < 1e-3, "per-card length is the page total averaged");
+
+        // Cutting time: length at cutting speed + one page prep + the serpentine
+        // travel (one 90 mm grid span per axis) at travel speed. MM sanity-checks
+        // the fixture really is metric (a wrong unit would break the 6×6 grid).
+        assert!((15.0 * MM - 42.52).abs() < 0.01);
+        let total_time = out.time_cutting_total_s.expect("grid metrics should include cutting time");
+        let expected = 14.0 * 96.0 / opts.cutting_speed_mm_s
+            + opts.preparation_time_s
+            + 180.0 / opts.travel_speed_mm_s;
+        assert!((total_time - expected).abs() < 1e-2, "expected {expected}s, got {total_time}s");
+        let per_card_time = out.time_cutting_per_card_s.unwrap();
+        assert!((per_card_time - total_time / 36.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn compute_grid_cutting_metrics_mixes_grid_pages_and_partial_outline_sheet() {
+        use crate::geometry::MM;
+        // 10 cards at 4 per page → two full grid sheets plus a partial sheet of 2
+        // cards, which is emitted as stamped per-card outlines (not grid lines).
+        let grid = contour::GridPageMetrics { length: 1000.0 * MM, node_count: 20, travel: 100.0 * MM };
+        let outline = PathMetrics { length: 60.0 * MM, node_count: 4, sharp_turn_count: 4 };
+        let opts = Options {
+            cutting_speed_mm_s: 10.0,
+            corner_penalty_s: 0.5,
+            preparation_time_s: 30.0,
+            travel_speed_mm_s: 20.0,
+            contour_total_cards: Some(10),
+            ..Options::default()
+        };
+        let layout = CardLayout {
+            card_w: 40.0 * MM,
+            card_h: 40.0 * MM,
+            card_box: vec![],
+            host_w: 100.0 * MM,
+            host_h: 100.0 * MM,
+            host_box: vec![],
+            gutter_x: 10.0 * MM, // pitch = 50 mm
+            gutter_y: 0.0,
+            circle_r: 0.0,
+            cols: 2,
+            rows: 2,
+            cards_per_page: 4,
+            start_x: 0.0,
+            start_y: 0.0,
+        };
+
+        let m = compute_grid_cutting_metrics(&grid, &outline, &opts, 10, &layout);
+
+        // 2 grid pages + 2 outline cards: 2·1000 + 2·60 = 2120 mm.
+        assert!((m.path_length_total_mm - 2120.0).abs() < 1e-2);
+        assert!((m.path_length_per_card_mm - 212.0).abs() < 1e-2);
+        assert_eq!(m.node_count_total, 2 * 20 + 2 * 4);
+        assert_eq!(m.sharp_turn_count_total, 2 * 4, "only the outline cards contribute sharp turns");
+        // cut 2120/10 + corners 8·0.5 + prep 3·30 + travel (2·100 + 1·50)/20
+        let expected = 212.0 + 4.0 + 90.0 + 12.5;
+        assert!((m.time_cutting_total_s - expected).abs() < 1e-2, "expected {expected}s, got {}", m.time_cutting_total_s);
+        assert!((m.time_cutting_per_card_s - expected / 10.0).abs() < 1e-3);
     }
 
     // A single-page contour PDF whose stroked rectangle path (60x40) sits at (50,30)
