@@ -22,6 +22,16 @@ export interface PdfBackground {
 // The default of 2 suits the on-screen preview; callers that trace the raster into
 // a vector (the dim-exterior contour mask) pass a higher value so curved outlines
 // are finely sampled. The reported `widthPt`/`heightPt` are scale-independent.
+
+// Minimum raster size (px) of the rendered page's longest side. A fixed scale
+// suits card-sized pages, but a page much smaller than the card it previews —
+// e.g. an SVG background whose declared size is a few mm — would rasterize to a
+// tiny bitmap and blur when the preview stretches it. Bumping the scale to this
+// floor keeps such pages sharp; the bump can't exceed the floor itself, so the
+// canvas stays small. (The source stays vector throughout — the exported PDF is
+// unaffected; this is preview resolution only.)
+const MIN_RASTER_PX = 1200
+
 export async function renderPdfBackground(file: File, pageNumber = 1, rotation = 0, renderScale = 2, flipX = false, flipY = false): Promise<PdfBackground> {
   const data = await file.arrayBuffer()
   // `isImageDecoderSupported: false` forces pdf.js to use its own JPEG decoder
@@ -40,7 +50,12 @@ export async function renderPdfBackground(file: File, pageNumber = 1, rotation =
   const totalRotation = (((page.rotate + rotation) % 360) + 360) % 360
   const baseViewport = page.getViewport({ scale: 1, rotation: totalRotation, })
 
-  const renderViewport = page.getViewport({ scale: renderScale, rotation: totalRotation, })
+  // Never below the caller's scale; raised only when the page is small enough
+  // that the requested scale would land under the MIN_RASTER_PX floor.
+  const maxSidePt = Math.max(baseViewport.width, baseViewport.height)
+  const effectiveScale = maxSidePt > 0 ? Math.max(renderScale, MIN_RASTER_PX / maxSidePt) : renderScale
+
+  const renderViewport = page.getViewport({ scale: effectiveScale, rotation: totalRotation, })
   const canvas = document.createElement('canvas')
   canvas.width = renderViewport.width
   canvas.height = renderViewport.height
