@@ -84,6 +84,59 @@ export function rgbHexToCmyk(hex: string): Cmyk {
   }
 }
 
+// Invert `cmykToRgb`: find the CMYK whose *display* rendering matches the given
+// RGB (0-255) as closely as possible. Used by the preview eyedropper, where the
+// sampled pixel was itself painted through `cmykToRgb` (by pdf.js or by our own
+// swatches) — inverting the same polynomial makes the picked color re-render as
+// exactly the pixel that was clicked. (The naive `rgbHexToCmyk` is NOT that
+// inverse; it exists for legacy hex parsing and the picker square's axes.)
+//
+// The polynomial has no closed-form inverse, so this is a coarse-to-fine grid
+// search: a full-cube pass at step 1/8, then three refinement rounds shrinking
+// the step ×4 around the best candidate (4 passes of 9⁴ ≈ 26k evaluations —
+// instant for a single click). The system is underdetermined (4 unknowns, 3
+// targets),
+// so K is scanned from high to low and only strictly better errors replace the
+// best: among exact ties the highest-K candidate wins (GCR-style — grays map to
+// pure K, and CMYK black round-trips to `0:0:0:1`).
+export function rgbToCmykPrint(rgb: { r: number; g: number; b: number }): Cmyk {
+  let best: Cmyk = { c: 0, m: 0, y: 0, k: 0 }
+  let bestErr = Infinity
+  const consider = (c: number, m: number, y: number, k: number) => {
+    const o = cmykToRgb({ c, m, y, k })
+    const e = (o.r - rgb.r) ** 2 + (o.g - rgb.g) ** 2 + (o.b - rgb.b) ** 2
+    if (e < bestErr) {
+      bestErr = e
+      best = { c, m, y, k }
+    }
+  }
+
+  // Coarse pass. K descends so equal-error ties keep the highest K; C/M/Y
+  // ascend so, within a K, ties keep the least ink (white → 0:0:0:0).
+  const coarse = 8
+  for (let k = coarse; k >= 0; k--)
+    for (let c = 0; c <= coarse; c++)
+      for (let m = 0; m <= coarse; m++)
+        for (let y = 0; y <= coarse; y++) consider(c / coarse, m / coarse, y / coarse, k / coarse)
+
+  // Refinement: rescan ±previous step around the best hit at 4× resolution
+  // (9 samples per axis), landing at a final step of 1/512 — below what one
+  // 8-bit RGB channel can resolve through the polynomial's gradients.
+  let step = 1 / coarse
+  for (let round = 0; round < 3; round++) {
+    const prev = step
+    step = prev / 4
+    const { c: c0, m: m0, y: y0, k: k0 } = best
+    for (let dk = 4; dk >= -4; dk--)
+      for (let dc = -4; dc <= 4; dc++)
+        for (let dm = -4; dm <= 4; dm++)
+          for (let dy = -4; dy <= 4; dy++)
+            consider(clamp01(c0 + dc * step), clamp01(m0 + dm * step), clamp01(y0 + dy * step), clamp01(k0 + dk * step))
+  }
+
+  return best
+}
+
 // Convert any stored color string ("c:m:y:k" or "#RRGGBB") to a CSS hex color
 // for on-screen rendering (SVG fill/stroke, swatches).
 export function colorToCss(value: string): string {

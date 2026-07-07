@@ -8,6 +8,7 @@ import {
   hsvToRgb,
   parseCmyk,
   rgbHexToCmyk,
+  rgbToCmykPrint,
   rgbToHsv,
   squareToCmyk,
 } from './cmyk'
@@ -98,6 +99,40 @@ describe('cmyk', () => {
       const pos = cmykToSquarePos(squareToCmyk(xFrac, yFrac, 0))
       expect(Math.abs(pos.xFrac - xFrac)).toBeLessThan(0.02)
       expect(Math.abs(pos.yFrac - yFrac)).toBeLessThan(0.02)
+    }
+  })
+
+  it('rgbToCmykPrint round-trips any displayed color through cmykToRgb', () => {
+    // The eyedropper's guarantee: whatever CMYK it picks re-renders (through
+    // the same display polynomial) as the pixel that was clicked, within the
+    // search's resolution.
+    const steps = [0, 0.4, 0.8]
+    for (const c of steps)
+      for (const m of steps)
+        for (const y of steps)
+          for (const k of steps) {
+            const shown = cmykToRgb({ c, m, y, k })
+            const back = cmykToRgb(rgbToCmykPrint(shown))
+            expect(Math.abs(back.r - shown.r)).toBeLessThanOrEqual(2)
+            expect(Math.abs(back.g - shown.g)).toBeLessThanOrEqual(2)
+            expect(Math.abs(back.b - shown.b)).toBeLessThanOrEqual(2)
+          }
+  })
+
+  it('rgbToCmykPrint maps the displayed CMYK black back to pure K', () => {
+    // The regression that motivated the inverse: sampling a 0:0:0:1 background
+    // used to return a washed CMY mix via the naive formula.
+    expect(rgbToCmykPrint(cmykToRgb({ c: 0, m: 0, y: 0, k: 1 }))).toEqual({ c: 0, m: 0, y: 0, k: 1 })
+  })
+
+  it('rgbToCmykPrint maps white to no ink and grays to pure K', () => {
+    expect(rgbToCmykPrint({ r: 255, g: 255, b: 255 })).toEqual({ c: 0, m: 0, y: 0, k: 0 })
+    for (const k of [0.25, 0.5, 0.75]) {
+      const got = rgbToCmykPrint(cmykToRgb({ c: 0, m: 0, y: 0, k }))
+      expect(got.c).toBe(0)
+      expect(got.m).toBe(0)
+      expect(got.y).toBe(0)
+      expect(Math.abs(got.k - k)).toBeLessThan(0.01)
     }
   })
 })

@@ -26,8 +26,8 @@ import { serializeRows, describeDelimiter } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
-import { ColorSampleContext, imageUrlToCanvas, sampleCanvasColorAt } from './lib/colorSample'
-import { colorToCss, contrastColor } from './lib/cmyk'
+import { ColorSampleContext, imageUrlToCanvas, previewPointToBackgroundFrac, sampleCanvasColorAt } from './lib/colorSample'
+import { cmykToRgb, colorToCss, contrastColor, parseCmyk } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
 
@@ -3046,7 +3046,21 @@ export default function App() {
         // Claim the click so it can't drag a word or dismiss the picker.
         e.preventDefault()
         e.stopPropagation()
-        finish(sampleCanvasColorAt(canvas, fx, fy))
+        // What's actually visible behind transparent pixels / vacated zones:
+        // the backdrop when set, else the card white (the checkerboard only
+        // indicates transparency; print renders white).
+        const baseRgb = bgBackdropColor ? cmykToRgb(parseCmyk(bgBackdropColor)) : { r: 255, g: 255, b: 255 }
+        // The background is drawn panned/spun (see CardCanvas); map the click
+        // through the inverse transform so the sampled pixel is the one under
+        // the cursor. Outside the image, the base color itself is what's shown.
+        const pos = previewPointToBackgroundFrac(fx, fy, {
+          cardWidthPt: effectiveCardWidthMm * MM,
+          cardHeightPt: effectiveCardHeightMm * MM,
+          offsetXPt: bgOffsetXMm * MM,
+          offsetYPt: bgOffsetYMm * MM,
+          spinDeg: bgSpinDeg,
+        })
+        finish(pos ? sampleCanvasColorAt(canvas, pos.fx, pos.fy, baseRgb) : (bgBackdropColor ?? '0:0:0:0'))
       }
       setColorSamplingActive(true)
       window.addEventListener('pointerdown', onPointerDown, true)

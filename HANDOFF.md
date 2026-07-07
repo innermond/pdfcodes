@@ -61,6 +61,15 @@ App wizard steps (source of truth: `WIZARD_STEPS` in `web-preview/src/App.tsx`):
 Deleted stale assets: `02-sursa-date.png`, `03-aspect-cuvinte.png`, `05-generare.png`,
 `s4-mode-csv.png`, and the orphaned `f3`–`f6`.
 
+- FIXED (2026-07-07): eyedropper (Pipetă) color fidelity — sampled colors could
+  differ from the preview. Three causes: RGB→CMYK used the naive formula instead
+  of inverting the display polynomial (new `rgbToCmykPrint` in `lib/cmyk.ts`);
+  the background's pan/spin transform was ignored when mapping the click (new
+  `previewPointToBackgroundFrac` in `lib/colorSample.ts`); transparent samples
+  composited over hardcoded white instead of the backdrop. Unit tests in
+  `cmyk.test.ts`/`colorSample.test.ts`; verified E2E (black → pure K, saturated
+  round-trip ±1/255, vacated pan zone → white).
+
 ## Regenerating screenshots
 
 `web-preview/shoot.mjs` (untracked; commit it if it should persist) retakes **all**
