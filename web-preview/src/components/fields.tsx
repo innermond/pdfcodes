@@ -559,19 +559,21 @@ export function ColorField({
               </div>
             )}
           </div>
-          <div className="flex flex-1 flex-wrap items-center justify-between gap-inner">
+          {/* The four channels make this row long by nature, so keep it compact:
+              packed left (no justify-between spread), narrow 3-digit inputs, and
+              the % unit as a tooltip instead of a per-channel suffix. */}
+          <div className="flex flex-1 flex-wrap items-center gap-inner">
             {CMYK_CHANNELS.map(({ key, label: ch }) => (
-              <label key={key} className="flex items-center gap-tight">
-                <span className="w-4 font-medium">{ch}</span>
+              <label key={key} title={`${ch} (%)`} className="flex items-center gap-tight">
+                <span className="font-medium">{ch}</span>
                 <input
                   type="number"
                   min={0}
                   max={100}
                   value={Math.round(cmyk[key] * 100)}
                   onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel(key, Number(e.target.value))}
-                  className="w-14 rounded border border-gray-300 px-1 py-0.5 text-right focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-12 rounded border border-gray-300 px-1 py-0.5 text-right focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-hint text-gray-500 dark:text-gray-400">%</span>
               </label>
             ))}
           </div>
