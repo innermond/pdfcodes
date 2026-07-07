@@ -3,10 +3,32 @@
 Status note for the documentation sync of `manual.md` (+ `manual-assets/`) against the
 actual 5-step app (`web-preview/src/App.tsx`).
 
-## Status: sync COMPLETE (2026-07-07)
+## Status: sync COMPLETE (2026-07-07) + verification pass (same day)
 
 All ten sections of `manual.md` now describe the current UI, and every referenced
 screenshot in `manual-assets/` was retaken against it (no orphans, no missing files).
+
+A follow-up verification pass compared every section against the app source and
+applied these text-only fixes (no screenshots affected):
+- §3.4: removed the stale "(în curs de actualizare)" note; documented Shift+drag
+  axis-lock for "Mută fundalul".
+- §4.1: documented the multi-page auto-pick note ("Aplicația folosește automat
+  pagina X din Y (diferită de pagina fundalului).").
+- §4.3: Decalaj X/Y labels show the allowed range; added the "După redesenare"
+  info line and direct manipulation of the contour in the preview (click/drag/
+  Shift/arrows, marching ants).
+- §5.2: the "Câmpuri pe rând" editor shows the *widest* uploaded row, not the
+  first one.
+- §6.2: documented the Google Font picker's "Stil" select + "Șterge" button,
+  the live sample in the chosen font, and the latin-ext diacritics warning.
+- §9: documented the print overflow report ("⚠ N rânduri conțin coduri care
+  depășesc…" + "Descarcă depășirile (N, .csv)" → `depasiri.csv`) and the
+  "Mostră (un card)" entry in Rezultat.
+
+Known, deliberately-unfixed mismatch (user decision): the app label
+"Distanțăre contur (mm)" (`web-preview/src/App.tsx:3737`) has a typo; the manual
+intentionally spells it "Distanțare contur (mm)". Fix the app label (and retake
+`s3-text-exemplu.png` / `04-coduri.png`) whenever convenient.
 
 App wizard steps (source of truth: `WIZARD_STEPS` in `web-preview/src/App.tsx`):
 **1 Fundal · 2 Contur · 3 Date · 4 Coduri · 5 PDF**.

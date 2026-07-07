@@ -3734,7 +3734,7 @@ export default function App() {
             <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label="Margine (mm)" value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
               <NumberField label="Padding fundal text (mm)" value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
-              <NumberField label="Distanțăre contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
+              <NumberField label="Distanțare contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
             </div>
             <p className="text-label text-gray-500 dark:text-gray-400">
               „Distanțare contur” este distanța minimă față de tăietură: e folosită atât pentru
