@@ -1377,14 +1377,17 @@ export default function App() {
   // sampled; small contours get the full scale, large ones are capped (~2400 px/side)
   // to bound the flood-fill cost.
   useEffect(() => {
+    // A traced-image contour already has its exact interior path set by the trace
+    // effect (from the original pixels, honoring the sliders); re-tracing the
+    // generated stroked PDF here would be lossy and ignore the sliders. Bail before
+    // the null-reset below, too: the trace re-runs handleContourBackgroundFileChange
+    // (which momentarily sets contourBackground to null), and this effect must not
+    // wipe the freshly-traced path during that transient.
+    if (contourTraceImage) return
     if (contourSource !== 'upload' || !contourBackgroundFile || !contourBackground) {
       setContourInteriorMaskPath(null)
       return
     }
-    // A traced-image contour already has its exact interior path set by the trace
-    // effect (from the original pixels, honoring the sliders); re-tracing the
-    // generated stroked PDF here would be lossy and ignore the sliders.
-    if (contourTraceImage) return
     let cancelled = false
     const traceFallback = () => {
       const maxSidePt = Math.max(contourBackground.widthPt, contourBackground.heightPt)
