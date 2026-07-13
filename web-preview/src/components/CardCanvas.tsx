@@ -3,7 +3,7 @@ import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
 import { MM, type BlendMode, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
 import { contourMaskPathD } from '../lib/contourMask'
-import { flattenPathD, rotate } from '../lib/contourKeepRegion'
+import { flattenPathD, rotate, type Pt } from '../lib/contourKeepRegion'
 import { WordOverlay } from './WordOverlay'
 import { ContourOverlay } from './ContourOverlay'
 
@@ -113,7 +113,6 @@ export function CardCanvas({
   onChangeWord: (index: number, next: Partial<WordStyle>) => void
 }) {
   const svgRef = useRef<SVGSVGElement>(null)
-  const maskId = useId()
   const clipId = useId()
   const checkerId = useId()
 
@@ -156,7 +155,10 @@ export function CardCanvas({
     // reorient *and* the free spin (matching the drawn image), then take the extents — so
     // the selection is an axis-aligned rectangle enveloping the spun shape. For shapes that
     // fill their box this equals [ix,iy,iw,ih] at 0°; for a polygon it shrinks to the shape.
-    const pts = flattenPathD(d).flat().map((p) => rotate(rotate(p, cx, cy, rot), cx, cy, -contourSpinDeg))
+    // Card-space subpaths with the reorient *and* free spin baked in (matching the drawn
+    // image). Reused for the tight selection rect and to punch the dim-exterior overlay.
+    const polys = flattenPathD(d).map((sp) => sp.map((p) => rotate(rotate(p, cx, cy, rot), cx, cy, -contourSpinDeg)))
+    const pts = polys.flat()
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     for (const [px, py] of pts) {
       if (px < minX) minX = px
@@ -165,7 +167,7 @@ export function CardCanvas({
       if (py > maxY) maxY = py
     }
     const rect = pts.length ? { x: minX, y: minY, w: maxX - minX, h: maxY - minY } : null
-    return { d, transform: rot ? `rotate(${rot} ${cx} ${cy})` : undefined, rect }
+    return { d, transform: rot ? `rotate(${rot} ${cx} ${cy})` : undefined, rect, polys }
   })() : null
 
   // The contour "keep" region: the cut interior, positioned to match exactly where
@@ -198,6 +200,23 @@ export function CardCanvas({
       ? <g transform={`rotate(${-contourSpinDeg} ${ix + iw / 2} ${iy + ih / 2})`}>{inner}</g>
       : inner
   })() : null
+
+  // The same keep region as flat card-space polygons (all transforms baked in). The
+  // dim-exterior overlay is drawn as one even-odd path (full card with these polygons
+  // punched out) rather than an SVG <mask>: Chrome 150 stopped honoring the black
+  // knockout shape inside a luminance mask, dimming the whole card. Even-odd matches the
+  // previous mask semantics (nested loops still hole out) and renders the same everywhere.
+  const contourKeepPolys: Pt[][] | null = contourImageUrl
+    ? contourCutOutline
+      ? contourCutOutline.polys
+      : (() => {
+          const spin = (p: Pt): Pt => (contourSpinDeg ? rotate(p, ix + iw / 2, iy + ih / 2, -contourSpinDeg) : p)
+          if (contourInteriorMaskPath) {
+            return flattenPathD(contourInteriorMaskPath).map((sp) => sp.map(([fx, fy]): Pt => spin([ix + fx * iw, iy + fy * ih])))
+          }
+          return [([[ix, iy], [ix + iw, iy], [ix + iw, iy + ih], [ix, iy + ih]] as Pt[]).map(spin)]
+        })()
+    : null
 
   // Axis-aligned rectangle enveloping the spun contour, for the selection marching-ants.
   // A preset shape uses its tight (already spin-folded) outline bbox; an uploaded contour
@@ -293,16 +312,18 @@ export function CardCanvas({
           />
         </g>
       )}
-      {dimExterior && contourKeepShape && (
-        <>
-          <defs>
-            <mask id={maskId}>
-              <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="white" />
-              {contourKeepShape}
-            </mask>
-          </defs>
-          <rect x={0} y={0} width={cardWidthPt} height={cardHeightPt} fill="black" opacity={0.58} mask={`url(#${maskId})`} pointerEvents="none" />
-        </>
+      {dimExterior && contourKeepPolys && (
+        // Full-card dim with the keep region punched out via even-odd (see contourKeepPolys).
+        <path
+          d={
+            `M0 0H${cardWidthPt}V${cardHeightPt}H0Z` +
+            contourKeepPolys.map((poly) => (poly.length ? `M${poly.map(([x, y]) => `${x} ${y}`).join('L')}Z` : '')).join('')
+          }
+          fillRule="evenodd"
+          fill="black"
+          opacity={0.58}
+          pointerEvents="none"
+        />
       )}
       {contourImageUrl && onContourSelect && onContourOffsetChange && (
         <ContourOverlay
