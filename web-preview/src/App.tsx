@@ -3943,17 +3943,12 @@ export default function App() {
             {contourBackgroundError && <p className="text-label text-red-600 dark:text-red-400">{contourBackgroundError}</p>}
             {contourBackground && (
               <>
-                {/* Design size — the width/height controls below. The "Redesenează"
-                    offset never changes this; it only affects the resulting cut,
-                    reported on its own line so the size controls stay stable. */}
+                {/* Native contour size. The "Redesenează" offset never changes the
+                    design-size controls below; it only affects the resulting cut,
+                    reported as the "Tăiere finală" line under the Redesenează control. */}
                 <p className="text-label text-gray-500 dark:text-gray-400">
                   Dimensiune: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
                 </p>
-                {contourRedrawActive && (
-                  <p className="text-hint text-gray-500 dark:text-gray-400">
-                    După redesenare ({contourRedrawMm > 0 ? '+' : ''}{contourRedrawMm} mm): tăiere {activeContourWidthMm.toFixed(1)} × {activeContourHeightMm.toFixed(1)} mm
-                  </p>
-                )}
                 {/* Resize / switch dimensions / rotate apply to both the uploaded
                     contour PDF and the generated preset shape (treated alike). */}
                 {(contourSource === 'upload' || contourSource === 'shape') && (
@@ -3991,6 +3986,15 @@ export default function App() {
                         setContourField('contourTargetHeightMm', w)
                       }}
                     />
+                    {/* When Redesenează is active these fields still hold the base
+                        (design) outline, not the offset cut — say so and point to the
+                        "Tăiere finală" line below, so the two numbers don't read as a
+                        mismatch. */}
+                    {contourRedrawActive && (
+                      <p className="text-hint text-gray-500 dark:text-gray-400">
+                        Dimensiunile de mai sus sunt conturul de bază; redesenarea ({contourRedrawMm > 0 ? '+' : ''}{contourRedrawMm} mm) produce tăierea finală de mai jos.
+                      </p>
+                    )}
                     <div className="flex items-center gap-field">
                       <button
                         type="button"
@@ -4014,6 +4018,13 @@ export default function App() {
                   step={0.5}
                   onChange={(v) => setContourField('contourRedrawMm', isFinite(v) ? v : 0)}
                 />
+                {/* The effective cut size produced by the offset above — the result of
+                    Redesenează, shown right under it (emphasised, not a muted hint). */}
+                {contourRedrawActive && (
+                  <p className="text-label font-medium text-amber-600 dark:text-amber-400">
+                    → Tăiere finală: {activeContourWidthMm.toFixed(1)} × {activeContourHeightMm.toFixed(1)} mm
+                  </p>
+                )}
                 <p className="text-hint text-gray-500 dark:text-gray-400">
                   Decalează întregul contur cu aceeași distanță pe tot conturul (die-line). 0 = neschimbat.
                 </p>
