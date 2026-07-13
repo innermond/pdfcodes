@@ -47,6 +47,7 @@ export function CardCanvas({
   contourOpacity,
   contourBlendMode,
   dimExterior = false,
+  pulseContour = false,
   contourCutShape = null,
   contourInteriorMaskPath = null,
   contourSelected = false,
@@ -92,6 +93,9 @@ export function CardCanvas({
   contourBlendMode: BlendMode
   // Dim everything outside the cut region so the user sees what the cut keeps.
   dimExterior?: boolean
+  // Pulse a highlight outline around the cut-line so it's easy to spot. Preview
+  // only — the animated <g> is stripped from PNG captures by lib/screenshot.ts.
+  pulseContour?: boolean
   contourCutShape?: ContourCutShape | null
   // Vector "keep" path for an uploaded contour, traced from its outline in
   // fractional contour-box coordinates (0..1, y-down, even-odd fill). Used as the
@@ -325,6 +329,27 @@ export function CardCanvas({
           pointerEvents="none"
         />
       )}
+      {pulseContour && contourKeepPolys && (() => {
+        // Highlight the exact cut-line so it stands out on a busy background: the
+        // same keep-region polygons the dim overlay uses, stroked as a breathing
+        // outline. A translucent white halo underneath keeps it legible over any
+        // color; a vivid blue stroke pulses on top. All transforms are already
+        // baked into contourKeepPolys, so no extra transform is needed. Wrapped in
+        // a <g> carrying <animate> so lib/screenshot.ts strips it from captures.
+        const d = contourKeepPolys
+          .map((poly) => (poly.length ? `M${poly.map(([x, y]) => `${x} ${y}`).join('L')}Z` : ''))
+          .join('')
+        return (
+          <g pointerEvents="none">
+            <path d={d} fill="none" stroke="#ffffff" strokeWidth={2.5} strokeOpacity={0.6} vectorEffect="non-scaling-stroke">
+              <animate attributeName="opacity" values="0.3;1;0.3" dur="1.2s" repeatCount="indefinite" />
+            </path>
+            <path d={d} fill="none" stroke="#2563eb" strokeWidth={1.25} vectorEffect="non-scaling-stroke">
+              <animate attributeName="opacity" values="0.3;1;0.3" dur="1.2s" repeatCount="indefinite" />
+            </path>
+          </g>
+        )
+      })()}
       {contourImageUrl && onContourSelect && onContourOffsetChange && (
         <ContourOverlay
           svgRef={svgRef}

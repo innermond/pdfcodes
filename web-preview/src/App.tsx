@@ -467,6 +467,9 @@ interface ContourConfig {
   contourBlendMode: BlendMode
   // Preview-only: dim everything outside the cut region. Doesn't affect output.
   dimContourExterior: boolean
+  // Preview-only: pulse a highlight outline around the cut-line so it's easy to
+  // spot on a busy background. Doesn't affect output (stripped from captures).
+  pulseContour: boolean
   shapeKind: ShapeKind
   shapeCornerRadiusMm: number
   shapeCornerOrientation: CornerOrientation
@@ -518,6 +521,7 @@ const defaultContourConfig: ContourConfig = {
   contourOpacity: 1.0,
   contourBlendMode: 'normal',
   dimContourExterior: true,
+  pulseContour: true,
   shapeKind: 'circle',
   shapeCornerRadiusMm: 3,
   shapeCornerOrientation: 'out',
@@ -706,7 +710,7 @@ export default function App() {
   const [contourConfig, setContourConfig] = useState<ContourConfig>(defaultContourConfig)
   const {
     contourSource, contourUploadSource, contourUploadUrl,
-    contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior,
+    contourPageNumber, contourOpacity, contourBlendMode, dimContourExterior, pulseContour,
     shapeKind, shapeCornerRadiusMm, shapeCornerOrientation, polygonSides, polygonStar,
     polygonStarInnerRatio, polygonStarTipsOnly, polygonStarRefWMm, polygonStarRefHMm, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
@@ -2877,12 +2881,15 @@ export default function App() {
   const backgroundLockedHint = 'Configurează fundalul în pasul „Fundal” pentru a continua.'
   const contourLockedHint = 'Configurează conturul în pasul „Contur” pentru a continua.'
 
-  // The "Date" step adds a further gate: the user must press "Generează CSV" so
-  // the data source is fixed before the remaining steps unlock. The generated
-  // CSV's object URL (only ever set by handleGenerateCsv) is the signal — a CSV
-  // uploaded later in "Generare" doesn't count here.
+  // The "Date" step adds a further gate: the data source must be fixed before the
+  // remaining steps unlock. `codeCsvUrl` is the signal — set either by uploading a
+  // CSV (`applyUploadedCsvRows`) or by pressing "Generează CSV" (`handleGenerateCsv`).
+  // The unlock action differs per mode, so the hint must match the mode on screen:
+  // "Generează coduri" has a "Generează CSV" button; "Încarcă CSV" wants a file.
   const dataSourceDone = codeCsvUrl !== null
-  const dataSourceLockedHint = 'Apasă „Generează CSV” în pasul „Date” pentru a continua.'
+  const dataSourceLockedHint = codeDataMode === 'upload'
+    ? 'Încarcă un fișier CSV în pasul „Date” pentru a continua.'
+    : 'Apasă „Generează CSV” în pasul „Date” pentru a continua.'
 
   // Single hint surfaced on locked steps: whichever gate is currently blocking.
   const lockedHint = !backgroundDone
@@ -4105,6 +4112,13 @@ export default function App() {
                   checked={dimContourExterior}
                   onChange={(v) => setContourField('dimContourExterior', v)}
                 />
+                {/* Preview-only aid: pulses a highlight outline around the cut-line so
+                    it stands out on a busy background. Doesn't change the output. */}
+                <CheckboxField
+                  label="Pulsează conturul (doar previzualizare)"
+                  checked={pulseContour}
+                  onChange={(v) => setContourField('pulseContour', v)}
+                />
 
               </>
             )}
@@ -4763,6 +4777,7 @@ export default function App() {
                       contourOpacity={contourOpacity}
                       contourBlendMode={contourBlendMode}
                       dimExterior={dimContourExterior}
+                      pulseContour={pulseContour}
                       contourCutShape={activeContourCutShape}
                       contourInteriorMaskPath={activeInteriorMaskPath}
                       contourSelected={contourSelected && contourBackground != null}
