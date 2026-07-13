@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type SyntheticEvent as ReactSyntheticEvent } from 'react'
 import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
 import { ColorSampleContext } from '../lib/colorSample'
 
@@ -374,7 +374,21 @@ export function ColorField({
   // `null` renders as white, so seed the picker (swatch, square, inputs) with
   // white when there's no explicit color.
   const effectiveColor = value ?? NULL_CMYK
-  const cmyk = parseCmyk(effectiveColor)
+  // The square and K slider are drag gestures — committing `onChange` on every
+  // pointermove/input tick was retriggering the (expensive, wasm-backed)
+  // background regeneration dozens of times per drag. `liveCmyk` drives the
+  // picker's own visuals (marker, swatch, K%) so dragging still feels
+  // responsive, while the actual commit is deferred to pointer/mouse up.
+  const [liveCmyk, setLiveCmyk] = useState<Cmyk>(() => parseCmyk(effectiveColor))
+  // Resync when the committed color changes from outside (e.g. a preset load),
+  // without the cascading-render effect this'd cause as a useEffect — see
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [syncedColor, setSyncedColor] = useState(effectiveColor)
+  if (effectiveColor !== syncedColor) {
+    setSyncedColor(effectiveColor)
+    setLiveCmyk(parseCmyk(effectiveColor))
+  }
+  const cmyk = liveCmyk
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -385,8 +399,24 @@ export function ColorField({
     horizontal: 'left',
   })
 
+  // Committed immediately — used by the number inputs, which are discrete
+  // per-keystroke edits rather than a continuous drag.
   function setChannel(key: keyof Cmyk, percent: number) {
     const next = { ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 }
+    setLiveCmyk(next)
+    onChange(formatCmyk(next))
+  }
+
+  // Local-only update for the K slider while dragging — keeps the swatch/marker
+  // responsive without committing (see `commitSliderChannel` for the release commit).
+  function setChannelLive(key: keyof Cmyk, percent: number) {
+    setLiveCmyk({ ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 })
+  }
+
+  function commitSliderChannel(key: keyof Cmyk, e: ReactSyntheticEvent<HTMLInputElement>) {
+    const percent = Number(e.currentTarget.value)
+    const next = { ...cmyk, [key]: Math.min(100, Math.max(0, percent)) / 100 }
+    setLiveCmyk(next)
     onChange(formatCmyk(next))
   }
 
@@ -451,27 +481,36 @@ export function ColorField({
 
   // Pick a color from the square: map the pointer position to hue/saturation and
   // keep the current K. Supports click and drag.
-  function pickFromSquare(e: ReactPointerEvent<HTMLDivElement>) {
+  function colorFromSquare(e: ReactPointerEvent<HTMLDivElement>): Cmyk {
     const rect = e.currentTarget.getBoundingClientRect()
     const xFrac = (e.clientX - rect.left) / rect.width
     const yFrac = (e.clientY - rect.top) / rect.height
-    onChange(squareToCmyk(xFrac, yFrac, cmyk.k))
+    return parseCmyk(squareToCmyk(xFrac, yFrac, cmyk.k))
   }
 
   function handleSquarePointerDown(e: ReactPointerEvent<HTMLDivElement>) {
     e.currentTarget.setPointerCapture(e.pointerId)
-    pickFromSquare(e)
+    setLiveCmyk(colorFromSquare(e))
   }
 
   function handleSquarePointerMove(e: ReactPointerEvent<HTMLDivElement>) {
     if (e.buttons !== 1) return
-    pickFromSquare(e)
+    setLiveCmyk(colorFromSquare(e))
+  }
+
+  // Commit on release, not on every pointermove — a drag across the square can
+  // fire dozens of move events, and each commit retriggers the parent's (wasm-backed)
+  // background regeneration.
+  function handleSquarePointerUp(e: ReactPointerEvent<HTMLDivElement>) {
+    const next = colorFromSquare(e)
+    setLiveCmyk(next)
+    onChange(formatCmyk(next))
   }
 
   // Show the picker whenever there's a color, and also for `null` unless the
   // caller opted into hiding it (e.g. a deliberate "none").
   const showPicker = value !== null || !hideWhenNull
-  const marker = cmykToSquarePos(effectiveColor)
+  const marker = cmykToSquarePos(formatCmyk(cmyk))
   // Eyedropper: sample a color straight from the live preview (works in every
   // browser — no EyeDropper API needed). Offered only while a preview exists,
   // which is exactly when the context provides a sampler.
@@ -506,7 +545,7 @@ export function ColorField({
               aria-label="Alege culoarea"
               onClick={() => setOpen((v) => !v)}
               className="h-10 w-10 rounded border border-gray-300 dark:border-gray-600"
-              style={{ backgroundColor: colorToCss(effectiveColor) }}
+              style={{ backgroundColor: colorToCss(formatCmyk(cmyk)) }}
             />
             {open && (
               <div
@@ -522,6 +561,7 @@ export function ColorField({
                   style={{ backgroundImage: `url(${cmySquareDataUrl(cmyk.k)})`, backgroundSize: '100% 100%' }}
                   onPointerDown={handleSquarePointerDown}
                   onPointerMove={handleSquarePointerMove}
+                  onPointerUp={handleSquarePointerUp}
                 >
                   {marker && (
                     <span
@@ -537,7 +577,10 @@ export function ColorField({
                     min={0}
                     max={100}
                     value={Math.round(cmyk.k * 100)}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setChannel('k', Number(e.target.value))}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setChannelLive('k', Number(e.target.value))}
+                    onMouseUp={(e) => commitSliderChannel('k', e)}
+                    onTouchEnd={(e) => commitSliderChannel('k', e)}
+                    onKeyUp={(e) => commitSliderChannel('k', e)}
                     className="flex-1"
                   />
                   <span className="w-8 text-right text-gray-500 dark:text-gray-400">{Math.round(cmyk.k * 100)}%</span>
