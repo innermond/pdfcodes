@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "fonts:manifest": "node scripts/build-google-fonts-manifest.mjs"
+    "fonts:manifest": "node scripts/build-google-fonts-manifest.mjs",
+    "build:en": "LOCALE=en npm run build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",
