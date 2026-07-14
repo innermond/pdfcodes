@@ -22,7 +22,7 @@ import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
-import { serializeRows, describeDelimiter } from './lib/csvSerialize'
+import { serializeRows, describeDelimiter, isRaggedRowsWarning } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
@@ -30,6 +30,8 @@ import { ColorSampleContext, imageUrlToCanvas, previewPointToBackgroundFrac, sam
 import { cmykToRgb, colorToCss, contrastColor, parseCmyk } from './lib/cmyk'
 import { randomWordFittingWidth } from './lib/randomWords'
 import { useTheme } from './lib/theme'
+import { m } from './paraglide/messages'
+import { formatNumber } from './lib/formatNumber'
 
 // --- Lazily-loaded heavy dependencies (per-step code splitting) ---------------
 // Each of these modules pulls in a large library that only a specific step
@@ -200,7 +202,7 @@ async function fetchProxiedFile(opts: {
   httpMessage: (status: number) => string
 }): Promise<File> {
   if (!IMAGE_PROXY) {
-    throw new Error('Descărcarea după URL nu este configurată (lipsește proxy-ul de imagini).')
+    throw new Error(m.errors_url_download_not_configured())
   }
   let blob: Blob
   try {
@@ -210,7 +212,7 @@ async function fetchProxiedFile(opts: {
   } catch (err) {
     // Network failures (proxy down/unreachable) surface as a TypeError.
     if (err instanceof TypeError) {
-      throw new Error('Nu s-a putut contacta proxy-ul de imagini.', { cause: err })
+      throw new Error(m.errors_proxy_unreachable(), { cause: err })
     }
     throw err
   }
@@ -276,11 +278,11 @@ function sanitizeFileStem(name: string): string {
 }
 
 const WIZARD_STEPS = [
-  { id: 'fundal', label: 'Fundal' },
-  { id: 'contur', label: 'Contur' },
-  { id: 'date', label: 'Date' },
-  { id: 'aspect', label: 'Coduri' },
-  { id: 'generare', label: 'PDF' },
+  { id: 'fundal', label: m.wizard_step_background() },
+  { id: 'contur', label: m.wizard_step_contour() },
+  { id: 'date', label: m.wizard_step_data() },
+  { id: 'aspect', label: m.wizard_step_codes() },
+  { id: 'generare', label: m.wizard_step_pdf() },
 ] as const
 
 // Pages per generation batch. Each batch is built as its own PDF and freed
@@ -314,7 +316,7 @@ function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
 // Human-readable rendering of a separator for warning text. An empty string
 // means "space" (the default used by both splitWords and the CSV generator).
 function describeSeparator(sep: string): string {
-  return sep === '' || sep === ' ' ? 'spațiu' : `„${sep}”`
+  return sep === '' || sep === ' ' ? m.csv_delimiter_space() : m.csv_delimiter_other({ delimiter: sep })
 }
 
 type FontSource = 'google' | 'custom'
@@ -393,13 +395,13 @@ const defaultBgConfig: BgConfig = {
 }
 
 const SHAPE_OPTIONS: { value: ShapeKind; label: string }[] = [
-  { value: 'circle', label: 'Cerc' },
-  { value: 'ellipse', label: 'Elipsă' },
-  { value: 'rectangle', label: 'Dreptunghi' },
-  { value: 'rounded-rectangle', label: 'Dreptunghi cu colțuri rotunjite' },
-  { value: 'beveled-rectangle', label: 'Dreptunghi cu colțuri teșite' },
-  { value: 'heart', label: 'Inimă' },
-  { value: 'polygon', label: 'Poligon' },
+  { value: 'circle', label: m.shapes_circle() },
+  { value: 'ellipse', label: m.shapes_ellipse() },
+  { value: 'rectangle', label: m.shapes_rectangle() },
+  { value: 'rounded-rectangle', label: m.shapes_rounded_rectangle() },
+  { value: 'beveled-rectangle', label: m.shapes_beveled_rectangle() },
+  { value: 'heart', label: m.shapes_heart() },
+  { value: 'polygon', label: m.shapes_polygon() },
 ]
 
 // Tight bounding box (in card-mm coords, measured from the card's bottom-left)
@@ -603,8 +605,8 @@ const defaultStyleConfig: StyleConfig = {
 }
 
 const CORNER_ORIENTATION_OPTIONS: { value: CornerOrientation; label: string }[] = [
-  { value: 'out', label: 'În afară' },
-  { value: 'in', label: 'În interior' },
+  { value: 'out', label: m.contour_corner_out() },
+  { value: 'in', label: m.contour_corner_in() },
 ]
 
 function resizeFonts(fonts: (LoadedFont | null)[], length: number): (LoadedFont | null)[] {
@@ -626,7 +628,7 @@ function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { e
   if (set.length === 0) return { files: [] }
   if (set.length === 1) return { files: [set[0].file] }
   if (set.length === fonts.length) return { files: fonts.map((f) => f!.file) }
-  return { error: 'Setează un font pentru fiecare cuvânt, sau pentru un singur cuvânt (folosit pentru toate).' }
+  return { error: m.errors_font_per_word() }
 }
 
 // Offer the whole rows whose codes fall outside the cut/card as a one-column CSV \u2014
@@ -635,7 +637,7 @@ function resolveFontFiles(fonts: (LoadedFont | null)[]): { files: File[] } | { e
 // diacritics; values with commas/quotes/newlines are quoted per RFC 4180.
 function downloadOverflowCsv(rows: string[]) {
   const esc = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
-  const csv = '\ufeff' + ['rand', ...rows.map(esc)].join('\r\n') + '\r\n'
+  const csv = '\ufeff' + [m.words_overflow_csv_header(), ...rows.map(esc)].join('\r\n') + '\r\n'
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
   const a = document.createElement('a')
   a.href = url
@@ -1431,7 +1433,7 @@ export default function App() {
         })
         if (cancelled) return
         if (!d) {
-          setContourBackgroundError('Conturul nu s-a putut trasa din imagine. Încearcă un prag de transparență mai mic.')
+          setContourBackgroundError(m.errors_trace_failed())
           return
         }
         // Contour box from the pixel dims at 96 dpi (same convention as the SVG→PDF
@@ -1456,7 +1458,7 @@ export default function App() {
           lens.push(sp.length)
         }
         if (coords.length === 0) {
-          setContourBackgroundError('Conturul nu s-a putut trasa din imagine. Încearcă un prag de transparență mai mic.')
+          setContourBackgroundError(m.errors_trace_failed())
           return
         }
         await ensureWasmInit()
@@ -1694,13 +1696,13 @@ export default function App() {
       parsed = await parseUploadedCsv(file, forcedDelimiter)
     } catch (err) {
       clearUploadedCsv()
-      setUploadedCsvWarnings([`Fișierul nu a putut fi citit: ${err instanceof Error ? err.message : String(err)}`])
+      setUploadedCsvWarnings([m.csv_read_failed({ error: err instanceof Error ? err.message : String(err) })])
       return
     }
     if (parsed.rows.length === 0) {
       clearUploadedCsv()
       setUploadedRawFile(file)
-      setUploadedCsvWarnings(parsed.warnings.length > 0 ? parsed.warnings : ['Fișierul nu conține date.'])
+      setUploadedCsvWarnings(parsed.warnings.length > 0 ? parsed.warnings : [m.csv_no_data()])
       return
     }
     // Remember the detected delimiter as the displayed separator (the friendly
@@ -1721,20 +1723,20 @@ export default function App() {
     const singleField = restore ? restore.singleField : ragged
     setDataField('codeFieldMerges', merges)
     setDataField('codeSingleField', singleField)
-    const rowsLabel = `${parsed.rows.length.toLocaleString('ro-RO')} rânduri`
+    const rowsLabel = m.csv_rows_count({ count: parsed.rows.length, countFormatted: formatNumber(parsed.rows.length) })
     if (singleField) {
-      setUploadedCsvInfo(`Fiecare rând este tratat ca un singur cod · ${rowsLabel}`)
+      setUploadedCsvInfo(m.csv_info_single_field({ rows: rowsLabel }))
     } else if (parsed.columnCount <= 1) {
       // A single code per row needs no separator, so don't mention one.
-      setUploadedCsvInfo(`Un singur cod pe rând · ${rowsLabel}`)
+      setUploadedCsvInfo(m.csv_info_one_column({ rows: rowsLabel }))
     } else {
-      const prefix = forcedDelimiter !== undefined ? 'Separator' : 'Separator detectat'
-      setUploadedCsvInfo(`${prefix}: ${describeDelimiter(parsed.delimiter)} · ${rowsLabel} · ${parsed.columnCount} coloane`)
+      const info = forcedDelimiter !== undefined ? m.csv_info_forced : m.csv_info_detected
+      setUploadedCsvInfo(info({ delimiter: describeDelimiter(parsed.delimiter), rows: rowsLabel, columns: parsed.columnCount }))
     }
     // The ragged-columns warning is moot once each row is collapsed to one code,
     // and its "check the separator" advice would now mislead — drop just that one.
     setUploadedCsvWarnings(
-      singleField ? parsed.warnings.filter((w) => !w.includes('număr diferit de coloane')) : parsed.warnings,
+      singleField ? parsed.warnings.filter((w) => !isRaggedRowsWarning(w)) : parsed.warnings,
     )
     applyUploadedCsvRows(parsed.rows, merges, parsed.delimiter || ' ', singleField)
   }
@@ -1779,7 +1781,7 @@ export default function App() {
       setPasswordError(null)
       sessionStorage.setItem(GENERATE_UNLOCKED_KEY, '1')
     } else {
-      setPasswordError('Parolă incorectă.')
+      setPasswordError(m.errors_wrong_password())
     }
   }
 
@@ -1876,11 +1878,11 @@ export default function App() {
 
   async function handleRequestQuote() {
     if (!backgroundFile) {
-      setQuoteError('Este necesar un PDF de fundal.')
+      setQuoteError(m.quote_need_background())
       return
     }
     if (!contourBackgroundFile) {
-      setQuoteError('Este necesar un fundal de contur (încărcat sau o formă presetată).')
+      setQuoteError(m.quote_need_contour())
       return
     }
     setQuoteError(null)
@@ -1897,7 +1899,7 @@ export default function App() {
       .then(({ preset: rawPreset, background: bgFile, contour: contourFile, csv: csvFile, fonts: bundledFonts }) => {
         const preset = rawPreset as Partial<Preset>
         if (!Array.isArray(preset.words)) {
-          throw new Error('Fișier de setări invalid: lipsește lista de cuvinte.')
+          throw new Error(m.errors_preset_missing_words())
         }
         setDataField('sampleText', preset.sampleText ?? '')
         setDataField('codeSeparator', preset.codeSeparator ?? '')
@@ -2029,8 +2031,7 @@ export default function App() {
         })
         if (missingCustomWords.length > 0) {
           setFontsNotice(
-            `Cuvântul${missingCustomWords.length > 1 ? 'ele' : ''} ${missingCustomWords.join(', ')} folose${missingCustomWords.length > 1 ? 'sc' : 'ște'} ` +
-              `un font propriu (.ttf/.otf) care nu a fost găsit în arhivă — încarcă din nou fișierul de font.`,
+            m.fonts_missing_custom({ count: missingCustomWords.length, list: missingCustomWords.join(', ') }),
           )
         }
       })
@@ -2153,7 +2154,7 @@ export default function App() {
     if (!(simpleBgWidthMm > 0) || !(simpleBgHeightMm > 0)) {
       setBackground(null)
       setBackgroundFile(null)
-      setBackgroundError('Lățimea și înălțimea fundalului trebuie să fie numere pozitive.')
+      setBackgroundError(m.errors_bg_dims_positive())
       return
     }
     let cancelled = false
@@ -2256,8 +2257,8 @@ export default function App() {
           if (looksLikeSvg(head)) return { type: 'image/svg+xml', fallbackName: 'fundal.svg' }
           return null
         },
-        rejectMessage: 'Doar imagini PNG, JPEG sau SVG sunt acceptate.',
-        httpMessage: (status) => `Nu s-a putut descărca imaginea (HTTP ${status}).`,
+        rejectMessage: m.errors_only_images_accepted(),
+        httpMessage: (status) => m.errors_image_download({ status }),
       })
       handleGenBgImageChange(file)
     } catch (err) {
@@ -2273,7 +2274,7 @@ export default function App() {
   // the vector path instead of being rasterized. `null` blob → friendly error.
   async function loadClipboardImageBlob(blob: Blob | null) {
     if (!blob) {
-      setBackgroundError('Clipboard-ul nu conține o imagine.')
+      setBackgroundError(m.errors_clipboard_no_image())
       return
     }
     setGenBgLoading(true)
@@ -2312,7 +2313,7 @@ export default function App() {
     setBgPasteZoneDragOver(false)
     const blob = imageBlobFromDataTransfer(e.dataTransfer)
     if (!blob) {
-      setBackgroundError('Fișierul tras nu este o imagine (PNG, JPEG sau SVG).')
+      setBackgroundError(m.errors_drop_not_image())
       return
     }
     void loadClipboardImageBlob(blob)
@@ -2347,7 +2348,7 @@ export default function App() {
           // Normalize conversion failures to the same user-facing message the
           // helper's pre-parse throws, keeping the raw usvg detail for diagnosis.
           bytes = await svgToPdf(prepared).catch((err) => {
-            throw new Error(`Fișierul nu este un SVG valid. (${err instanceof Error ? err.message : String(err)})`)
+            throw new Error(m.errors_svg_invalid_detail({ detail: err instanceof Error ? err.message : String(err) }))
           })
         } else {
           // Build the image PDF once at the image's own aspect (normalized width);
@@ -2482,7 +2483,7 @@ export default function App() {
         // treatment as the background's generate effect).
         setContourSvgTextWarning(inspectSvg(text).hasText)
         const bytes = await svgToPdf(text).catch((err) => {
-          throw new Error(`Fișierul nu este un SVG valid. (${err instanceof Error ? err.message : String(err)})`)
+          throw new Error(m.errors_svg_invalid_detail({ detail: err instanceof Error ? err.message : String(err) }))
         })
         // Keep the SVG's name (with a .pdf suffix) so the file field shows what
         // the user picked, not an internal name.
@@ -2553,8 +2554,8 @@ export default function App() {
           }
           return null
         },
-        rejectMessage: 'Doar fișiere PDF, SVG, PNG sau JPEG sunt acceptate.',
-        httpMessage: (status) => `Nu s-a putut descărca fișierul (HTTP ${status}).`,
+        rejectMessage: m.errors_only_files_accepted(),
+        httpMessage: (status) => m.errors_file_download({ status }),
       })
       handleContourFileChange(file)
     } catch (err) {
@@ -2570,9 +2571,7 @@ export default function App() {
   // Clipboard API, only to a real paste event.
   function loadContourClipboardFile(file: File | null) {
     if (!file) {
-      setContourBackgroundError(
-        'Clipboard-ul nu conține un fișier PDF, SVG sau imagine accesibil. Pentru un fișier copiat din managerul de fișiere, apasă Ctrl+V aici.',
-      )
+      setContourBackgroundError(m.errors_clipboard_no_file())
       return
     }
     setContourBackgroundError(null)
@@ -2609,7 +2608,7 @@ export default function App() {
     if (file) { loadContourClipboardFile(file); return }
     const blob = imageBlobFromDataTransfer(e.dataTransfer)
     if (!blob) {
-      setContourBackgroundError('Fișierul tras nu este un PDF, SVG sau imagine.')
+      setContourBackgroundError(m.errors_drop_not_file())
       return
     }
     blobToPngFile(blob, 'contur.png').then(loadContourClipboardFile)
@@ -2878,8 +2877,8 @@ export default function App() {
   // be set before the data step unlocks.
   const backgroundDone = background !== null
   const contourDone = contourBackground !== null
-  const backgroundLockedHint = 'Configurează fundalul în pasul „Fundal” pentru a continua.'
-  const contourLockedHint = 'Configurează conturul în pasul „Contur” pentru a continua.'
+  const backgroundLockedHint = m.wizard_locked_background()
+  const contourLockedHint = m.wizard_locked_contour()
 
   // The "Date" step adds a further gate: the data source must be fixed before the
   // remaining steps unlock. `codeCsvUrl` is the signal — set either by uploading a
@@ -2888,8 +2887,8 @@ export default function App() {
   // "Generează coduri" has a "Generează CSV" button; "Încarcă CSV" wants a file.
   const dataSourceDone = codeCsvUrl !== null
   const dataSourceLockedHint = codeDataMode === 'upload'
-    ? 'Încarcă un fișier CSV în pasul „Date” pentru a continua.'
-    : 'Apasă „Generează CSV” în pasul „Date” pentru a continua.'
+    ? m.wizard_locked_data_upload()
+    : m.wizard_locked_data_generate()
 
   // Single hint surfaced on locked steps: whichever gate is currently blocking.
   const lockedHint = !backgroundDone
@@ -2956,15 +2955,15 @@ export default function App() {
 
   async function handleGenerate() {
     if (needsPrintInput && !backgroundFile) {
-      setGenError('Este necesar un PDF de fundal pentru print.')
+      setGenError(m.generate_need_print_background())
       return
     }
     if (needsContourInput && !contourBackgroundFile) {
-      setGenError('Este necesar un PDF de fundal pentru contur.')
+      setGenError(m.generate_need_contour_background())
       return
     }
     if (!csvDataFile) {
-      setGenError('Este necesar un fișier CSV cu date.')
+      setGenError(m.generate_need_csv())
       return
     }
 
@@ -3108,7 +3107,7 @@ export default function App() {
   // no-cut card and the (view-only) combine overlay when a contour is loaded.
   async function handleGenerateSample() {
     if (!backgroundFile) {
-      setGenError('Este necesar un PDF de fundal pentru print.')
+      setGenError(m.generate_need_print_background())
       return
     }
     const fontResult = resolveFontFiles(fonts)
@@ -3125,7 +3124,7 @@ export default function App() {
       let row: string
       if (codeDataMode === 'upload') {
         if (!csvDataFile) {
-          setGenError('Încarcă un fișier CSV cu date.')
+          setGenError(m.generate_upload_csv_first())
           return
         }
         row = (await csvDataFile.text()).split('\n').find((l) => l.trim().length > 0) ?? ''
@@ -3359,21 +3358,21 @@ export default function App() {
     <ColorSampleContext.Provider value={background ? requestColorSample : null}>
     <div className="mx-auto max-w-6xl px-block py-section dark:bg-gray-950 dark:text-gray-100">
       <div className="mb-tight flex items-start justify-between gap-block">
-        <h1 className="text-page font-bold text-gray-900 dark:text-gray-100">Printare coduri unice / Decupare pe contur</h1>
+        <h1 className="text-page font-bold text-gray-900 dark:text-gray-100">{m.app_title()}</h1>
         <div className="flex items-center gap-inner">
           <button
             type="button"
             onClick={handleSavePreset}
             className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
-            Salvează setările (.zip)
+            {m.app_save_settings()}
           </button>
           <button
             type="button"
             onClick={undo}
             disabled={!canUndo}
-            title="Anulează (Ctrl+Z)"
-            aria-label="Anulează (Ctrl+Z)"
+            title={m.app_undo_title()}
+            aria-label={m.app_undo_title()}
             className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             ↶
@@ -3382,8 +3381,8 @@ export default function App() {
             type="button"
             onClick={redo}
             disabled={!canRedo}
-            title="Refă (Ctrl+Shift+Z)"
-            aria-label="Refă (Ctrl+Shift+Z)"
+            title={m.app_redo_title()}
+            aria-label={m.app_redo_title()}
             className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
             ↷
@@ -3393,18 +3392,18 @@ export default function App() {
             onClick={toggleTheme}
             className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
-            {theme === 'dark' ? 'Mod luminos' : 'Mod întunecat'}
+            {theme === 'dark' ? m.app_light_mode() : m.app_dark_mode()}
           </button>
         </div>
       </div>
       <p className="mb-block text-label text-gray-500 dark:text-gray-400">
-        Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.
+        {m.app_subtitle()}
       </p>
 
-      <Section title="Presetări" collapsible defaultCollapsed>
+      <Section title={m.presets_title()} collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-field">
           <FileField
-            label="Încarcă setări (.zip sau .json)"
+            label={m.presets_load_label()}
             accept=".zip,application/zip,application/json,.json"
             onChange={(files) => handleLoadPresetFile(files?.[0] ?? null)}
           />
@@ -3433,15 +3432,15 @@ export default function App() {
       <div className="grid grid-cols-1 gap-section lg:grid-cols-2">
         <div className="flex flex-col gap-block">
           {step === 'fundal' && (
-          <Section title="Setări" frame="top">
+          <Section title={m.common_settings_title()} frame="top">
             <RadioGroupField<BackgroundSource>
-              label="Sursă"
+              label={m.common_source_label()}
               value={backgroundSource}
               onChange={handleBackgroundSourceChange}
               options={[
-                { value: 'upload', label: 'Încarcă PDF' },
-                { value: 'simple', label: 'Simplu' },
-                { value: 'generate', label: 'Imagine' },
+                { value: 'upload', label: m.background_source_upload() },
+                { value: 'simple', label: m.background_source_simple() },
+                { value: 'generate', label: m.background_source_image() },
               ]}
             />
             {backgroundSource === 'upload' ? (
@@ -3451,7 +3450,7 @@ export default function App() {
               <div className="flex flex-wrap items-start gap-field">
                 <div className="min-w-0 flex-1">
                   <FileField
-                    label="PDF (un card)"
+                    label={m.background_pdf_label()}
                     accept="application/pdf"
                     onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
                     currentName={backgroundFile?.name}
@@ -3460,7 +3459,7 @@ export default function App() {
                 {backgroundPageCount > 1 && (
                   <div className="w-28 shrink-0">
                     <NumberField
-                      label={`Pagina (1–${backgroundPageCount})`}
+                      label={m.common_page_label({ count: backgroundPageCount })}
                       value={backgroundPageNumber}
                       onChange={handleBackgroundPageChange}
                     />
@@ -3470,8 +3469,8 @@ export default function App() {
             ) : backgroundSource === 'simple' ? (
               <>
                 <LinkedDimensions
-                  widthLabel="Lățime (mm)"
-                  heightLabel="Înălțime (mm)"
+                  widthLabel={m.common_width_mm()}
+                  heightLabel={m.common_height_mm()}
                   width={simpleBgWidthMm}
                   height={simpleBgHeightMm}
                   onWidth={(v) => setBgField('simpleBgWidthMm', v)}
@@ -3482,28 +3481,28 @@ export default function App() {
                   onToggleLock={() => setLockAspect((v) => !v)}
                 />
                 <ColorField
-                  label="Culoare (opțional)"
+                  label={m.background_color_label()}
                   value={simpleBgColor}
                   onChange={(v) => setBgField('simpleBgColor', v)}
                   allowNone
-                  noneLabel="fără culoare"
+                  noneLabel={m.background_no_color()}
                 />
               </>
             ) : (
               <>
                 <RadioGroupField<GenBgImageSource>
-                  label="Sursă imagine"
+                  label={m.background_image_source_label()}
                   value={genBgImageSource}
                   onChange={(v) => setBgField('genBgImageSource', v)}
                   options={[
-                    { value: 'file', label: 'Fișier local' },
-                    { value: 'url', label: 'URL' },
-                    { value: 'clipboard', label: 'Clipboard' },
+                    { value: 'file', label: m.common_source_file() },
+                    { value: 'url', label: m.common_source_url() },
+                    { value: 'clipboard', label: m.common_source_clipboard() },
                   ]}
                 />
                 {genBgImageSource === 'file' ? (
                   <FileField
-                    label="Imagine (PNG, JPEG sau SVG)"
+                    label={m.background_image_label()}
                     accept="image/png,image/jpeg,image/svg+xml,.svg"
                     onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                     currentName={genBgImageFile?.name}
@@ -3512,10 +3511,10 @@ export default function App() {
                   <div className="flex items-end gap-inner">
                     <div className="min-w-0 flex-1">
                       <TextField
-                        label="URL imagine (PNG, JPEG sau SVG)"
+                        label={m.background_image_url_label()}
                         value={genBgImageUrl}
                         onChange={(v) => setBgField('genBgImageUrl', v)}
-                        placeholder="https://exemplu.ro/imagine.png"
+                        placeholder={m.background_url_placeholder()}
                       />
                     </div>
                     <button
@@ -3524,7 +3523,7 @@ export default function App() {
                       disabled={genBgLoading}
                       className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      Încarcă
+                      {m.common_load()}
                     </button>
                   </div>
                 ) : (
@@ -3552,25 +3551,25 @@ export default function App() {
                       disabled={genBgLoading}
                       className="self-start rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      📋 Lipește imaginea
+                      {m.background_paste_button()}
                     </button>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Apasă butonul, Ctrl+V sau trage o imagine (PNG/JPEG/SVG) aici.
+                      {m.background_paste_hint()}
                     </p>
                   </div>
                 )}
                 {background && (
                   <p className="text-hint text-gray-500 dark:text-gray-400">
-                    Imaginea este întinsă pentru a umple cardul la dimensiunile țintă de mai jos.
+                    {m.background_stretched_hint()}
                   </p>
                 )}
                 {genBgSvgTextWarning && (
                   <p className="text-label text-amber-600 dark:text-amber-400">
-                    Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.
+                    {m.common_svg_text_warning()}
                   </p>
                 )}
                 {genBgLoading && (
-                  <p className="text-label text-gray-500 dark:text-gray-400">Se generează fundalul…</p>
+                  <p className="text-label text-gray-500 dark:text-gray-400">{m.background_generating()}</p>
                 )}
               </>
             )}
@@ -3578,7 +3577,7 @@ export default function App() {
             {backgroundSource === 'upload' && background && (
               <>
                 <div className="flex flex-wrap items-baseline gap-x-field gap-y-tight rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-label dark:border-sky-800 dark:bg-sky-950/40">
-                  <span className="text-hint font-medium uppercase tracking-wide text-sky-500 dark:text-sky-500">Dimensiuni detectate</span>
+                  <span className="text-hint font-medium uppercase tracking-wide text-sky-500 dark:text-sky-500">{m.background_detected_dims()}</span>
                   <span className="font-semibold tabular-nums text-sky-700 dark:text-sky-300">
                     {(background.widthPt / MM).toFixed(1)} × {(background.heightPt / MM).toFixed(1)} mm
                   </span>
@@ -3587,8 +3586,8 @@ export default function App() {
                   </span>
                 </div>
                 <LinkedDimensions
-                  widthLabel="Lățime țintă (mm)"
-                  heightLabel="Înălțime țintă (mm)"
+                  widthLabel={m.common_target_width_mm()}
+                  heightLabel={m.common_target_height_mm()}
                   width={bgTargetWidthMm}
                   height={bgTargetHeightMm}
                   onWidth={(v) => setBgField('bgTargetWidthMm', v)}
@@ -3608,22 +3607,22 @@ export default function App() {
                   <button
                     type="button"
                     onClick={rotateBackground}
-                    title="Rotește fundalul cu 90° (portret ⇄ peisaj)"
+                    title={m.background_rotate_pdf_title()}
                     className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
-                    ↻ Rotește 90°
+                    {m.common_rotate_90()}
                   </button>
-                  <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
-                  <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => flipUploadBackground('x', v)} />
-                  <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => flipUploadBackground('y', v)} />
+                  <span className="text-label text-gray-600 dark:text-gray-400">{m.common_rotation_status({ deg: bgRotation })}</span>
+                  <CheckboxField label={m.common_flip_x()} checked={bgFlipX} onChange={(v) => flipUploadBackground('x', v)} />
+                  <CheckboxField label={m.common_flip_y()} checked={bgFlipY} onChange={(v) => flipUploadBackground('y', v)} />
                 </div>
               </>
             )}
             {backgroundSource === 'generate' && background && (
               <>
                 <LinkedDimensions
-                  widthLabel="Lățime țintă (mm)"
-                  heightLabel="Înălțime țintă (mm)"
+                  widthLabel={m.common_target_width_mm()}
+                  heightLabel={m.common_target_height_mm()}
                   width={genBgWidthMm}
                   height={genBgHeightMm}
                   onWidth={(v) => setBgField('genBgWidthMm', v)}
@@ -3643,27 +3642,27 @@ export default function App() {
                   <button
                     type="button"
                     onClick={rotateBackground}
-                    title="Rotește imaginea cu 90° (portret ⇄ peisaj)"
+                    title={m.background_rotate_image_title()}
                     className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
-                    ↻ Rotește 90°
+                    {m.common_rotate_90()}
                   </button>
-                  <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {bgRotation}°</span>
-                  <CheckboxField label="Oglindire X" checked={bgFlipX} onChange={(v) => setBgField('bgFlipX', v)} />
-                  <CheckboxField label="Oglindire Y" checked={bgFlipY} onChange={(v) => setBgField('bgFlipY', v)} />
+                  <span className="text-label text-gray-600 dark:text-gray-400">{m.common_rotation_status({ deg: bgRotation })}</span>
+                  <CheckboxField label={m.common_flip_x()} checked={bgFlipX} onChange={(v) => setBgField('bgFlipX', v)} />
+                  <CheckboxField label={m.common_flip_y()} checked={bgFlipY} onChange={(v) => setBgField('bgFlipY', v)} />
                 </div>
                 {genBgTransparent && (
                   <>
                     <ColorField
-                      label="Culoare zone transparente"
+                      label={m.background_transparent_color_label()}
                       value={genBgBackdropColor}
                       onChange={setGenBgBackdropColor}
                       allowNone
-                      noneLabel="carouri (transparent)"
+                      noneLabel={m.background_transparent_none()}
                       hideWhenNull
                     />
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Culoarea aleasă umple zonele transparente în PDF-ul exportat; „carouri” păstrează transparența.
+                      {m.background_transparent_hint()}
                     </p>
                   </>
                 )}
@@ -3672,24 +3671,24 @@ export default function App() {
             {background && (
               <div className="flex flex-col gap-inner border-t border-gray-200 pt-field dark:border-gray-700">
                 <div className="flex items-center justify-between">
-                  <span className="text-label font-medium text-gray-700 dark:text-gray-300">Poziționare</span>
-                  <CheckboxField label="Mută fundalul" checked={bgNudgeMode} onChange={setBgNudgeMode} />
+                  <span className="text-label font-medium text-gray-700 dark:text-gray-300">{m.background_positioning()}</span>
+                  <CheckboxField label={m.background_nudge_label()} checked={bgNudgeMode} onChange={setBgNudgeMode} />
                 </div>
                 <div className="grid grid-cols-2 gap-field">
-                  <NumberField label="Decalaj X (mm)" value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
-                  <NumberField label="Decalaj Y (mm)" value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
+                  <NumberField label={m.common_offset_x_mm()} value={bgOffsetXMm} onChange={(v) => handleBackgroundOffsetChange(v, bgOffsetYMm)} />
+                  <NumberField label={m.common_offset_y_mm()} value={bgOffsetYMm} onChange={(v) => handleBackgroundOffsetChange(bgOffsetXMm, v)} />
                 </div>
-                <NumberField label="Rotație (grade)" value={bgSpinDeg} onChange={(v) => setBgField('bgSpinDeg', v)} step={1} />
+                <NumberField label={m.common_rotation_deg_label()} value={bgSpinDeg} onChange={(v) => setBgField('bgSpinDeg', v)} step={1} />
                 <ColorField
-                  label="Culoare zone libere"
+                  label={m.background_free_zones_color()}
                   value={bgBackdropColor}
                   onChange={(v) => setBgField('bgBackdropColor', v)}
                   allowNone
-                  noneLabel="transparent"
+                  noneLabel={m.background_free_zones_none()}
                   hideWhenNull
                 />
                 <p className="text-hint text-gray-500 dark:text-gray-400">
-                  Deplasează fundalul în cadrul cardului; zonele rămase libere sunt transparente (sau umplute cu culoarea aleasă mai sus). Activează „Mută fundalul” pentru a trage direct în previzualizare.
+                  {m.background_pan_hint()}
                 </p>
               </div>
             )}
@@ -3697,32 +3696,32 @@ export default function App() {
           )}
 
           {step === 'contur' && (
-          <Section title="Setări" frame="top">
+          <Section title={m.common_settings_title()} frame="top">
             {/* An uploaded SVG is converted to a vector PDF on pick
                 (handleContourFileChange), so ContourSource stays 'upload' | 'shape'. */}
             <RadioGroupField<ContourSource>
-              label="Sursă"
+              label={m.common_source_label()}
               value={contourSource}
               onChange={(v) => {
                 setContourSvgTextWarning(false)
                 handleContourSourceChange(v)
               }}
               options={[
-                { value: 'upload', label: 'Încarcă PDF/SVG/PNG' },
-                { value: 'shape', label: 'Formă presetată' },
+                { value: 'upload', label: m.contour_source_upload() },
+                { value: 'shape', label: m.contour_source_shape() },
               ]}
             />
 
             {contourSource === 'upload' ? (
               <>
                 <RadioGroupField<GenBgImageSource>
-                  label="Sursă fișier"
+                  label={m.contour_file_source_label()}
                   value={contourUploadSource}
                   onChange={(v) => setContourField('contourUploadSource', v)}
                   options={[
-                    { value: 'file', label: 'Fișier local' },
-                    { value: 'url', label: 'URL' },
-                    { value: 'clipboard', label: 'Clipboard' },
+                    { value: 'file', label: m.common_source_file() },
+                    { value: 'url', label: m.common_source_url() },
+                    { value: 'clipboard', label: m.common_source_clipboard() },
                   ]}
                 />
                 {contourUploadSource === 'file' ? (
@@ -3731,7 +3730,7 @@ export default function App() {
                   <div className="flex flex-wrap items-start gap-field">
                     <div className="min-w-0 flex-1">
                       <FileField
-                        label="PDF, SVG, PNG sau JPEG (opțional)"
+                        label={m.contour_file_label()}
                         accept="application/pdf,image/svg+xml,.svg,image/png,image/jpeg,.png,.jpg,.jpeg"
                         onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
                         currentName={contourTraceImage?.name ?? contourBackgroundFile?.name}
@@ -3740,7 +3739,7 @@ export default function App() {
                     {contourPageCount > 1 && (
                       <div className="w-28 shrink-0">
                         <NumberField
-                          label={`Pagina (1–${contourPageCount})`}
+                          label={m.common_page_label({ count: contourPageCount })}
                           value={contourPageNumber}
                           onChange={handleContourPageChange}
                         />
@@ -3751,10 +3750,10 @@ export default function App() {
                   <div className="flex items-end gap-inner">
                     <div className="min-w-0 flex-1">
                       <TextField
-                        label="URL fișier (PDF, SVG, PNG sau JPEG)"
+                        label={m.contour_url_label()}
                         value={contourUploadUrl}
                         onChange={(v) => setContourField('contourUploadUrl', v)}
-                        placeholder="https://exemplu.ro/contur.pdf"
+                        placeholder={m.contour_url_placeholder()}
                       />
                     </div>
                     <button
@@ -3763,7 +3762,7 @@ export default function App() {
                       disabled={contourUrlLoading}
                       className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      Încarcă
+                      {m.common_load()}
                     </button>
                   </div>
                 ) : (
@@ -3791,19 +3790,19 @@ export default function App() {
                       disabled={contourUrlLoading}
                       className="self-start rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                     >
-                      📋 Lipește fișierul
+                      {m.contour_paste_button()}
                     </button>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Apasă butonul, Ctrl+V sau trage un fișier PDF/SVG/PNG/JPEG (sau cod SVG) aici.
+                      {m.contour_paste_hint()}
                     </p>
                   </div>
                 )}
                 {contourUrlLoading && (
-                  <p className="text-label text-gray-500 dark:text-gray-400">Se încarcă…</p>
+                  <p className="text-label text-gray-500 dark:text-gray-400">{m.common_loading()}</p>
                 )}
                 {contourSvgTextWarning && (
                   <p className="text-label text-amber-600 dark:text-amber-400">
-                    Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.
+                    {m.common_svg_text_warning()}
                   </p>
                 )}
                 {contourPageCount > 1 && (
@@ -3812,15 +3811,15 @@ export default function App() {
                         for URL/Clipboard it stays here so those modes keep page selection. */}
                     {contourUploadSource !== 'file' && (
                       <NumberField
-                        label={`Pagina (1–${contourPageCount})`}
+                        label={m.common_page_label({ count: contourPageCount })}
                         value={contourPageNumber}
                         onChange={handleContourPageChange}
                       />
                     )}
                     <p className="text-hint text-gray-500 dark:text-gray-400">
                       {contourPageAutoPicked
-                        ? `Aplicația folosește automat pagina ${contourPageNumber} din ${contourPageCount} (diferită de pagina fundalului).`
-                        : `Aplicația folosește pagina ${contourPageNumber} din ${contourPageCount}.`}
+                        ? m.contour_page_auto_hint({ page: contourPageNumber, count: contourPageCount })
+                        : m.contour_page_hint({ page: contourPageNumber, count: contourPageCount })}
                     </p>
                   </>
                 )}
@@ -3829,14 +3828,13 @@ export default function App() {
                 {contourBackgroundFile && !contourTraceImage && (
                   <>
                     <CheckboxField
-                      label="Dimensiunea conturului (nu a paginii)"
+                      label={m.contour_trim_label()}
                       checked={contourTrimToPath}
                       onChange={handleContourTrimChange}
                     />
                     {contourTrimToPath && (
                       <p className="text-hint text-amber-600 dark:text-amber-500">
-                        Atenție: conturul este redus la conturul desenului, ignorând marginile
-                        goale ale paginii. Aliniați cu grijă decuparea la print.
+                        {m.contour_trim_warning()}
                       </p>
                     )}
                   </>
@@ -3845,16 +3843,16 @@ export default function App() {
                     (alpha border); the two knobs feed computeContourInteriorMaskPath. */}
                 {contourTraceImage && (
                   <div className="flex flex-col gap-inner rounded border border-gray-200 p-field dark:border-gray-700">
-                    <p className="text-label font-medium text-gray-700 dark:text-gray-300">Trasare din imagine</p>
+                    <p className="text-label font-medium text-gray-700 dark:text-gray-300">{m.contour_trace_title()}</p>
                     {contourTraceNoAlpha && (
                       <p className="text-hint text-amber-600 dark:text-amber-500">
-                        Imaginea nu are zone transparente — conturul va fi dreptunghiul imaginii.
+                        {m.contour_trace_no_alpha()}
                       </p>
                     )}
                     <div className="flex flex-wrap items-start gap-field">
                       <div className="w-40 shrink-0">
                         <NumberField
-                          label="Prag transparență (0–255)"
+                          label={m.contour_trace_alpha_label()}
                           value={contourTraceAlpha}
                           onChange={(v) => setContourField('contourTraceAlpha', Math.max(1, Math.min(255, v)))}
                           step={1}
@@ -3864,7 +3862,7 @@ export default function App() {
                       </div>
                       <div className="w-40 shrink-0">
                         <NumberField
-                          label="Netezire contur"
+                          label={m.contour_trace_smooth_label()}
                           value={contourTraceSmooth}
                           onChange={(v) => setContourField('contourTraceSmooth', Math.max(0, Math.min(8, v)))}
                           step={0.25}
@@ -3874,8 +3872,7 @@ export default function App() {
                       </div>
                     </div>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Conturul urmărește pixelii vizibili; zonele transparente interioare devin
-                      goluri. Pentru bleed, folosește „Redesenează (+mm)".
+                      {m.contour_trace_hint()}
                     </p>
                   </div>
                 )}
@@ -3887,16 +3884,16 @@ export default function App() {
                     become direct flex children) and only wrap as a last resort. */}
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                   <SelectField
-                    label="Formă"
+                    label={m.contour_shape_label()}
                     value={shapeKind}
                     options={SHAPE_OPTIONS}
                     onChange={(v) => setContourField('shapeKind', v)}
                   />
                   {shapeKind === 'rounded-rectangle' && (
                     <>
-                      <NumberField label="Raza colțurilor (mm)" value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
+                      <NumberField label={m.contour_corner_radius_label()} value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
                       <SelectField
-                        label="Orientare"
+                        label={m.contour_corner_orientation_label()}
                         value={shapeCornerOrientation}
                         options={CORNER_ORIENTATION_OPTIONS}
                         onChange={(v) => setContourField('shapeCornerOrientation', v)}
@@ -3904,20 +3901,20 @@ export default function App() {
                     </>
                   )}
                   {shapeKind === 'beveled-rectangle' && (
-                    <NumberField label="Teșire colțuri (mm)" value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
+                    <NumberField label={m.contour_bevel_label()} value={shapeCornerRadiusMm} onChange={(v) => setContourField('shapeCornerRadiusMm', v)} />
                   )}
                   {shapeKind === 'polygon' && (
-                    <NumberField label="Număr laturi" value={polygonSides} onChange={(v) => setContourField('polygonSides', v)} min={3} step={1} />
+                    <NumberField label={m.contour_polygon_sides_label()} value={polygonSides} onChange={(v) => setContourField('polygonSides', v)} min={3} step={1} />
                   )}
                   {shapeKind === 'polygon' && (
-                    <CheckboxField label="Stea (vârfuri spre interior)" checked={polygonStar} onChange={(v) => setContourField('polygonStar', v)} />
+                    <CheckboxField label={m.contour_star_label()} checked={polygonStar} onChange={(v) => setContourField('polygonStar', v)} />
                   )}
                 </div>
                 {shapeKind === 'polygon' && polygonStar && (
                   <div className="flex flex-col gap-inner rounded border border-gray-200 p-field dark:border-gray-700">
                     <div className="w-44">
                       <NumberField
-                        label="Adâncime vârfuri (0.05–0.95)"
+                        label={m.contour_star_depth_label()}
                         value={polygonStarInnerRatio > 0 ? polygonStarInnerRatio : starInnerRatio(Math.max(3, Math.round(polygonSides)))}
                         step={0.05}
                         min={0.05}
@@ -3929,20 +3926,20 @@ export default function App() {
                       />
                     </div>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Cât de adânc intră golurile stelei (mai mic = vârfuri mai lungi/ascuțite).
+                      {m.contour_star_depth_hint()}
                     </p>
                     <CheckboxField
-                      label="Redimensionează doar vârfurile"
+                      label={m.contour_star_tips_label()}
                       checked={polygonStarTipsOnly}
                       onChange={setPolygonStarTipsOnly}
                     />
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      La redimensionare mișcă doar vârfurile exterioare; miezul stelei rămâne fix.
+                      {m.contour_star_tips_hint()}
                     </p>
                   </div>
                 )}
                 {!background && (
-                  <p className="text-label text-gray-500 dark:text-gray-400">Încarcă întâi PDF-ul de fundal pentru a genera forma.</p>
+                  <p className="text-label text-gray-500 dark:text-gray-400">{m.contour_need_background()}</p>
                 )}
                 {shapeError && <p className="text-label text-red-600 dark:text-red-400">{shapeError}</p>}
               </>
@@ -3954,15 +3951,15 @@ export default function App() {
                     design-size controls below; it only affects the resulting cut,
                     reported as the "Tăiere finală" line under the Redesenează control. */}
                 <p className="text-label text-gray-500 dark:text-gray-400">
-                  Dimensiune: {(contourBackground.widthPt / MM).toFixed(1)} × {(contourBackground.heightPt / MM).toFixed(1)} mm
+                  {m.contour_size_status({ w: (contourBackground.widthPt / MM).toFixed(1), h: (contourBackground.heightPt / MM).toFixed(1) })}
                 </p>
                 {/* Resize / switch dimensions / rotate apply to both the uploaded
                     contour PDF and the generated preset shape (treated alike). */}
                 {(contourSource === 'upload' || contourSource === 'shape') && (
                   <>
                     <LinkedDimensions
-                      widthLabel="Lățime țintă (mm)"
-                      heightLabel="Înălțime țintă (mm)"
+                      widthLabel={m.common_target_width_mm()}
+                      heightLabel={m.common_target_height_mm()}
                       width={contourTargetWidthMm}
                       height={contourTargetHeightMm}
                       // Editing the target is an explicit resize: stop auto-tracking
@@ -3999,28 +3996,28 @@ export default function App() {
                         mismatch. */}
                     {contourRedrawActive && (
                       <p className="text-hint text-gray-500 dark:text-gray-400">
-                        Dimensiunile de mai sus sunt conturul de bază; redesenarea ({contourRedrawMm > 0 ? '+' : ''}{contourRedrawMm} mm) produce tăierea finală de mai jos.
+                        {m.contour_redraw_base_hint({ offset: `${contourRedrawMm > 0 ? '+' : ''}${contourRedrawMm}` })}
                       </p>
                     )}
                     <div className="flex items-center gap-field">
                       <button
                         type="button"
                         onClick={rotateContour}
-                        title="Rotește conturul cu 90° (portret ⇄ peisaj)"
+                        title={m.contour_rotate_title()}
                         className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       >
-                        ↻ Rotește 90°
+                        {m.common_rotate_90()}
                       </button>
-                      <span className="text-label text-gray-600 dark:text-gray-400">Rotație: {contourRotation}°</span>
+                      <span className="text-label text-gray-600 dark:text-gray-400">{m.common_rotation_status({ deg: contourRotation })}</span>
                     </div>
-                    <NumberField label="Rotație (grade)" value={contourSpinDeg} onChange={(v) => setContourField('contourSpinDeg', v)} step={1} />
+                    <NumberField label={m.common_rotation_deg_label()} value={contourSpinDeg} onChange={(v) => setContourField('contourSpinDeg', v)} step={1} />
                   </>
                 )}
                 {/* "Redesenează": equidistant offset of the cut outline, applied to
                     both sources. Positive grows it outward (bleed), negative shrinks
                     it inward (safety margin). */}
                 <NumberField
-                  label="Redesenează (decalaj mm, + în afară / − în interior)"
+                  label={m.contour_redraw_label()}
                   value={contourRedrawMm}
                   step={0.5}
                   onChange={(v) => setContourField('contourRedrawMm', isFinite(v) ? v : 0)}
@@ -4029,24 +4026,23 @@ export default function App() {
                     Redesenează, shown right under it (emphasised, not a muted hint). */}
                 {contourRedrawActive && (
                   <p className="text-label font-medium text-amber-600 dark:text-amber-400">
-                    → Tăiere finală: {activeContourWidthMm.toFixed(1)} × {activeContourHeightMm.toFixed(1)} mm
+                    {m.contour_final_cut({ w: activeContourWidthMm.toFixed(1), h: activeContourHeightMm.toFixed(1) })}
                   </p>
                 )}
                 <p className="text-hint text-gray-500 dark:text-gray-400">
-                  Decalează întregul contur cu aceeași distanță pe tot conturul (die-line). 0 = neschimbat.
+                  {m.contour_redraw_hint()}
                 </p>
                 {/* Only meaningful for the paths we generate: the traced outline and the
                     Redesenează offset (both can self-intersect). */}
                 {(contourTraceImage || contourRedrawMm !== 0) && (
                   <>
                     <CheckboxField
-                      label="Fără autointersectare"
+                      label={m.contour_no_self_intersect_label()}
                       checked={contourNoSelfIntersect}
                       onChange={(v) => setContourField('contourNoSelfIntersect', v)}
                     />
                     <p className="text-hint text-gray-500 dark:text-gray-400">
-                      Elimină nodurile care fac traseul de tăiere să se autointersecteze
-                      (pentru contur trasat din imagine sau Redesenează).
+                      {m.contour_no_self_intersect_hint()}
                     </p>
                   </>
                 )}
@@ -4054,14 +4050,14 @@ export default function App() {
                   <>
                     <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                       <NumberField
-                        label={`Decalaj X (${contourOffsetMinXMm.toFixed(1)}–${contourOffsetMaxXMm.toFixed(1)} mm)`}
+                        label={m.contour_offset_x_range_label({ min: contourOffsetMinXMm.toFixed(1), max: contourOffsetMaxXMm.toFixed(1) })}
                         value={clampedContourOffsetXMm}
                         // A nudge sets a relative position that's then preserved
                         // proportionally across later resizes (see the effect above).
                         onChange={(v) => setContourField('contourOffsetXMm', Math.min(Math.max(contourOffsetMinXMm, v), contourOffsetMaxXMm))}
                       />
                       <NumberField
-                        label={`Decalaj Y (${contourOffsetMinYMm.toFixed(1)}–${contourOffsetMaxYMm.toFixed(1)} mm)`}
+                        label={m.contour_offset_y_range_label({ min: contourOffsetMinYMm.toFixed(1), max: contourOffsetMaxYMm.toFixed(1) })}
                         value={clampedContourOffsetYMm}
                         onChange={(v) => setContourField('contourOffsetYMm', Math.min(Math.max(contourOffsetMinYMm, v), contourOffsetMaxYMm))}
                       />
@@ -4070,36 +4066,36 @@ export default function App() {
                         axis: the midpoint of [min, max] (0 for a centred full-card
                         shape, (card − contour)/2 for a resized/corner-anchored one). */}
                     <div className="flex flex-wrap items-center gap-field">
-                      <span className="text-label text-gray-600 dark:text-gray-400">Centrează:</span>
+                      <span className="text-label text-gray-600 dark:text-gray-400">{m.contour_center_label()}</span>
                       <button
                         type="button"
                         onClick={() => setContourField('contourOffsetXMm', (contourOffsetMinXMm + contourOffsetMaxXMm) / 2)}
                         disabled={!(contourOffsetMaxXMm > contourOffsetMinXMm)}
-                        title="Centrează conturul pe orizontală"
+                        title={m.contour_center_h_title()}
                         className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       >
-                        ↔ Orizontal
+                        {m.contour_center_h()}
                       </button>
                       <button
                         type="button"
                         onClick={() => setContourField('contourOffsetYMm', (contourOffsetMinYMm + contourOffsetMaxYMm) / 2)}
                         disabled={!(contourOffsetMaxYMm > contourOffsetMinYMm)}
-                        title="Centrează conturul pe verticală"
+                        title={m.contour_center_v_title()}
                         className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                       >
-                        ↕ Vertical
+                        {m.contour_center_v()}
                       </button>
                     </div>
                   </>
                 ) : (
                   <p className="text-label text-gray-500 dark:text-gray-400">
-                    Conturul ocupă tot fundalul — nu există spațiu pentru decalaj. Folosește un contur mai mic decât fundalul.
+                    {m.contour_no_offset_room()}
                   </p>
                 )}
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Transparență (0-1)" value={contourOpacity} onChange={(v) => setContourField('contourOpacity', v)} step={0.1} min={0} max={1} />
+                  <NumberField label={m.common_opacity_label()} value={contourOpacity} onChange={(v) => setContourField('contourOpacity', v)} step={0.1} min={0} max={1} />
                   <SelectField
-                    label="Mod combinare"
+                    label={m.contour_blend_label()}
                     value={contourBlendMode}
                     options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                     onChange={(v) => setContourField('contourBlendMode', v)}
@@ -4108,14 +4104,14 @@ export default function App() {
                 {/* Preview-only aid: dims the background outside the cut so the
                     user sees what the contour keeps. Doesn't change the output. */}
                 <CheckboxField
-                  label="Întunecă exteriorul conturului (doar previzualizare)"
+                  label={m.contour_dim_exterior_label()}
                   checked={dimContourExterior}
                   onChange={(v) => setContourField('dimContourExterior', v)}
                 />
                 {/* Preview-only aid: pulses a highlight outline around the cut-line so
                     it stands out on a busy background. Doesn't change the output. */}
                 <CheckboxField
-                  label="Pulsează conturul (doar previzualizare)"
+                  label={m.contour_pulse_label()}
                   checked={pulseContour}
                   onChange={(v) => setContourField('pulseContour', v)}
                 />
@@ -4127,27 +4123,24 @@ export default function App() {
 
           {step === 'aspect' && (
           <>
-          <Section title="Text exemplu" frame="top">
+          <Section title={m.words_sample_title()} frame="top">
             <TextField
-              label={`Rând CSV exemplu (separator: ${describeSeparator(codeSeparator)})`}
+              label={m.words_sample_label({ separator: describeSeparator(codeSeparator) })}
               value={sampleTextDisplay}
               onChange={(v) => handleSampleTextChange(v, codeSeparator)}
             />
             <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-              <NumberField label="Margine (mm)" value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
-              <NumberField label="Distanțare contur (mm)" value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
+              <NumberField label={m.words_margin_label()} value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
+              <NumberField label={m.words_contour_inset_label()} value={contourInsetMm} onChange={(v) => setStyleField('contourInsetMm', v)} min={0} step={0.5} />
             </div>
             <p className="text-label text-gray-500 dark:text-gray-400">
-              „Distanțare contur” este distanța minimă față de tăietură: e folosită atât pentru
-              verificare (codurile trebuie să stea cel puțin atât de departe de tăietură ca să fie
-              „sigure”), cât și ca margine pentru alinierile „(contur)”. Se aplică doar când
-              folosești un contur de tăiere.
+              {m.words_contour_inset_hint()}
             </p>
             {fontsError && <p className="text-label text-red-600 dark:text-red-400">{fontsError}</p>}
             {fontsNotice && <p className="text-label text-amber-600 dark:text-amber-400">{fontsNotice}</p>}
           </Section>
 
-          <Section title="Setări" frame="top">
+          <Section title={m.common_settings_title()} frame="top">
             <div className="flex flex-wrap gap-inner">
               {words.map((word, index) => (
                 <button
@@ -4160,26 +4153,26 @@ export default function App() {
                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
                   }`}
                 >
-                  {word.text || `Cuvânt ${index + 1}`}
+                  {word.text || m.words_word_n({ n: index + 1 })}
                 </button>
               ))}
             </div>
 
             {selected && selectedIndex !== null && (
               <div className="flex flex-col gap-field border-t border-gray-200 pt-field dark:border-gray-700">
-              <Section title="Tipografie" collapsible>
+              <Section title={m.words_typography_title()} collapsible>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                <NumberField label="Dimensiune font (pt)" value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
-                <NumberField label="Spațiere caractere (pt)" value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
+                <NumberField label={m.words_font_size_label()} value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
+                <NumberField label={m.words_char_spacing_label()} value={selected.charSpacingPt} onChange={(v) => updateWord(selectedIndex, { charSpacingPt: v })} step={0.1} />
                 </div>
                 <div className="w-full">
                   <RadioGroupField<FontSource>
-                    label="Font pentru acest cuvânt"
+                    label={m.words_font_source_label()}
                     value={fontSources[selectedIndex]}
                     onChange={(v) => handleWordFontSourceChange(selectedIndex, v)}
                     options={[
-                      { value: 'google', label: 'Google Font' },
-                      { value: 'custom', label: 'Fișier propriu (.ttf/.otf)' },
+                      { value: 'google', label: m.fonts_google_font_label() },
+                      { value: 'custom', label: m.words_font_custom() },
                     ]}
                   />
                   <div className="mt-inner">
@@ -4193,7 +4186,7 @@ export default function App() {
                       <>
                         <FileField
                           key={selectedIndex}
-                          label="Font pentru acest cuvânt (opțional)"
+                          label={m.words_font_file_label()}
                           accept=".ttf,.otf,font/ttf,font/otf"
                           onChange={(files) => handleWordFontFileChange(selectedIndex, files?.[0] ?? null)}
                         />
@@ -4205,11 +4198,11 @@ export default function App() {
                   </div>
                 </div>
               </Section>
-              <Section title="Poziție" collapsible>
+              <Section title={m.words_position_title()} collapsible>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                 <SelectField<Align | 'custom'>
-                  label="Aliniere orizontală"
-                  warning={selected.xMm !== null && !selected.align.startsWith('contour-') ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
+                  label={m.words_halign_label()}
+                  warning={selected.xMm !== null && !selected.align.startsWith('contour-') ? m.words_overflow_warning() : undefined}
                   value={selected.align.startsWith('contour-') ? selected.align : selected.xMm !== null ? 'custom' : selected.align}
                   onChange={(v) => {
                     if (v === 'custom') {
@@ -4230,22 +4223,22 @@ export default function App() {
                     }
                   }}
                   options={[
-                    { value: 'left', label: 'stânga' },
-                    { value: 'center', label: 'centru' },
-                    { value: 'right', label: 'dreapta' },
+                    { value: 'left', label: m.words_align_left() },
+                    { value: 'center', label: m.words_align_center() },
+                    { value: 'right', label: m.words_align_right() },
                     ...(contourAlignRect || selected.align.startsWith('contour-')
                       ? ([
-                          { value: 'contour-left', label: 'stânga (contur)' },
-                          { value: 'contour-center', label: 'centru (contur)' },
-                          { value: 'contour-right', label: 'dreapta (contur)' },
+                          { value: 'contour-left', label: m.words_align_contour_left() },
+                          { value: 'contour-center', label: m.words_align_contour_center() },
+                          { value: 'contour-right', label: m.words_align_contour_right() },
                         ] as const)
                       : []),
-                    { value: 'custom', label: 'la punct fix' },
+                    { value: 'custom', label: m.words_align_custom() },
                   ]}
                 />
                 <SelectField<VAlign>
-                  label="Aliniere verticală"
-                  warning={selected.valign === 'custom' ? 'Codurile lungi pot ieși în afara fundalului.' : undefined}
+                  label={m.words_valign_label()}
+                  warning={selected.valign === 'custom' ? m.words_overflow_warning() : undefined}
                   value={selected.valign}
                   onChange={(v) =>
                     updateWord(selectedIndex, {
@@ -4264,30 +4257,30 @@ export default function App() {
                     })
                   }
                   options={[
-                    { value: 'top', label: 'sus' },
-                    { value: 'middle', label: 'mijloc' },
-                    { value: 'bottom', label: 'jos' },
+                    { value: 'top', label: m.words_valign_top() },
+                    { value: 'middle', label: m.words_valign_middle() },
+                    { value: 'bottom', label: m.words_valign_bottom() },
                     ...(contourAlignRect || selected.valign.startsWith('contour-')
                       ? ([
-                          { value: 'contour-top', label: 'sus (contur)' },
-                          { value: 'contour-middle', label: 'mijloc (contur)' },
-                          { value: 'contour-bottom', label: 'jos (contur)' },
+                          { value: 'contour-top', label: m.words_valign_contour_top() },
+                          { value: 'contour-middle', label: m.words_valign_contour_middle() },
+                          { value: 'contour-bottom', label: m.words_valign_contour_bottom() },
                         ] as const)
                       : []),
-                    { value: 'custom', label: 'la punct fix' },
+                    { value: 'custom', label: m.words_align_custom() },
                   ]}
                 />
-                <NumberField label="Y (mm)" value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v, valign: 'custom' })} />
+                <NumberField label={m.words_y_label()} value={selected.yMm} onChange={(v) => updateWord(selectedIndex, { yMm: v, valign: 'custom' })} />
                 <NumberField
-                  label="X (mm, gol = automat după aliniere)"
+                  label={m.words_x_label()}
                   value={selected.xMm ?? NaN}
                   onChange={(v) => updateWord(selectedIndex, { xMm: Number.isNaN(v) ? null : v })}
                 />
                 </div>
               </Section>
-              <Section title="Stil" collapsible defaultCollapsed>
+              <Section title={m.words_style_title()} collapsible defaultCollapsed>
                 <ColorField
-                  label="Culoare text"
+                  label={m.words_text_color_label()}
                   value={selected.color}
                   onChange={(v) => {
                     setStyleField('autoTextColor', false)
@@ -4299,7 +4292,7 @@ export default function App() {
                     a last resort when the column is too narrow. */}
                 <div className="flex flex-wrap gap-field [&>*]:min-w-24 [&>*]:flex-1">
                   <NumberField
-                    label="Opacitate (0-1)"
+                    label={m.words_opacity_label()}
                     value={selected.opacity}
                     onChange={(v) => updateWord(selectedIndex, { opacity: v })}
                     step={0.1}
@@ -4307,21 +4300,21 @@ export default function App() {
                     max={1}
                   />
                   <SelectField
-                    label="Mod îmbinare text"
+                    label={m.words_text_blend_label()}
                     value={selected.blendMode}
                     options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                     onChange={(v) => updateWord(selectedIndex, { blendMode: v })}
                   />
-                  <NumberField label="Rotație (grade)" value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
+                  <NumberField label={m.common_rotation_deg_label()} value={selected.rotationDeg} onChange={(v) => updateWord(selectedIndex, { rotationDeg: v })} />
                 </div>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                  <CheckboxField label="Oglindire X" checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
-                  <CheckboxField label="Oglindire Y" checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />
+                  <CheckboxField label={m.common_flip_x()} checked={selected.flipX} onChange={(v) => updateWord(selectedIndex, { flipX: v })} />
+                  <CheckboxField label={m.common_flip_y()} checked={selected.flipY} onChange={(v) => updateWord(selectedIndex, { flipY: v })} />
                 </div>
               </Section>
-              <Section title="Fundal text" collapsible defaultCollapsed>
+              <Section title={m.words_bg_title()} collapsible defaultCollapsed>
                 <ColorField
-                  label="Fundal text"
+                  label={m.words_bg_title()}
                   value={selected.background}
                   allowNone
                   onChange={(v) => updateWord(selectedIndex, { background: v })}
@@ -4331,7 +4324,7 @@ export default function App() {
                     always so it's discoverable, though it only has effect once a background
                     color is set. */}
                 <div className="w-44">
-                  <NumberField label="Padding (mm)" value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
+                  <NumberField label={m.words_bg_padding_label()} value={backgroundPaddingMm} onChange={(v) => setStyleField('backgroundPaddingMm', v)} />
                 </div>
                 {selected.background !== null && (
                   // Width, transparency and blend mode are tightly related: a small
@@ -4339,17 +4332,17 @@ export default function App() {
                   // a last resort when the column is too narrow.
                   <div className="flex flex-wrap gap-field [&>*]:min-w-24 [&>*]:flex-1">
                     <NumberField
-                      label="Lățime (mm, gol = automat)"
+                      label={m.words_bg_width_label()}
                       value={selected.backgroundWidthMm ?? NaN}
                       onChange={(v) => updateWord(selectedIndex, { backgroundWidthMm: Number.isNaN(v) ? null : v })}
                     />
-                    <NumberField label="Transparență (0-1)" value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} step={0.1} min={0} max={1} />
+                    <NumberField label={m.common_opacity_label()} value={selected.backgroundAlpha} onChange={(v) => updateWord(selectedIndex, { backgroundAlpha: v })} step={0.1} min={0} max={1} />
                     {/* Blend-mode select hugs its content (min-content) instead of
                         stretching, so the two number fields take the extra width.
                         `!` overrides the row's `[&>*]:flex-1 [&>*]:min-w-24`. */}
                     <div className="w-min !min-w-0 !flex-none">
                       <SelectField
-                        label="Mod îmbinare"
+                        label={m.words_bg_blend_label()}
                         value={selected.backgroundBlendMode}
                         options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                         onChange={(v) => updateWord(selectedIndex, { backgroundBlendMode: v })}
@@ -4358,19 +4351,19 @@ export default function App() {
                   </div>
                 )}
               </Section>
-              <Section title="Contur text" collapsible defaultCollapsed>
+              <Section title={m.words_outline_title()} collapsible defaultCollapsed>
                 <ColorField
-                  label="Contur text"
+                  label={m.words_outline_title()}
                   value={selected.contourColor}
                   allowNone
-                  noneLabel="fără contur"
+                  noneLabel={m.words_outline_none()}
                   onChange={(v) => updateWord(selectedIndex, { contourColor: v })}
                 />
                 {selected.contourColor !== null && (
                   <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                    <NumberField label="Lățime contur (mm)" value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
+                    <NumberField label={m.words_outline_width_label()} value={selected.contourWidthMm} onChange={(v) => updateWord(selectedIndex, { contourWidthMm: v })} />
                     <SelectField
-                      label="Mod îmbinare contur"
+                      label={m.words_outline_blend_label()}
                       value={selected.contourBlendMode}
                       options={BLEND_MODES.map((mode) => ({ value: mode, label: mode }))}
                       onChange={(v) => updateWord(selectedIndex, { contourBlendMode: v })}
@@ -4417,187 +4410,176 @@ export default function App() {
           {step === 'generare' && (
           <>
           {!generateUnlocked && (
-            <Section title="Cere ofertă">
+            <Section title={m.quote_title()}>
               <p className="text-label text-gray-600 dark:text-gray-400">
-                Descarcă fișierul cu setările tale (inclusiv fundalurile și fonturile folosite), apoi trimite-ni-l pe
-                email pentru o ofertă personalizată.
+                {m.quote_hint()}
               </p>
               <button
                 type="button"
                 onClick={() => void handleRequestQuote()}
                 className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
               >
-                Descarcă setările pentru ofertă (.zip)
+                {m.quote_download_button()}
               </button>
               {quoteError && <p className="text-label text-red-600 dark:text-red-400">{quoteError}</p>}
               <p className="text-label text-gray-600 dark:text-gray-400">
-                După descărcare,{' '}
+                {m.quote_after_download_before()}{' '}
                 <a
-                  href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent('Cerere ofertă')}&body=${encodeURIComponent(
-                    'Bună,\n\nAș dori o ofertă pentru proiectul meu. Am atașat fișierul .zip cu setările descărcat din aplicatia de printare coduri si decupare pe contur.\n\n' +
-                      'Trebuie să vă trimit și un fișier cu codurile, sau sa va spun cum să fie generate.\n\nMulțumesc!',
-                  )}`}
+                  href={`mailto:braila.gabriel@gmail.com?subject=${encodeURIComponent(m.quote_email_subject())}&body=${encodeURIComponent(m.quote_email_body())}`}
                   className="text-blue-600 underline hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
                 >
-                  trimite-ne un email
+                  {m.quote_email_link()}
                 </a>{' '}
-                și atașează fișierul descărcat.
+                {m.quote_after_download_after()}
               </p>
             </Section>
           )}
 
-          <Section title="Setări" frame="top">
+          <Section title={m.common_settings_title()} frame="top">
             {!generateUnlocked ? (
               <>
-                <TextField label="Parolă" type="password" value={passwordInput} onChange={setPasswordInput} />
+                <TextField label={m.generate_password_label()} type="password" value={passwordInput} onChange={setPasswordInput} />
                 <button
                   type="button"
                   onClick={handleUnlock}
                   className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600"
                 >
-                  Deblochează
+                  {m.generate_unlock()}
                 </button>
                 {passwordError && <p className="text-label text-red-600 dark:text-red-400">{passwordError}</p>}
               </>
             ) : (
               <>
             <RadioGroupField<Mode>
-              label="Ce se generează"
+              label={m.generate_what_label()}
               value={mode}
               onChange={setMode}
               options={[
-                { value: 'print', label: 'Print', description: 'Generează PDF-ul de print folosind fundalul.' },
-                { value: 'contour', label: 'Contur', description: 'Generează PDF-ul cu linii de tăiere folosind fundalul de contur.' },
-                { value: 'both', label: 'Print + Contur', description: 'Generează ambele PDF-uri.' },
+                { value: 'print', label: m.generate_mode_print(), description: m.generate_mode_print_desc() },
+                { value: 'contour', label: m.generate_mode_contour(), description: m.generate_mode_contour_desc() },
+                { value: 'both', label: m.generate_mode_both(), description: m.generate_mode_both_desc() },
               ]}
             />
 
             {/* No-cut mode skips imposition, so the host-sheet/circle fields are ignored. */}
             {!pageOptions.noCut && (
               <>
-                <p className="text-label font-medium text-gray-700 dark:text-gray-300">Aspect pagină</p>
+                <p className="text-label font-medium text-gray-700 dark:text-gray-300">{m.generate_page_layout()}</p>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Lățime pagină (mm)" value={pageOptions.hostWidthMm} onChange={(v) => setPageOption('hostWidthMm', v)} />
-                  <NumberField label="Înălțime pagină (mm)" value={pageOptions.hostHeightMm} onChange={(v) => setPageOption('hostHeightMm', v)} />
-                  <NumberField label="Decalaj X (mm)" value={pageOptions.offsetXMm} onChange={(v) => setPageOption('offsetXMm', Math.max(0, v))} />
-                  <NumberField label="Decalaj Y (mm)" value={pageOptions.offsetYMm} onChange={(v) => setPageOption('offsetYMm', Math.max(0, v))} />
-                  <NumberField label="Diametru cerc (mm)" value={pageOptions.circleDiameterMm} onChange={(v) => setPageOption('circleDiameterMm', v)} />
+                  <NumberField label={m.generate_page_width()} value={pageOptions.hostWidthMm} onChange={(v) => setPageOption('hostWidthMm', v)} />
+                  <NumberField label={m.generate_page_height()} value={pageOptions.hostHeightMm} onChange={(v) => setPageOption('hostHeightMm', v)} />
+                  <NumberField label={m.common_offset_x_mm()} value={pageOptions.offsetXMm} onChange={(v) => setPageOption('offsetXMm', Math.max(0, v))} />
+                  <NumberField label={m.common_offset_y_mm()} value={pageOptions.offsetYMm} onChange={(v) => setPageOption('offsetYMm', Math.max(0, v))} />
+                  <NumberField label={m.generate_circle_diameter()} value={pageOptions.circleDiameterMm} onChange={(v) => setPageOption('circleDiameterMm', v)} />
                 </div>
               </>
             )}
 
-            <p className="text-label font-medium text-gray-700 dark:text-gray-300">Opțiuni</p>
+            <p className="text-label font-medium text-gray-700 dark:text-gray-300">{m.generate_options()}</p>
             <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
               <CheckboxField
-                label="Non-decupare"
+                label={m.generate_no_cut()}
                 checked={pageOptions.noCut}
                 onChange={(v) => setPageOption('noCut', v)}
               />
               {/* "Combină paginile" overlays the contour onto the print pages, so it's
                   meaningless without a print output (Contur mode) and in no-cut mode. */}
               {needsPrintInput && !pageOptions.noCut && (
-                <CheckboxField label="Combină paginile" checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
+                <CheckboxField label={m.generate_combine()} checked={pageOptions.combine} onChange={(v) => setPageOption('combine', v)} />
               )}
               {/* "Nu printa codurile" renders the print PDF without code text (same
                   imposition, backgrounds only), so it needs a print output. */}
               {needsPrintInput && (
-                <CheckboxField label="Nu printa codurile" checked={pageOptions.noCodes} onChange={(v) => setPageOption('noCodes', v)} />
+                <CheckboxField label={m.generate_no_codes()} checked={pageOptions.noCodes} onChange={(v) => setPageOption('noCodes', v)} />
               )}
               {/* "Minimal" crops the generated page down to the contour box (needs a contour). */}
-              <CheckboxField label="Minimal" checked={pageOptions.minimal} onChange={(v) => setPageOption('minimal', v)} />
+              <CheckboxField label={m.generate_minimal()} checked={pageOptions.minimal} onChange={(v) => setPageOption('minimal', v)} />
               {/* "Contur Dreptunghi" emits plain rectangles instead of the optimized grid
                   lines — only for a rectangle contour in a contour-producing mode. */}
               {needsContourInput && contourSource === 'shape' && shapeKind === 'rectangle' && (
-                <CheckboxField label="Contur Dreptunghi" checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
+                <CheckboxField label={m.generate_rectangle_contour()} checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
               )}
               {/* "Corectare depășire" shrinks overflowing code text in the print
                   output, so it needs a print output (like "Nu printa codurile"). */}
               {needsPrintInput && (
                 <CheckboxField
-                  label="Corectare depășire"
+                  label={m.generate_correct_overflow()}
                   checked={correctOverflow}
                   onChange={(v) => setStyleField('correctOverflow', v)}
                 />
               )}
-              <CheckboxField label="Contururi de depanare" checked={pageOptions.debug} onChange={(v) => setPageOption('debug', v)} />
+              <CheckboxField label={m.generate_debug()} checked={pageOptions.debug} onChange={(v) => setPageOption('debug', v)} />
               {needsContourInput && (
-                <CheckboxField label="Măsoară traseele de tăiere" checked={pageOptions.measurePaths} onChange={(v) => setPageOption('measurePaths', v)} />
+                <CheckboxField label={m.generate_measure_paths()} checked={pageOptions.measurePaths} onChange={(v) => setPageOption('measurePaths', v)} />
               )}
             </div>
             {needsPrintInput && correctOverflow && (
               <div className="-mt-tight flex flex-col gap-inner border-l-2 border-gray-200 pl-3 dark:border-gray-700">
                 <p className="text-label text-gray-500 dark:text-gray-400">
-                  Codurile care depășesc conturul (sau cardul) sunt micșorate automat până încap, dar nu sub
-                  dimensiunea minimă. Cele care tot nu încap rămân semnalate.
+                  {m.generate_overflow_hint()}
                 </p>
                 <NumberField
-                  label="Font minim (pt)"
+                  label={m.generate_min_font()}
                   value={minFontSizePt}
                   onChange={(v) => setStyleField('minFontSizePt', v)}
                   min={1}
                   step={0.5}
                 />
                 <RadioGroupField<'per-code' | 'column'>
-                  label="Aplică micșorarea"
+                  label={m.generate_shrink_apply()}
                   value={overflowCorrectionMode}
                   onChange={(v) => setStyleField('overflowCorrectionMode', v)}
                   options={[
-                    { value: 'per-code', label: 'Pe cod' },
-                    { value: 'column', label: 'Pe coloană' },
+                    { value: 'per-code', label: m.generate_shrink_per_code() },
+                    { value: 'column', label: m.generate_shrink_per_column() },
                   ]}
                 />
               </div>
             )}
             {pageOptions.noCut && (
               <p className="text-label text-gray-600 dark:text-gray-400">
-                Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.
+                {m.generate_no_cut_hint()}
               </p>
             )}
 
             {bgExceedsSheet && (
               <p className="text-label text-amber-600 dark:text-amber-400">
-                ⚠ Fundalul ({effectiveCardWidthMm.toFixed(1)} × {effectiveCardHeightMm.toFixed(1)} mm) nu încape în
-                pagina ({pageOptions.hostWidthMm.toFixed(1)} × {pageOptions.hostHeightMm.toFixed(1)} mm). Mărește pagina
-                sau micșorează cardul.
+                {m.generate_bg_exceeds({ bgW: effectiveCardWidthMm.toFixed(1), bgH: effectiveCardHeightMm.toFixed(1), pageW: pageOptions.hostWidthMm.toFixed(1), pageH: pageOptions.hostHeightMm.toFixed(1) })}
               </p>
             )}
 
             {cutExceedsSheet && (
               <p className="text-label text-amber-600 dark:text-amber-400">
-                ⚠ Conturul ({contourFitWidthMm.toFixed(1)} × {contourFitHeightMm.toFixed(1)} mm) nu încape în zona de
-                tăiere a paginii ({Math.max(0, cuttableWidthMm).toFixed(1)} × {Math.max(0, cuttableHeightMm).toFixed(1)}{' '}
-                mm = pagina minus cercurile de reglaj). Mărește pagina, micșorează diametrul cercurilor sau conturul.
+                {m.generate_cut_exceeds({ w: contourFitWidthMm.toFixed(1), h: contourFitHeightMm.toFixed(1), cw: Math.max(0, cuttableWidthMm).toFixed(1), ch: Math.max(0, cuttableHeightMm).toFixed(1) })}
               </p>
             )}
 
             {contourCappedToFit && (
               <p className="text-label text-amber-600 dark:text-amber-400">
-                ⚠ Conturul a fost redus ca să încapă în fundal ({effectiveCardWidthMm.toFixed(1)} ×{' '}
-                {effectiveCardHeightMm.toFixed(1)} mm): {Math.abs(cappedContourSpinDeg - contourSpinDeg) > 1e-3
-                  ? `rotația a fost limitată la ${cappedContourSpinDeg.toFixed(0)}° (din ${contourSpinDeg.toFixed(0)}°)`
-                  : 'dimensiunea a fost micșorată'}
-                . Micșorează conturul sau rotația ca să folosești valoarea dorită.
+                {m.generate_contour_capped({
+                  bgW: effectiveCardWidthMm.toFixed(1),
+                  bgH: effectiveCardHeightMm.toFixed(1),
+                  reason: Math.abs(cappedContourSpinDeg - contourSpinDeg) > 1e-3
+                    ? m.generate_capped_spin({ capped: cappedContourSpinDeg.toFixed(0), requested: contourSpinDeg.toFixed(0) })
+                    : m.generate_capped_size(),
+                })}
               </p>
             )}
 
             {cutGapTooSmall && (
               <p className="text-label text-amber-600 dark:text-amber-400">
-                ⚠ Decalaj X/Y ({pageOptions.offsetXMm.toFixed(1)} × {pageOptions.offsetYMm.toFixed(1)} mm) este prea
-                mic pentru acest contur. Doar un contur dreptunghiular simplu poate avea decalaj 0 (cardurile
-                împart aceeași linie de tăiere). Pentru celelalte forme sau pentru un contur încărcat, un decalaj
-                sub 1,0 mm face ca tăierile vecine să se suprapună — cutter-ul taie de două ori aceeași zonă la
-                dublă tăiere și materialul se poate deteriora. Mărește Decalaj X și Y la cel puțin 1,0 mm.
+                {m.generate_gap_too_small({ x: pageOptions.offsetXMm.toFixed(1), y: pageOptions.offsetYMm.toFixed(1) })}
               </p>
             )}
 
             {needsContourInput && pageOptions.measurePaths && (
               <>
-                <p className="text-label font-medium text-gray-700 dark:text-gray-300">Timp de tăiere</p>
+                <p className="text-label font-medium text-gray-700 dark:text-gray-300">{m.generate_cutting_time()}</p>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField label="Viteză de tăiere (mm/s)" value={pageOptions.cuttingSpeedMmS} onChange={(v) => setPageOption('cuttingSpeedMmS', v)} />
-                  <NumberField label="Penalizare colț (s)" value={pageOptions.cornerPenaltyS} onChange={(v) => setPageOption('cornerPenaltyS', v)} />
-                  <NumberField label="Timp pregătire (s)" value={pageOptions.preparationTimeS} onChange={(v) => setPageOption('preparationTimeS', v)} />
-                  <NumberField label="Viteză deplasare (mm/s)" value={pageOptions.travelSpeedMmS} onChange={(v) => setPageOption('travelSpeedMmS', v)} />
+                  <NumberField label={m.generate_cutting_speed()} value={pageOptions.cuttingSpeedMmS} onChange={(v) => setPageOption('cuttingSpeedMmS', v)} />
+                  <NumberField label={m.generate_corner_penalty()} value={pageOptions.cornerPenaltyS} onChange={(v) => setPageOption('cornerPenaltyS', v)} />
+                  <NumberField label={m.generate_prep_time()} value={pageOptions.preparationTimeS} onChange={(v) => setPageOption('preparationTimeS', v)} />
+                  <NumberField label={m.generate_travel_speed()} value={pageOptions.travelSpeedMmS} onChange={(v) => setPageOption('travelSpeedMmS', v)} />
                 </div>
               </>
             )}
@@ -4609,14 +4591,18 @@ export default function App() {
                   onClick={() => cancelGenRef.current?.()}
                   className="self-start rounded-lg border border-gray-300 px-3 py-2 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                 >
-                  Anulează
+                  {m.common_cancel()}
                 </button>
                 <span className="text-label text-gray-600 dark:text-gray-400">
                   {genProgress
-                    ? `${genProgress.phase === 'contour' ? 'Contur' : 'Print'}: ${genProgress.rowsDone.toLocaleString('ro-RO')}${
-                        genProgress.totalRows ? ` / ${genProgress.totalRows.toLocaleString('ro-RO')}` : ''
-                      } rânduri · ${genProgress.batchesDone} loturi · ${Math.round(genProgress.wasmBytes / 1048576)} MB`
-                    : 'Se generează…'}
+                    ? m.generate_progress({
+                        phase: genProgress.phase === 'contour' ? m.generate_phase_contour() : m.generate_phase_print(),
+                        done: formatNumber(genProgress.rowsDone),
+                        total: genProgress.totalRows ? ` / ${formatNumber(genProgress.totalRows)}` : '',
+                        batches: genProgress.batchesDone,
+                        mb: Math.round(genProgress.wasmBytes / 1048576),
+                      })
+                    : m.generate_in_progress()}
                 </span>
               </div>
             ) : (
@@ -4627,16 +4613,16 @@ export default function App() {
                   disabled={sampleLoading}
                   className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
                 >
-                  Generează PDF
+                  {m.generate_pdf_button()}
                 </button>
                 <button
                   type="button"
                   onClick={handleGenerateSample}
                   disabled={sampleLoading}
-                  title="Generează un singur card cu conturul deasupra — o probă rapidă, fără tot lotul."
+                  title={m.generate_sample_title()}
                   className="self-start rounded-lg border border-gray-300 px-4 py-2 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                 >
-                  {sampleLoading ? 'Se generează mostra…' : 'Generează o mostră (un card)'}
+                  {sampleLoading ? m.generate_sample_busy() : m.generate_sample_button()}
                 </button>
               </div>
             )}
@@ -4670,17 +4656,17 @@ export default function App() {
         </div>
 
         <div className="flex flex-col gap-block">
-          <Section title="Previzualizare">
+          <Section title={m.preview_title()}>
             {background ? (
               <>
                 <div className="flex items-center gap-inner">
-                  <span className="text-label text-gray-600 dark:text-gray-400">Zoom:</span>
+                  <span className="text-label text-gray-600 dark:text-gray-400">{m.preview_zoom_label()}</span>
                   <button
                     type="button"
                     onClick={zoomOutPreview}
                     disabled={previewZoom <= PREVIEW_ZOOM_MIN}
-                    aria-label="Micșorează previzualizarea"
-                    title="Micșorează"
+                    aria-label={m.preview_zoom_out_aria()}
+                    title={m.preview_zoom_out_title()}
                     className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     −
@@ -4688,8 +4674,8 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setPreviewZoom(1)}
-                    aria-label="Resetează zoom la 100%"
-                    title="Resetează la 100%"
+                    aria-label={m.preview_zoom_reset_aria()}
+                    title={m.preview_zoom_reset_title()}
                     className="min-w-14 rounded border border-gray-300 px-2 py-1 text-label font-medium tabular-nums text-gray-700 transition hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     {Math.round(previewZoom * 100)}%
@@ -4698,15 +4684,15 @@ export default function App() {
                     type="button"
                     onClick={zoomInPreview}
                     disabled={previewZoom >= PREVIEW_ZOOM_MAX}
-                    aria-label="Mărește previzualizarea"
-                    title="Mărește"
+                    aria-label={m.preview_zoom_in_aria()}
+                    title={m.preview_zoom_in_title()}
                     className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
                     +
                   </button>
                   <label
                     className="ml-auto flex cursor-pointer items-center gap-tight text-label text-gray-700 dark:text-gray-300"
-                    title="Captura descarcă un fișier în loc să copieze în clipboard"
+                    title={m.preview_download_title()}
                   >
                     <input
                       type="checkbox"
@@ -4714,11 +4700,11 @@ export default function App() {
                       onChange={(e) => setCaptureDownload(e.target.checked)}
                       className="h-4 w-4 cursor-pointer rounded border-gray-300 dark:border-gray-600 dark:bg-gray-800"
                     />
-                    <span className="font-medium">Descarcă</span>
+                    <span className="font-medium">{m.preview_download_label()}</span>
                   </label>
                   <label
                     className={`flex items-center gap-tight text-label ${hasContour ? 'cursor-pointer text-gray-700 dark:text-gray-300' : 'cursor-not-allowed text-gray-400 dark:text-gray-600'}`}
-                    title="Captura decupează doar imprimarea și codurile din interiorul conturului, ca PNG transparent"
+                    title={m.preview_cutout_title()}
                   >
                     <input
                       type="checkbox"
@@ -4727,24 +4713,24 @@ export default function App() {
                       onChange={(e) => setContourCutout(e.target.checked)}
                       className="h-4 w-4 cursor-pointer rounded border-gray-300 disabled:cursor-not-allowed dark:border-gray-600 dark:bg-gray-800"
                     />
-                    <span className="font-medium">Conturat</span>
+                    <span className="font-medium">{m.preview_cutout_label()}</span>
                   </label>
                   <button
                     type="button"
                     onClick={handleScreenshot}
                     disabled={screenshotStatus === 'busy'}
-                    aria-label="Captură de ecran a previzualizării (copiază în clipboard)"
-                    title="Captură de ecran (copiază în clipboard)"
+                    aria-label={m.preview_screenshot_aria()}
+                    title={m.preview_screenshot_title()}
                     className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
                   >
-                    📷 Captură
+                    {m.preview_screenshot_button()}
                   </button>
                   {screenshotStatus !== 'idle' && screenshotStatus !== 'busy' && (
                     <span
                       className={`text-hint ${screenshotStatus === 'error' ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}`}
                       role="status"
                     >
-                      {screenshotStatus === 'copied' ? 'Copiat!' : screenshotStatus === 'downloaded' ? 'Descărcat' : 'Eroare'}
+                      {screenshotStatus === 'copied' ? m.preview_copied() : screenshotStatus === 'downloaded' ? m.preview_downloaded() : m.preview_error()}
                     </span>
                   )}
                 </div>
@@ -4795,35 +4781,35 @@ export default function App() {
                 </div>
                 {colorSamplingActive && (
                   <p className="text-center text-hint text-blue-600 dark:text-blue-400">
-                    Click pe previzualizare pentru a alege culoarea · Esc pentru anulare
+                    {m.preview_sampling_hint()}
                   </p>
                 )}
               </>
             ) : (
-              <p className="text-label text-gray-500 dark:text-gray-400">Încarcă un PDF de fundal pentru a vedea previzualizarea.</p>
+              <p className="text-label text-gray-500 dark:text-gray-400">{m.preview_need_background()}</p>
             )}
           </Section>
 
           {(printArtifact || contourResult || sampleArtifact) && (
-            <Section title="Rezultat">
+            <Section title={m.result_title()}>
               {sampleArtifact && (
                 <FileDownload
-                  title="Mostră (un card)"
+                  title={m.result_sample_title()}
                   blob={sampleArtifact.blob}
                   name="mostra.pdf"
-                  note="Probă cu un singur card — conturul este suprapus ca strat vizibil pe ecran (neimprimabil)."
+                  note={m.result_sample_note()}
                 />
               )}
               {printArtifact && (
                 <FileDownload
-                  title="Print"
+                  title={m.result_print_title()}
                   blob={printArtifact.blob}
                   name={printArtifact.name}
                   isZip={printArtifact.isZip}
                   note={
                     printArtifact.isZip
-                      ? 'Generat în loturi — arhivă ZIP cu mai multe PDF-uri (previzualizarea arată primul PDF).' +
-                        (printArtifact.sink === 'opfs' ? ' Arhivă mare — scrisă pe disc pentru a economisi memoria.' : '')
+                      ? m.result_zip_note() +
+                        (printArtifact.sink === 'opfs' ? ` ${m.result_zip_opfs_note()}` : '')
                       : undefined
                   }
                 />
@@ -4831,14 +4817,12 @@ export default function App() {
               {printArtifact && printArtifact.overflowCount > 0 && (
                 <div className="mt-inner flex flex-col gap-tight">
                   <p className="text-label text-amber-600 dark:text-amber-400">
-                    ⚠ {printArtifact.overflowCount}{' '}
-                    {printArtifact.overflowCount === 1
-                      ? 'rând conține un cod care depășește'
-                      : 'rânduri conțin coduri care depășesc'}{' '}
-                    zona de tăiere sau spațiul cardului
-                    {printArtifact.overflowSamples.length > 0 &&
-                      ` (ex: ${printArtifact.overflowSamples.slice(0, 5).join(' | ')}${printArtifact.overflowSamples.length > 5 ? '…' : ''})`}.
-                    {' '}Micșorați fontul, scurtați codul sau măriți cardul.
+                    {m.result_overflow({
+                      count: printArtifact.overflowCount,
+                      samples: printArtifact.overflowSamples.length > 0
+                        ? ` ${m.result_overflow_examples({ list: printArtifact.overflowSamples.slice(0, 5).join(' | ') + (printArtifact.overflowSamples.length > 5 ? '…' : '') })}`
+                        : '',
+                    })}
                   </p>
                   {printArtifact.overflowSamples.length > 0 && (
                     <button
@@ -4846,12 +4830,12 @@ export default function App() {
                       onClick={() => downloadOverflowCsv(printArtifact.overflowSamples)}
                       className="self-start text-label font-medium text-blue-600 hover:underline dark:text-blue-400"
                     >
-                      Descarcă depășirile ({printArtifact.overflowSamples.length}, .csv)
+                      {m.result_download_overflows({ count: printArtifact.overflowSamples.length })}
                     </button>
                   )}
                 </div>
               )}
-              {contourResult && <ResultPanel title="Contur" result={contourResult} downloadName="contur.pdf" />}
+              {contourResult && <ResultPanel title={m.result_contour_title()} result={contourResult} downloadName="contur.pdf" />}
               {mode === 'both' && printArtifact && contourResult && (
                 <DownloadBothButton
                   print={{ blob: printArtifact.blob, name: printArtifact.name, isZip: printArtifact.isZip }}

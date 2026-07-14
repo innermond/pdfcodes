@@ -5,6 +5,8 @@
 // backdrop options into the SVG text itself (the raster path bakes the same
 // options into the image PDF, so preview and output stay identical either way).
 
+import { m } from '../paraglide/messages'
+
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
 // An SVG file input, by MIME type or (when the OS didn't map the extension,
@@ -132,7 +134,7 @@ export function prepareSvgForBackground(
 function parseSvg(svgText: string): Document {
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml')
   if (doc.getElementsByTagName('parsererror').length > 0 || doc.documentElement.localName !== 'svg') {
-    throw new Error('Fișierul nu este un SVG valid.')
+    throw new Error(m.errors_svg_invalid())
   }
   return doc
 }

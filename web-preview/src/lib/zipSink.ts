@@ -7,6 +7,9 @@
 // RAM nor OPFS can hold the estimated archive, `createZipSink` throws
 // ZipTooLargeError so the caller can surface a clear message.
 
+import { m } from '../paraglide/messages'
+import { formatNumber } from './formatNumber'
+
 // `navigator.deviceMemory` (approximate device RAM in GB) isn't in the current
 // lib typings; OPFS sync-access types already are. Augment only what's missing.
 declare global {
@@ -33,10 +36,7 @@ export class ZipTooLargeError extends Error {
   readonly estimateBytes: number
   constructor(estimateBytes: number) {
     const mb = Math.round(estimateBytes / (1024 * 1024))
-    super(
-      `Arhiva ZIP estimată (~${mb.toLocaleString('ro-RO')} MB) depășește memoria disponibilă a acestui browser. ` +
-        'Reduceți numărul de rânduri (sau cardurile pe pagină) ori folosiți un browser Chromium, care permite scrierea pe disc.',
-    )
+    super(m.errors_zip_too_large({ mb: formatNumber(mb) }))
     this.name = 'ZipTooLargeError'
     this.estimateBytes = estimateBytes
   }

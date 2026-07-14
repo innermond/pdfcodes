@@ -1,5 +1,6 @@
 import { createContext } from 'react'
 import { formatCmyk, rgbToCmykPrint } from './cmyk'
+import { m } from '../paraglide/messages'
 
 // Provided by App: arms an eyedropper over the live preview and resolves to a
 // stored "c:m:y:k" color, or null if the user cancels (Esc / clicks off the
@@ -26,7 +27,7 @@ export function imageUrlToCanvas(url: string): Promise<HTMLCanvasElement> {
       ctx.drawImage(img, 0, 0)
       resolve(canvas)
     }
-    img.onerror = () => reject(new Error('Imaginea fundalului nu a putut fi încărcată'))
+    img.onerror = () => reject(new Error(m.errors_background_image_load()))
     img.src = url
   })
 }

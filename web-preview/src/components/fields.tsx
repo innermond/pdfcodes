@@ -1,6 +1,7 @@
 import { useContext, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type SyntheticEvent as ReactSyntheticEvent } from 'react'
 import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, squareToCmyk, type Cmyk } from '../lib/cmyk'
 import { ColorSampleContext } from '../lib/colorSample'
+import { m } from '../paraglide/messages'
 
 export function NumberField({
   label,
@@ -131,12 +132,12 @@ export function LinkedDimensions({
         aria-pressed={locked}
         title={
           lockToggleDisabled
-            ? 'Proporții fixe (forma rămâne rotundă)'
+            ? m.fields_ratio_locked_fixed()
             : locked
-              ? 'Proporții păstrate — apasă pentru dimensiuni libere'
-              : 'Dimensiuni libere — apasă pentru a păstra proporțiile'
+              ? m.fields_ratio_locked()
+              : m.fields_ratio_free()
         }
-        aria-label={locked ? 'Păstrează proporțiile' : 'Dimensiuni libere'}
+        aria-label={locked ? m.fields_ratio_keep_aria() : m.fields_ratio_free_aria()}
         className={
           'mb-tight rounded px-2 py-1 text-label transition ' +
           (lockToggleDisabled ? 'cursor-not-allowed opacity-60 ' : '') +
@@ -151,8 +152,8 @@ export function LinkedDimensions({
         <button
           type="button"
           onClick={onSwap}
-          title="Schimbă lățimea cu înălțimea (portret ⇄ peisaj)"
-          aria-label="Schimbă orientarea"
+          title={m.fields_swap_title()}
+          aria-label={m.fields_swap_aria()}
           className="mb-tight rounded bg-gray-200 px-2 py-1 text-label text-gray-600 transition hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
         >
           ⇄
@@ -358,7 +359,7 @@ export function ColorField({
   value,
   onChange,
   allowNone = false,
-  noneLabel = 'fără fundal',
+  noneLabel = m.fields_no_background(),
   hideWhenNull = false,
 }: {
   label: string
@@ -542,7 +543,7 @@ export function ColorField({
           <div ref={containerRef} className="relative shrink-0">
             <button
               type="button"
-              aria-label="Alege culoarea"
+              aria-label={m.fields_pick_color_aria()}
               onClick={() => setOpen((v) => !v)}
               className="h-10 w-10 rounded border border-gray-300 dark:border-gray-600"
               style={{ backgroundColor: colorToCss(formatCmyk(cmyk)) }}
@@ -589,14 +590,14 @@ export function ColorField({
                   <button
                     type="button"
                     onClick={pickFromPreview}
-                    aria-label="Alege o culoare din previzualizare"
-                    title="Alege o culoare din previzualizare"
+                    aria-label={m.fields_pick_from_preview()}
+                    title={m.fields_pick_from_preview()}
                     className="flex items-center justify-center gap-tight rounded border border-gray-300 px-2 py-1 text-hint hover:bg-gray-50 dark:border-gray-600 dark:hover:bg-gray-700"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5" aria-hidden="true">
                       <path d="M15 11.25l1.5 1.5.75-.75V8.758l2.276-.61a3 3 0 10-3.675-3.675l-.61 2.277H12l-.75.75 1.5 1.5M15 11.25l-8.47 8.47c-.34.34-.8.53-1.28.53s-.94.19-1.28.53l-.97.97-.75-.75.97-.97c.34-.34.53-.8.53-1.28s.19-.94.53-1.28L12.75 9M15 11.25L12.75 9" />
                     </svg>
-                    Pipetă
+                    {m.fields_eyedropper()}
                   </button>
                 )}
               </div>
@@ -700,7 +701,7 @@ export function FileField({
       />
       {currentName ? (
         <span className="min-w-0 break-all text-hint text-green-600 dark:text-green-500">
-          ✓ Fișier selectat: {currentName}
+          {m.fields_file_selected({ name: currentName })}
         </span>
       ) : null}
     </label>

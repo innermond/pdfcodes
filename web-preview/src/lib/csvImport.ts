@@ -6,6 +6,7 @@
 // auto-detect the delimiter, so the user never has to know what a "separator"
 // even is.
 import Papa from 'papaparse'
+import { m } from '../paraglide/messages'
 
 export interface ParsedCsv {
   // One entry per record, each a list of field values (already unquoted and
@@ -57,7 +58,7 @@ function collectWarnings(rows: string[][], errors: Papa.ParseError[]): string[] 
   const warnings: string[] = []
 
   if (rows.length === 0) {
-    warnings.push('Fișierul nu conține niciun rând de date.')
+    warnings.push(m.csv_empty_file())
     return warnings
   }
 
@@ -66,10 +67,7 @@ function collectWarnings(rows: string[][], errors: Papa.ParseError[]): string[] 
   const expected = rows[0].length
   const ragged = rows.filter((row) => row.length !== expected).length
   if (ragged > 0) {
-    warnings.push(
-      `${ragged} rând(uri) au un număr diferit de coloane față de primul rând (${expected}). ` +
-        'Verifică separatorul detectat.',
-    )
+    warnings.push(m.csv_ragged_rows({ ragged, expected }))
   }
 
   // A field that contains the original delimiter (a quoted "a,b") is handled
@@ -88,9 +86,7 @@ function collectWarnings(rows: string[][], errors: Papa.ParseError[]): string[] 
     (e) => e.type !== 'Delimiter' && e.type !== 'FieldMismatch',
   )
   if (structuralError) {
-    warnings.push(
-      'Fișierul CSV pare să aibă un format neobișnuit (de ex. ghilimele nepotrivite). Verifică fișierul.',
-    )
+    warnings.push(m.csv_unusual_format())
   }
 
   return warnings

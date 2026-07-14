@@ -1,12 +1,13 @@
 import { loadFontBytes, type LoadedFont } from './fonts'
+import { m } from '../paraglide/messages'
 
 export type GoogleFontStyle = 'regular' | '700' | 'italic' | '700italic'
 
 export const GOOGLE_FONT_STYLES: { value: GoogleFontStyle; label: string }[] = [
-  { value: 'regular', label: 'Normal' },
-  { value: '700', label: 'Bold' },
-  { value: 'italic', label: 'Italic' },
-  { value: '700italic', label: 'Bold Italic' },
+  { value: 'regular', label: m.fonts_style_regular() },
+  { value: '700', label: m.fonts_style_bold() },
+  { value: 'italic', label: m.fonts_style_italic() },
+  { value: '700italic', label: m.fonts_style_bold_italic() },
 ]
 
 interface FamilyEntry {
@@ -96,14 +97,14 @@ function requestPersistentStorage(): void {
 async function fetchFontBytes(url: string, family: string): Promise<ArrayBuffer> {
   if (typeof caches === 'undefined') {
     const res = await fetch(url)
-    if (!res.ok) throw new Error(`Nu s-a putut descărca fontul "${family}" (${res.status}).`)
+    if (!res.ok) throw new Error(m.fonts_download_failed({ family, status: res.status }))
     return res.arrayBuffer()
   }
   const cache = await caches.open(FONT_CACHE_NAME)
   let res = await cache.match(url)
   if (!res) {
     res = await fetch(url)
-    if (!res.ok) throw new Error(`Nu s-a putut descărca fontul "${family}" (${res.status}).`)
+    if (!res.ok) throw new Error(m.fonts_download_failed({ family, status: res.status }))
     requestPersistentStorage()
     // Best-effort persist; ignore quota/storage failures and keep the bytes.
     try {

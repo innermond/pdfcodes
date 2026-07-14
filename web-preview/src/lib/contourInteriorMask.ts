@@ -22,6 +22,8 @@
 // (the fill can't pass it); `eps` is the Douglas–Peucker simplification tolerance in
 // pixels. Both default to the values tuned for the uploaded-contour fallback; the
 // PNG-trace contour source exposes them as user sliders.
+import { m } from '../paraglide/messages'
+
 export async function computeContourInteriorMaskPath(
   imageUrl: string,
   opts: { alphaWall?: number; eps?: number } = {},
@@ -199,7 +201,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     img.onload = () => resolve(img)
-    img.onerror = () => reject(new Error('Nu am putut încărca imaginea conturului'))
+    img.onerror = () => reject(new Error(m.errors_contour_image_load()))
     img.src = url
   })
 }

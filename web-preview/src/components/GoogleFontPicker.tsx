@@ -11,6 +11,7 @@ import {
   type GoogleFontStyle,
 } from '../lib/googleFonts'
 import type { LoadedFont } from '../lib/fonts'
+import { m } from '../paraglide/messages'
 
 export interface GoogleFontSelection {
   family: string
@@ -127,7 +128,7 @@ export function GoogleFontPicker({
     try {
       const available = await stylesForFamily(family)
       if (available.length === 0) {
-        throw new Error(`Fontul "${family}" nu a fost găsit.`)
+        throw new Error(m.fonts_not_found({ family }))
       }
       const resolvedStyle = available.includes(style) ? style : available[0]
       const font = await fetchGoogleFont(family, resolvedStyle)
@@ -174,7 +175,7 @@ export function GoogleFontPicker({
   return (
     <div className="flex flex-col gap-inner">
       <div className="relative">
-        <TextField label="Google Font" value={query} onChange={handleQueryChange} placeholder="Caută un font (ex: Roboto)" />
+        <TextField label={m.fonts_google_font_label()} value={query} onChange={handleQueryChange} placeholder={m.fonts_search_placeholder()} />
         {matches.length > 0 && (
           <ul ref={listRef} className="absolute z-10 mt-tight max-h-48 w-full overflow-auto rounded border border-gray-300 bg-white text-label shadow-lg dark:border-gray-600 dark:bg-gray-800">
             {matches.map((name) => (
@@ -203,14 +204,14 @@ export function GoogleFontPicker({
 
       {value?.family && !latinExtOk && (
         <p className="text-label text-amber-600 dark:text-amber-400">
-          ⚠ Acest font nu acoperă diacriticele românești (ș, ț, ă, â, î).
+          {m.fonts_no_latin_ext()}
         </p>
       )}
 
       {value?.family && styles.length > 0 && (
         <div className="flex items-end gap-inner">
           <SelectField
-            label="Stil"
+            label={m.fonts_style_label()}
             value={value.style}
             onChange={selectStyle}
             options={GOOGLE_FONT_STYLES.filter((s) => styles.includes(s.value))}
@@ -220,12 +221,12 @@ export function GoogleFontPicker({
             onClick={clear}
             className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
           >
-            Șterge
+            {m.common_delete()}
           </button>
         </div>
       )}
 
-      {loading && <p className="text-label text-gray-500 dark:text-gray-400">Se încarcă fontul...</p>}
+      {loading && <p className="text-label text-gray-500 dark:text-gray-400">{m.fonts_loading()}</p>}
       {error && <p className="text-label text-red-600 dark:text-red-400">{error}</p>}
     </div>
   )

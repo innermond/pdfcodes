@@ -1,3 +1,5 @@
+import { m } from '../paraglide/messages'
+
 export interface WizardStep {
   id: string
   label: string
@@ -75,10 +77,10 @@ export function WizardFooter({
         disabled={stepIndex === 0}
         className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
       >
-        ← Înapoi
+        {m.wizard_back()}
       </button>
       <span className="text-label text-gray-500 dark:text-gray-400">
-        Pasul {stepIndex + 1} din {stepCount}
+        {m.wizard_step_of({ index: stepIndex + 1, count: stepCount })}
       </span>
       <button
         type="button"
@@ -86,7 +88,7 @@ export function WizardFooter({
         disabled={stepIndex === stepCount - 1 || nextDisabled}
         className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
       >
-        Continuă →
+        {m.wizard_next()}
       </button>
     </div>
   )

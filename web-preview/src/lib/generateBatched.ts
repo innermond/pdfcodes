@@ -1,4 +1,5 @@
 import type { GenerateResult } from './generate'
+import { m } from '../paraglide/messages'
 
 export interface BatchProgress {
   phase: 'print' | 'contour'
@@ -65,7 +66,7 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
           break
         case 'cancelled':
           settled = true
-          reject(new DOMException('Generarea a fost anulată.', 'AbortError'))
+          reject(new DOMException(m.errors_generation_cancelled(), 'AbortError'))
           worker.terminate()
           break
         case 'error':
@@ -78,7 +79,7 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
     worker.onerror = (e) => {
       if (settled) return
       settled = true
-      reject(new Error(e.message || 'Eroare în worker-ul de generare.'))
+      reject(new Error(e.message || m.errors_generation_worker()))
       worker.terminate()
     }
   })
@@ -95,7 +96,7 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
       // Each batch is a synchronous wasm call, so terminating is the only way to
       // stop mid-job; reject so the awaiting caller unblocks.
       worker.terminate()
-      rejectPromise(new DOMException('Generarea a fost anulată.', 'AbortError'))
+      rejectPromise(new DOMException(m.errors_generation_cancelled(), 'AbortError'))
     },
   }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { unzipSync, zipSync, type Zippable } from 'fflate'
 import type { GenerateResult } from '../lib/generate'
+import { m } from '../paraglide/messages'
 
 function formatMetric(value: number | undefined, unit: string, digits = 2): string {
   if (value === undefined) return '—'
@@ -104,14 +105,14 @@ export function FileDownload({
       {note && <p className="text-label text-gray-500 dark:text-gray-400">{note}</p>}
       {previewUrl && (
         <iframe
-          title={`Previzualizare ${title}`}
+          title={m.result_preview_title({ title })}
           src={previewUrl}
           className="h-[600px] w-full rounded border border-gray-200 dark:border-gray-700"
         />
       )}
       {url && (
         <a href={url} download={name} className="text-label font-medium text-blue-600 hover:underline dark:text-blue-400">
-          Descarcă {name}
+          {m.result_download({ name })}
         </a>
       )}
     </div>
@@ -169,7 +170,7 @@ export function DownloadBothButton({
       disabled={busy}
       className="self-start text-label font-medium text-blue-600 hover:underline disabled:opacity-60 dark:text-blue-400"
     >
-      {busy ? 'Se pregătește…' : 'Descarcă ambele (print + contur, .zip)'}
+      {busy ? m.result_preparing() : m.result_download_both()}
     </button>
   )
 }
@@ -185,17 +186,17 @@ export function ResultPanel({ title, result, downloadName }: { title: string; re
     <div className="flex flex-col gap-inner">
       <h3 className="text-title font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
       <div className="grid grid-cols-2 gap-inner text-label text-gray-700 dark:text-gray-300">
-        <div>Carduri pe pagină: <span className="font-semibold">{result.cardsPerPage}</span></div>
+        <div>{m.result_cards_per_page()} <span className="font-semibold">{result.cardsPerPage}</span></div>
         {hasCuttingMetrics && (
           <>
-            <div>Lungime traseu / card: <span className="font-semibold">{formatMetric(result.pathLengthPerCardMm, 'mm')}</span></div>
-            <div>Lungime traseu totală: <span className="font-semibold">{formatMetric(result.pathLengthTotalMm, 'mm')}</span></div>
-            <div>Noduri / card: <span className="font-semibold">{result.nodeCountPerCard ?? '—'}</span></div>
-            <div>Noduri total: <span className="font-semibold">{result.nodeCountTotal ?? '—'}</span></div>
-            <div>Colțuri ascuțite / card: <span className="font-semibold">{result.sharpTurnCountPerCard ?? '—'}</span></div>
-            <div>Colțuri ascuțite total: <span className="font-semibold">{result.sharpTurnCountTotal ?? '—'}</span></div>
-            <div>Timp de tăiere / card: <span className="font-semibold">{formatDuration(result.timeCuttingPerCardS)}</span></div>
-            <div>Timp de tăiere total: <span className="font-semibold">{formatDuration(result.timeCuttingTotalS)}</span></div>
+            <div>{m.result_path_length_per_card()} <span className="font-semibold">{formatMetric(result.pathLengthPerCardMm, 'mm')}</span></div>
+            <div>{m.result_path_length_total()} <span className="font-semibold">{formatMetric(result.pathLengthTotalMm, 'mm')}</span></div>
+            <div>{m.result_nodes_per_card()} <span className="font-semibold">{result.nodeCountPerCard ?? '—'}</span></div>
+            <div>{m.result_nodes_total()} <span className="font-semibold">{result.nodeCountTotal ?? '—'}</span></div>
+            <div>{m.result_sharp_turns_per_card()} <span className="font-semibold">{result.sharpTurnCountPerCard ?? '—'}</span></div>
+            <div>{m.result_sharp_turns_total()} <span className="font-semibold">{result.sharpTurnCountTotal ?? '—'}</span></div>
+            <div>{m.result_cutting_time_per_card()} <span className="font-semibold">{formatDuration(result.timeCuttingPerCardS)}</span></div>
+            <div>{m.result_cutting_time_total()} <span className="font-semibold">{formatDuration(result.timeCuttingTotalS)}</span></div>
           </>
         )}
       </div>
@@ -203,9 +204,9 @@ export function ResultPanel({ title, result, downloadName }: { title: string; re
       {pdfUrl && (
         <div className="mt-inner flex flex-col gap-inner">
           <a href={pdfUrl} download={downloadName} className="text-label font-medium text-blue-600 hover:underline dark:text-blue-400">
-            Descarcă {downloadName}
+            {m.result_download({ name: downloadName })}
           </a>
-          <iframe title={`Previzualizare ${title}`} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200 dark:border-gray-700" />
+          <iframe title={m.result_preview_title({ title })} src={pdfUrl} className="h-[600px] w-full rounded border border-gray-200 dark:border-gray-700" />
         </div>
       )}
     </div>

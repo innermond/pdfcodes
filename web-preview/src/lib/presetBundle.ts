@@ -1,4 +1,5 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
+import { m } from '../paraglide/messages'
 
 // Settings presets are saved as a .zip bundle containing `settings.json`
 // plus any binary resources (background/contour PDFs, custom fonts) that
@@ -136,7 +137,7 @@ export async function loadPresetBundle(file: File): Promise<LoadedPresetBundle> 
   const entries = unzipSync(bytes)
   const settingsBytes = entries['settings.json']
   if (!settingsBytes) {
-    throw new Error('Arhivă invalidă: lipsește settings.json.')
+    throw new Error(m.errors_preset_bundle_invalid())
   }
   const preset = JSON.parse(strFromU8(settingsBytes)) as Record<string, unknown>
   const manifest = (preset.resources ?? {}) as ResourceManifest
