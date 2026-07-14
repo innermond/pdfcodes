@@ -1,12 +1,62 @@
-# Handoff — manual.md sync to the current app
+# Handoff — manual sync to the current app
 
-Status note for the documentation sync of `manual.md` (+ `manual-assets/`) against the
-actual 5-step app (`web-preview/src/App.tsx`).
+Status note for the documentation sync of the user manual (+ `manual-assets/`)
+against the actual 5-step app (`web-preview/src/App.tsx`).
+
+## Manual under i18n (2026-07-14)
+
+The app UI is internationalized (compile-time Paraglide JS): every UI string lives
+in `web-preview/messages/{ro,en}.json` (~390 keys), and the app builds one language
+per bundle — `npm run build` (Romanian, default) or `LOCALE=en npm run build` /
+`npm run build:en` (English). The manual follows the same split:
+
+- `manual.ro.md` — the Romanian manual (renamed from `manual.md`; history preserved,
+  `git log --follow` still works).
+- `manual.en.md` — the full English translation. Its quoted UI labels ("Generate
+  CSV", "Source mode", …) are taken **verbatim from `messages/en.json`**, the same
+  way `manual.ro.md`'s `„…”` quotes match `messages/ro.json`.
+- Both manuals reference the **same screenshots** (`manual-assets/*.png`), which
+  currently show the **Romanian UI**; `manual.en.md` carries a note about this near
+  the top. See "Deferred: localized screenshots" below for the continuation plan.
+
+**Maintenance rule:** when a UI string changes in `messages/ro.json` / `en.json`,
+update the corresponding quoted label in **both** `manual.ro.md` and `manual.en.md`.
+Quick check: extract the quoted labels (`„…”` in RO, `"…"` in EN) and verify each
+UI-control quote still exists as a value in the respective catalog (a few quotes
+are intentionally not catalog values: browser-native "Choose File", data examples
+like "prefix code suffix", and filenames).
+
+## Deferred: localized screenshots (continue here)
+
+Goal: an English screenshot set in `manual-assets/en/` (or `manual-assets/{ro,en}/`
+with both manuals updated), so `manual.en.md` shows the English UI.
+
+1. Make `web-preview/shoot.mjs` locale-aware. It currently hardcodes ~35 Romanian
+   UI strings as Playwright selectors ('Simplu', 'Formă presetată', 'Număr de
+   rânduri', 'Pasul N din 5', 'Generează CSV', …). Since those exact strings now
+   live in the message catalogs, read `messages/{locale}.json` (parse the JSON;
+   variant messages are arrays — only plain-string keys are needed for selectors)
+   and build the selectors from catalog values. Take the locale from argv
+   (`node shoot.mjs en`) or env; default `ro`. Write output to
+   `manual-assets/{locale}/`.
+2. Run it against a dev server of the target locale:
+   `cd web-preview && LOCALE=en npx vite --port 5199 --strictPort`, then
+   `node shoot.mjs en`. (The Vite paraglide plugin picks up `LOCALE` from
+   `vite.config.ts`.)
+3. Scope limit: the script covers only ~20 of the 34 images (`03-*`…`06-*`,
+   `s2-*`, `s3-*`, `s4-*`). The other 14 were hand-shot and are NOT scripted:
+   `00-privire-generala`, `01-fundal`, `02-contur`, `f1/f2/f7`, `c1/c2`,
+   `04-color-picker`, `s4-quote`, `s4-unlock`. They are plain step-1/2/overview
+   views and the password-gate UI — scriptable with the same patterns (see the
+   gotchas below), or re-shoot by hand on the EN build.
+4. When the EN images exist: point `manual.en.md`'s image paths at
+   `manual-assets/en/` and remove its "screenshots are Romanian" note.
 
 ## Status: sync COMPLETE (2026-07-07) + verification pass (same day)
 
-All ten sections of `manual.md` now describe the current UI, and every referenced
-screenshot in `manual-assets/` was retaken against it (no orphans, no missing files).
+All ten sections of the manual (now `manual.ro.md`) describe the current UI, and
+every referenced screenshot in `manual-assets/` was retaken against it (no orphans,
+no missing files).
 
 A follow-up verification pass compared every section against the app source and
 applied these text-only fixes (no screenshots affected):
@@ -25,10 +75,10 @@ applied these text-only fixes (no screenshots affected):
   depășesc…" + "Descarcă depășirile (N, .csv)" → `depasiri.csv`) and the
   "Mostră (un card)" entry in Rezultat.
 
-Known, deliberately-unfixed mismatch (user decision): the app label
-"Distanțăre contur (mm)" (`web-preview/src/App.tsx:3737`) has a typo; the manual
-intentionally spells it "Distanțare contur (mm)". Fix the app label (and retake
-`s3-text-exemplu.png` / `04-coduri.png`) whenever convenient.
+RESOLVED (2026-07-14): the old "Distanțăre contur (mm)" label typo was already
+fixed in the app; the label now lives in `messages/ro.json` as
+`words_contour_inset_label`, spelled "Distanțare contur (mm)", matching both
+manuals.
 
 App wizard steps (source of truth: `WIZARD_STEPS` in `web-preview/src/App.tsx`):
 **1 Fundal · 2 Contur · 3 Date · 4 Coduri · 5 PDF**.
@@ -72,8 +122,9 @@ Deleted stale assets: `02-sursa-date.png`, `03-aspect-cuvinte.png`, `05-generare
 
 ## Regenerating screenshots
 
-`web-preview/shoot.mjs` (untracked; commit it if it should persist) retakes **all**
-§5–§9 assets in one run:
+`web-preview/shoot.mjs` (tracked in git) retakes **all** §5–§9 assets in one run
+(Romanian selectors — see "Deferred: localized screenshots" above for the
+locale-aware plan):
 
 ```
 cd web-preview && npx vite --port 5199 --strictPort   # wasm must already be built
