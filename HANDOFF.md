@@ -26,6 +26,20 @@ UI-control quote still exists as a value in the respective catalog (a few quotes
 are intentionally not catalog values: browser-native "Choose File", data examples
 like "prefix code suffix", and filenames).
 
+## Screenshot re-sync (2026-07-15)
+
+The Jul 7 screenshot set predated two visible UI changes from later that same
+week: the compact CMYK row (`e2ed4e9`, no more per-channel "%" suffix) and the
+"Distanțăre → Distanțare contur (mm)" typo fix. Re-ran `shoot.mjs` (all scripted
+shots) and re-took the two affected hand shots (`f2-print-simple`,
+`04-color-picker`) with a throwaway Playwright script using the same patterns.
+The three RO contour shots from Jul 14 were left untouched.
+
+Found while verifying: the global "Padding fundal text (mm)" field no longer
+exists in step 4's "Text exemplu" (now two global margins) — it moved into the
+per-word "Fundal text" group as `words_bg_padding_label` ("Padding (mm)").
+§6.1/§6.2-background of **both** manuals updated accordingly.
+
 ## Deferred: localized screenshots (continue here)
 
 Goal: an English screenshot set in `manual-assets/en/` (or `manual-assets/{ro,en}/`

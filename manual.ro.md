@@ -459,17 +459,15 @@ culoarea etc. În previzualizare, codul selectat apare cu un chenar punctat
 
 ### 6.1 Text exemplu
 
-Aici controlezi rândul de probă folosit în previzualizare și trei margini globale.
+Aici controlezi rândul de probă folosit în previzualizare și două margini globale.
 
-![Secțiunea „Text exemplu”: rândul de probă și cele trei margini](manual-assets/s3-text-exemplu.png)
+![Secțiunea „Text exemplu”: rândul de probă și cele două margini](manual-assets/s3-text-exemplu.png)
 
 - **Rând CSV exemplu** — un rând de probă, folosit **doar pentru previzualizare**
   (nu modifică datele reale). Eticheta îți arată ce **separator** se aplică, iar
   cuvintele rezultate apar ca butoane în secțiunea „Setări” (vezi 6.2).
 - **Margine (mm)** — zona de siguranță de la marginea cardului în care **nu** se
   așază text; este și referința pentru alinierile sus/jos/stânga/dreapta.
-- **Padding fundal text (mm)** — spațiul lăsat în jurul textului atunci când acesta
-  are un **fundal propriu** (vezi „Fundal text” mai jos).
 - **Distanțare contur (mm)** — distanța minimă față de tăietură: e folosită atât
   pentru verificare (codurile trebuie să stea cel puțin atât de departe de tăietură
   ca să fie „sigure”), cât și ca margine pentru alinierile **„(contur)”**. Se
@@ -538,8 +536,9 @@ câmpurile se aplică **doar cuvântului selectat**.
 **Fundal text** (grup pliat implicit — o casetă colorată în spatele textului):
 
 - Bifează **„fără fundal”** pentru niciun fundal. Debifând-o, apar:
+  - **Padding (mm)** — spațiul lăsat în jurul textului, în interiorul casetei.
   - **Lățime (mm, gol = automat)** — lățimea casetei; gol = se potrivește
-    automat pe text (plus padding-ul din 6.1).
+    automat pe text (plus padding-ul de mai sus).
   - **Transparență (0-1)** — `0` invizibil … `1` opac.
   - **Mod îmbinare** — blend-ul casetei peste card.
 

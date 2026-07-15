@@ -478,17 +478,15 @@ ants") and can be dragged with the mouse.*
 
 ### 6.1 Sample text
 
-Here you control the sample row used in the preview and three global margins.
+Here you control the sample row used in the preview and two global margins.
 
-![The "Sample text" section: the sample row and the three margins](manual-assets/s3-text-exemplu.png)
+![The "Sample text" section: the sample row and the two margins](manual-assets/s3-text-exemplu.png)
 
 - **Sample CSV row** — a sample row, used **only for the preview** (it does not
   change the real data). The label shows you which **separator** applies, and the
   resulting words appear as buttons in the "Settings" section (see 6.2).
 - **Margin (mm)** — the safety zone at the card's edge where **no** text is
   placed; it is also the reference for the top/bottom/left/right alignments.
-- **Text background padding (mm)** — the space left around the text when it has
-  its **own background** (see "Text background" below).
 - **Contour inset (mm)** — the minimum distance from the cut: it is used both for
   checking (codes must stay at least this far from the cut to be "safe") and as
   the margin for the **"(contour)"** alignments. It only applies when a cutting
@@ -559,8 +557,9 @@ the fields apply **only to the selected word**.
 **Text background** (collapsed by default — a colored box behind the text):
 
 - Tick **"no background"** for none. Unticking it reveals:
+  - **Padding (mm)** — the space left around the text, inside the box.
   - **Width (mm, empty = automatic)** — the box's width; empty = it fits the
-    text automatically (plus the padding from 6.1).
+    text automatically (plus the padding above).
   - **Opacity (0-1)** — `0` invisible … `1` opaque.
   - **Blend mode** — the box's blend over the card.
 
