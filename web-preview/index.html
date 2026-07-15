@@ -8,7 +8,14 @@
     <script>
       (function () {
         var stored = localStorage.getItem('theme')
-        var dark = stored === 'dark' || (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        // Vite substitutes VITE_LIGHT_MODE below; when unset the raw token
+        // remains and we fall back to the system color scheme. The comparison
+        // string is concatenated so Vite doesn't substitute it too.
+        var envLight = '%VITE_LIGHT_MODE%'
+        var envUnset = envLight === '%' + 'VITE_LIGHT_MODE' + '%'
+        var dark = stored === 'dark' || (stored !== 'light' && (envUnset
+          ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          : envLight === 'false' || envLight === '0'))
         if (dark) document.documentElement.classList.add('dark')
       })()
     </script>

@@ -193,6 +193,12 @@ const IMAGE_PROXY = import.meta.env.VITE_IMAGE_PROXY as string | undefined
 // VITE_RASTER_DPI, e.g. `VITE_RASTER_DPI=300 npm run build`.
 const parsedRasterDpi = Number(import.meta.env.VITE_RASTER_DPI ?? NaN)
 const RASTER_DPI = Number.isFinite(parsedRasterDpi) && parsedRasterDpi > 0 ? parsedRasterDpi : 150
+// Initial theme when the user hasn't picked one yet (localStorage always wins).
+// The `lightMode` prop takes precedence over VITE_LIGHT_MODE; if neither is
+// set, the host system's prefers-color-scheme decides. The same env var drives
+// the pre-React FOUC script in index.html, which the prop cannot reach.
+const envLightMode = import.meta.env.VITE_LIGHT_MODE as string | undefined
+const ENV_LIGHT_MODE = envLightMode === undefined ? undefined : envLightMode !== 'false' && envLightMode !== '0'
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
 
 // Fetch a remote file through the server-side IMAGE_PROXY (sidestepping CORS)
@@ -652,8 +658,8 @@ function downloadOverflowCsv(rows: string[]) {
   URL.revokeObjectURL(url)
 }
 
-export default function App() {
-  const [theme, toggleTheme] = useTheme()
+export default function App({ lightMode }: { lightMode?: boolean } = {}) {
+  const [theme, toggleTheme] = useTheme(lightMode ?? ENV_LIGHT_MODE)
   const [step, setStep] = useState<WizardStepId>('fundal')
   const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
 
