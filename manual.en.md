@@ -145,7 +145,10 @@ over the card at the target dimensions.
   before uploading.
 - After loading, **Target width (mm)** / **Target height (mm)** appear (with
   padlock and swap), plus **↻ Rotate 90°** and **Mirror X/Y**, just like for a
-  PDF. If the image has transparent areas, **Color of transparent areas** also
+  PDF. The fields start from the image's own size: for an **SVG**, the file's
+  real physical size; for a **PNG/JPEG**, the pixel size read at **150 dpi**
+  (the minimum resolution for a good-quality print) — you can then edit them
+  freely. If the image has transparent areas, **Color of transparent areas** also
   appears (choose a fill color, or "checkerboard" to keep the transparency).
 
 ### 3.4 Positioning (common to all sources)

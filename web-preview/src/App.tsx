@@ -187,6 +187,12 @@ const GENERATE_PASSWORD = import.meta.env.VITE_GENERATE_PASSWORD as string | und
 // receives it, e.g. `/image-proxy?url=` (Laravel) or `http://localhost:8000/proxy.php?url=`
 // (local PHP during dev). If unset, remote-URL background fetching is disabled.
 const IMAGE_PROXY = import.meta.env.VITE_IMAGE_PROXY as string | undefined
+// Assumed print density used to deduce a physical target size for raster
+// backgrounds (PNG/JPEG carry no reliable physical size). 150 dpi is the
+// minimum for a decent print (300 is ideal); override at build time with
+// VITE_RASTER_DPI, e.g. `VITE_RASTER_DPI=300 npm run build`.
+const parsedRasterDpi = Number(import.meta.env.VITE_RASTER_DPI ?? NaN)
+const RASTER_DPI = Number.isFinite(parsedRasterDpi) && parsedRasterDpi > 0 ? parsedRasterDpi : 150
 const GENERATE_UNLOCKED_KEY = 'pdfcodes-preview-generate-unlocked'
 
 // Fetch a remote file through the server-side IMAGE_PROXY (sidestepping CORS)
@@ -2190,18 +2196,25 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backgroundSource, simpleBgWidthMm, simpleBgHeightMm, simpleBgColor])
 
-  // Loading a source image resets the shared rotation and gives the target inputs
-  // the image's proportions so the card matches it on load (the width is kept and
-  // the height derived from the natural aspect).
+  // A freshly loaded SVG should prefill the target size from its intrinsic
+  // physical size (known only after the svg→PDF conversion below). One-shot so
+  // rebuilds on flip/backdrop changes don't clobber the user's later edits.
+  const genBgSizePrefillPendingRef = useRef(false)
+
+  // Loading a source image resets the shared rotation and prefills the target
+  // inputs with the image's own size: an SVG's intrinsic physical size (adopted
+  // after the svg→PDF conversion), or a raster's pixel size read at RASTER_DPI.
   function handleGenBgImageChange(file: File | null) {
     setGenBgImageFile(file)
     setBgField('bgRotation', 0)
     setGenBgSvgTextWarning(false)
+    genBgSizePrefillPendingRef.current = false
     if (!file) {
       setGenBgTransparent(false)
       return
     }
     if (isSvgFile(file)) {
+      genBgSizePrefillPendingRef.current = true
       // Vector source: the aspect comes from the parsed viewBox/width/height
       // (createImageBitmap on SVG blobs is unreliable cross-browser). SVGs are
       // transparency-capable, so the checkerboard backdrop + backdrop color
@@ -2224,13 +2237,16 @@ export default function App() {
     // `build_image_background_pdf` / `apply_orientation` in src/generate/image_bg.rs).
     createImageBitmap(file, { imageOrientation: 'from-image' })
       .then((bmp) => {
-        const a = bmp.width / bmp.height
         // Detect transparency while the bitmap is live (drives the preview's
         // checkerboard backdrop); orientation doesn't affect the alpha channel.
         const transparent = bitmapHasTransparency(bmp)
+        const { width: pxW, height: pxH } = bmp
         if (typeof bmp.close === 'function') bmp.close()
         setGenBgTransparent(transparent)
-        if (a > 0) setBgField('genBgHeightMm', Math.round((genBgWidthMm / a) * 100) / 100)
+        if (pxW > 0 && pxH > 0) {
+          setBgField('genBgWidthMm', Math.round((pxW / RASTER_DPI) * 25.4 * 100) / 100)
+          setBgField('genBgHeightMm', Math.round((pxH / RASTER_DPI) * 25.4 * 100) / 100)
+        }
       })
       .catch(() => {})
   }
@@ -2380,6 +2396,13 @@ export default function App() {
         if (cancelled || !bg) return
         setBackground(bg)
         setBackgroundPageCount(bg.pageCount)
+        if (genBgSizePrefillPendingRef.current) {
+          // First conversion of a newly loaded SVG: adopt its intrinsic size
+          // (the PDF MediaBox), same as the uploaded-PDF branch does.
+          setBgField('genBgWidthMm', Math.round((bg.widthPt / MM) * 100) / 100)
+          setBgField('genBgHeightMm', Math.round((bg.heightPt / MM) * 100) / 100)
+          genBgSizePrefillPendingRef.current = false
+        }
         if (!sampleText) {
           const maxWidthPt = bg.widthPt * 0.9
           const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)

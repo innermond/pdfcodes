@@ -138,7 +138,10 @@ peste card la dimensiunile țintă.
 - La un **SVG cu text** apare un avertisment: convertește textul în contururi
   (outline) înainte de încărcare.
 - După încărcare apar **Lățime țintă (mm)** / **Înălțime țintă (mm)** (cu lacăt și
-  schimbare), **↻ Rotește 90°** și **Oglindire X/Y**, la fel ca la PDF. Dacă
+  schimbare), **↻ Rotește 90°** și **Oglindire X/Y**, la fel ca la PDF. Câmpurile
+  pornesc de la dimensiunea proprie a imaginii: la **SVG**, dimensiunea fizică
+  reală a fișierului; la **PNG/JPEG**, dimensiunea în pixeli citită la **150 dpi**
+  (rezoluția minimă pentru un print de calitate) — apoi le poți modifica liber. Dacă
   imaginea are zone transparente, apare și **Culoare zone transparente** (alege o
   culoare de umplere sau „carouri” pentru a păstra transparența).
 
