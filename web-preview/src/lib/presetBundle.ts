@@ -149,8 +149,10 @@ export async function loadPresetBundle(file: File): Promise<LoadedPresetBundle> 
   }
   const prefix = settingsKey!.slice(0, settingsKey!.length - 'settings.json'.length)
   // A manifest path resolves to `<prefix><path>` in a folder-wrapped archive,
-  // falling back to the bare path for archives saved at the root.
-  const resource = (path: string): Uint8Array | undefined => entries[prefix + path] ?? entries[path]
+  // falling back to the bare path for archives saved at the root. The return
+  // type is inferred from `entries` (fflate's ArrayBuffer-backed Uint8Array) so
+  // the bytes stay assignable to BlobPart in the `new File(...)` calls below.
+  const resource = (path: string) => entries[prefix + path] ?? entries[path]
 
   const preset = JSON.parse(strFromU8(settingsBytes)) as Record<string, unknown>
   const manifest = (preset.resources ?? {}) as ResourceManifest
