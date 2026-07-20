@@ -14,6 +14,10 @@ if (!inlangSettings.locales.includes(locale)) {
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Relative asset URLs so the built `dist/` can be dropped at any path on a
+  // static host (root, subfolder, wherever) without rebuilding. Safe here
+  // because this is a single page with no client-side router.
+  base: './',
   plugins: [
     react(),
     tailwindcss(),

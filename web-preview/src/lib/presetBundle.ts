@@ -135,37 +135,53 @@ export async function loadPresetBundle(file: File): Promise<LoadedPresetBundle> 
   }
 
   const entries = unzipSync(bytes)
-  const settingsBytes = entries['settings.json']
+
+  // Tolerate archives where the preset was re-zipped inside a folder
+  // (`background-setari/settings.json`) or carries macOS `__MACOSX/` junk:
+  // locate settings.json by basename, then resolve every manifest resource
+  // (which are stored relative to the zip root) against the same prefix.
+  const settingsKey = Object.keys(entries).find(
+    (k) => !k.startsWith('__MACOSX/') && k.split('/').pop() === 'settings.json',
+  )
+  const settingsBytes = settingsKey ? entries[settingsKey] : undefined
   if (!settingsBytes) {
     throw new Error(m.errors_preset_bundle_invalid())
   }
+  const prefix = settingsKey!.slice(0, settingsKey!.length - 'settings.json'.length)
+  // A manifest path resolves to `<prefix><path>` in a folder-wrapped archive,
+  // falling back to the bare path for archives saved at the root.
+  const resource = (path: string): Uint8Array | undefined => entries[prefix + path] ?? entries[path]
+
   const preset = JSON.parse(strFromU8(settingsBytes)) as Record<string, unknown>
   const manifest = (preset.resources ?? {}) as ResourceManifest
 
   const result: LoadedPresetBundle = { preset, fonts: new Map() }
 
-  if (manifest.background && entries[manifest.background]) {
-    result.background = new File([entries[manifest.background]], manifest.background.split('/').pop()!, {
+  const backgroundData = manifest.background ? resource(manifest.background) : undefined
+  if (manifest.background && backgroundData) {
+    result.background = new File([backgroundData], manifest.background.split('/').pop()!, {
       type: 'application/pdf',
     })
   }
 
-  if (manifest.contour && entries[manifest.contour]) {
+  const contourData = manifest.contour ? resource(manifest.contour) : undefined
+  if (manifest.contour && contourData) {
     const name = manifest.contour.split('/').pop()!
-    result.contour = new File([entries[manifest.contour]], name, {
+    result.contour = new File([contourData], name, {
       type: mimeForExt(name, 'application/pdf'),
     })
   }
 
-  if (manifest.csv && entries[manifest.csv]) {
-    result.csv = new File([entries[manifest.csv]], manifest.csv.split('/').pop()!, {
+  const csvData = manifest.csv ? resource(manifest.csv) : undefined
+  if (manifest.csv && csvData) {
+    result.csv = new File([csvData], manifest.csv.split('/').pop()!, {
       type: 'text/csv',
     })
   }
 
   if (manifest.fonts) {
     for (const [indexStr, path] of Object.entries(manifest.fonts)) {
-      const data = entries[path]
+      const data = resource(path)
       if (data) {
         result.fonts.set(Number(indexStr), new File([data], path.split('/').pop()!))
       }
