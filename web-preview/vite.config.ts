@@ -17,7 +17,8 @@ export default defineConfig({
   // Relative asset URLs so the built `dist/` can be dropped at any path on a
   // static host (root, subfolder, wherever) without rebuilding. Safe here
   // because this is a single page with no client-side router.
-  base: './',
+  //base: './',
+  base: '/etichete/coduri-unice-decupare-contur/',
   plugins: [
     react(),
     tailwindcss(),

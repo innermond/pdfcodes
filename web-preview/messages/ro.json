@@ -324,6 +324,8 @@
 	"generate_shrink_per_code": "Pe cod",
 	"generate_shrink_per_column": "Pe coloană",
 	"generate_no_cut_hint": "Non-decupare: un card pe pagină, fără impunere și fără cercuri de reglaj.",
+	"generate_no_cut_offset": "⚠ Decalaj X/Y ({x} × {y} mm) mărește PDF-ul generat cu această valoare peste dimensiunile originale. În modul non-decupare, păstrează Decalaj X/Y la 0 pentru a păstra dimensiunea originală.",
+	"generate_no_cut_offset_reset": "Setează la 0",
 	"generate_bg_exceeds": "⚠ Fundalul ({bgW} × {bgH} mm) nu încape în pagina ({pageW} × {pageH} mm). Mărește pagina sau micșorează cardul.",
 	"generate_cut_exceeds": "⚠ Conturul ({w} × {h} mm) nu încape în zona de tăiere a paginii ({cw} × {ch} mm = pagina minus cercurile de reglaj). Mărește pagina, micșorează diametrul cercurilor sau conturul.",
 	"generate_contour_capped": "⚠ Conturul a fost redus ca să încapă în fundal ({bgW} × {bgH} mm): {reason}. Micșorează conturul sau rotația ca să folosești valoarea dorită.",

@@ -2968,6 +2968,18 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     !contourIsPlainRectangle &&
     (pageOptions.offsetXMm < 1 || pageOptions.offsetYMm < 1)
 
+  // "Decalaj X/Y" is meaningful in decupare mode (the gutter between cards, and — in
+  // minimal mode — a bleed that grows each cell). In non-decupare (no-cut) mode there is
+  // no grid, so its only remaining effect is that minimal-mode bleed, which enlarges the
+  // single output page by Decalaj per axis beyond the card's original size (see
+  // `bleed_x`/`bleed_y` in src/generate/mod.rs). That bleed only applies with minimal on,
+  // so flag a non-zero offset only then, and let the user reset it to preserve the
+  // original dimensions.
+  const noCutOffsetEnlargesPage =
+    pageOptions.noCut &&
+    pageOptions.minimal &&
+    (pageOptions.offsetXMm !== 0 || pageOptions.offsetYMm !== 0)
+
   // The page fields are the media (sheet) size. The print background is one card
   // tiled onto that sheet, so a single card must fit within the media. (Printing can
   // use the whole sheet — only cutting reserves the circle band, handled above. In
@@ -4568,6 +4580,22 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
             {pageOptions.noCut && (
               <p className="text-label text-gray-600 dark:text-gray-400">
                 {m.generate_no_cut_hint()}
+              </p>
+            )}
+
+            {noCutOffsetEnlargesPage && (
+              <p className="text-label text-amber-600 dark:text-amber-400">
+                {m.generate_no_cut_offset({ x: pageOptions.offsetXMm.toFixed(1), y: pageOptions.offsetYMm.toFixed(1) })}{' '}
+                <button
+                  type="button"
+                  className="underline hover:no-underline"
+                  onClick={() => {
+                    setPageOption('offsetXMm', 0)
+                    setPageOption('offsetYMm', 0)
+                  }}
+                >
+                  {m.generate_no_cut_offset_reset()}
+                </button>
               </p>
             )}
 

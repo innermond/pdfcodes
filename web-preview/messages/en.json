@@ -322,6 +322,8 @@
 	"generate_shrink_per_code": "Per code",
 	"generate_shrink_per_column": "Per column",
 	"generate_no_cut_hint": "No cutting: one card per page, without imposition and without registration circles.",
+	"generate_no_cut_offset": "⚠ Offset X/Y ({x} × {y} mm) enlarges the generated PDF by that amount beyond the original dimensions. In non-cut mode, keep Offset X/Y at 0 to preserve the original size.",
+	"generate_no_cut_offset_reset": "Set to 0",
 	"generate_bg_exceeds": "⚠ The background ({bgW} × {bgH} mm) does not fit in the page ({pageW} × {pageH} mm). Enlarge the page or shrink the card.",
 	"generate_cut_exceeds": "⚠ The contour ({w} × {h} mm) does not fit in the page's cutting area ({cw} × {ch} mm = the page minus the registration circles). Enlarge the page, reduce the circle diameter or the contour.",
 	"generate_contour_capped": "⚠ The contour was reduced to fit inside the background ({bgW} × {bgH} mm): {reason}. Reduce the contour or the rotation to use the desired value.",
