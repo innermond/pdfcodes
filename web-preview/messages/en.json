@@ -113,6 +113,8 @@
 	"app_title": "Unique code printing / Contour cutting",
 	"app_subtitle": "Preview code placement on a background and generate print and contour PDFs.",
 	"app_save_settings": "Save settings (.zip)",
+	"app_reset": "Reset",
+	"app_reset_title": "Reset everything to defaults",
 	"app_undo_title": "Undo (Ctrl+Z)",
 	"app_redo_title": "Redo (Ctrl+Shift+Z)",
 	"app_light_mode": "Light mode",

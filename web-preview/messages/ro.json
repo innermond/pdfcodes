@@ -115,6 +115,8 @@
 	"app_title": "Printare coduri unice / Decupare pe contur",
 	"app_subtitle": "Previzualizează poziționarea codurilor pe un fundal și generează PDF-uri de print și contur.",
 	"app_save_settings": "Salvează setările (.zip)",
+	"app_reset": "Resetează",
+	"app_reset_title": "Resetează tot la valorile implicite",
 	"app_undo_title": "Anulează (Ctrl+Z)",
 	"app_redo_title": "Refă (Ctrl+Shift+Z)",
 	"app_light_mode": "Mod luminos",

@@ -1888,6 +1888,91 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     await downloadPresetBundle(filename, preset, { ...resources, thumbnail: thumbnail ?? undefined })
   }
 
+  // "Resetează": return the app to its fresh, just-loaded state (keeps only the
+  // theme). The tracked (undoable) atoms go back to their defaults through the
+  // existing restore path, so the whole reset batches into ONE commit and lands
+  // as a single Ctrl+Z-reversible undo step. The default literal is typed as
+  // `UndoSnapshot`, so adding a future atom to `undoSnapshot` won't compile here
+  // until its default is filled in.
+  function handleReset() {
+    const defaults: UndoSnapshot = {
+      // ACTIVE — mirrors the initial values of the useState atoms above.
+      bgConfig: defaultBgConfig,
+      contourConfig: defaultContourConfig,
+      dataConfig: defaultDataConfig,
+      styleConfig: defaultStyleConfig,
+      pageOptions: defaultPageOptions,
+      words: resizeWords([], splitWords('', '')),
+      fonts: [],
+      fontSources: [],
+      googleFontSelections: [],
+      mode: 'print',
+      lockAspect: true,
+      contourLockAspect: true,
+      bgNudgeMode: false,
+      genBgTransparent: false,
+      genBgBackdropColor: null,
+      backgroundFile: null,
+      genBgImageFile: null,
+      contourBackgroundFile: null,
+      contourTraceImage: null,
+      csvDataFile: null,
+      uploadedRawFile: null,
+      // PASSIVE
+      step: 'fundal',
+      selectedIndex: null,
+      contourSelected: false,
+      background: null,
+      contourBackground: null,
+      backgroundPageCount: 1,
+      contourPageCount: 1,
+      refCardDims: null,
+      refContourBounds: null,
+      refShapeAuto: true,
+    }
+    applyUndoSnapshot(defaults)
+
+    // Untracked transient/derived/generated state the undo snapshot doesn't
+    // cover. Effects re-derive some of it, but generated artifacts and the CSV
+    // upload scratch must be cleared explicitly. `codeCsvUrl` is a revocable
+    // object URL kept out of the snapshot on purpose, so revoke it here.
+    setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
+    setCodeCsvProgress(null)
+    setCodeCsvStale(false)
+    setCodeCsvDuplicates(null)
+    setUploadedRows([])
+    setUploadedMaxRow('')
+    setUploadedCsvPreview('')
+    setUploadedCsvRowCount(0)
+    setUploadedCsvInfo(null)
+    setUploadedCsvWarnings([])
+    setPrintArtifact(null)
+    setContourResult(null)
+    setSampleArtifact(null)
+    setGenProgress(null)
+    setGenError(null)
+    setRedrawnContourFile(null)
+    setRedrawnContour(null)
+    setRedrawnMaskPath(null)
+    setRedrawnFootprint(null)
+    setContourInteriorMaskPath(null)
+    setBackgroundError(null)
+    setContourBackgroundError(null)
+    setShapeError(null)
+    setPresetError(null)
+    setQuoteError(null)
+    setFontsError(null)
+    setFontsNotice(null)
+    setGenBgSvgTextWarning(false)
+    setContourSvgTextWarning(false)
+    setContourTraceNoAlpha(false)
+    setContourPageAutoPicked(false)
+    // Non-snapshot guard refs back to their mount values (the snapshot already
+    // re-baselines prevCardDimsRef/prevContourBoundsRef/contourShapeTargetAutoRef).
+    contourTraceFirstRef.current = true
+    starInnerRatioTouchedRef.current = false
+  }
+
   async function handleRequestQuote() {
     if (!backgroundFile) {
       setQuoteError(m.quote_need_background())
@@ -3401,6 +3486,14 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
       <div className="mb-tight flex items-start justify-between gap-block">
         <h1 className="text-page font-bold text-gray-900 dark:text-gray-100">{m.app_title()}</h1>
         <div className="flex items-center gap-inner">
+          <button
+            type="button"
+            onClick={handleReset}
+            title={m.app_reset_title()}
+            className="rounded-lg border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+          >
+            {m.app_reset()}
+          </button>
           <button
             type="button"
             onClick={handleSavePreset}
