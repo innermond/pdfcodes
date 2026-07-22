@@ -93,7 +93,19 @@ export function LinkedDimensions({
   onSwap?: () => void
 }) {
   const round2 = (x: number) => Math.round(x * 100) / 100
-  const canLink = Number.isFinite(aspect) && aspect > 0
+  // The ratio is recomputed live from the current width/height every render, but a
+  // multi-keystroke edit (e.g. typing "180") re-derives — and `round2`s — the paired
+  // side on each keystroke, which corrupts that live ratio (the first keystroke rounds
+  // 1/1.8 to 0.56, drifting the ratio to 1.7857). Freeze the ratio for the whole edit
+  // gesture (captured on focus, released when focus leaves the widget) so every keystroke
+  // derives against one stable ratio; 90→180 then yields exactly 100, not 100.8.
+  const frozenAspect = useRef<number | null>(null)
+  const activeAspect = () =>
+    frozenAspect.current != null && frozenAspect.current > 0 ? frozenAspect.current : aspect
+  const canLink = () => {
+    const a = activeAspect()
+    return Number.isFinite(a) && a > 0
+  }
   const clampTo = (v: number, max: number | undefined) =>
     max !== undefined && Number.isFinite(v) && v > max ? max : v
   // Largest uniform down-scale (≤1) that fits (w, h) within both maxes.
@@ -103,25 +115,37 @@ export function LinkedDimensions({
       maxHeight !== undefined && h > maxHeight ? maxHeight / h : 1,
     )
   const emitFromWidth = (w: number) => {
-    if (locked && canLink && Number.isFinite(w) && w > 0) {
-      const s = fitScale(w, w / aspect)
+    const a = activeAspect()
+    if (locked && canLink() && Number.isFinite(w) && w > 0) {
+      const s = fitScale(w, w / a)
       onWidth(round2(w * s))
-      onHeight(round2((w / aspect) * s))
+      onHeight(round2((w / a) * s))
     } else {
       onWidth(clampTo(w, maxWidth))
     }
   }
   const emitFromHeight = (h: number) => {
-    if (locked && canLink && Number.isFinite(h) && h > 0) {
-      const s = fitScale(h * aspect, h)
-      onWidth(round2(h * aspect * s))
+    const a = activeAspect()
+    if (locked && canLink() && Number.isFinite(h) && h > 0) {
+      const s = fitScale(h * a, h)
+      onWidth(round2(h * a * s))
       onHeight(round2(h * s))
     } else {
       onHeight(clampTo(h, maxHeight))
     }
   }
   return (
-    <div className="flex flex-wrap items-end gap-field">
+    <div
+      className="flex flex-wrap items-end gap-field"
+      onFocusCapture={() => {
+        frozenAspect.current = Number.isFinite(aspect) && aspect > 0 ? aspect : null
+      }}
+      onBlurCapture={(e) => {
+        // Release the frozen ratio only when focus leaves the whole widget (not when
+        // tabbing between the width/height fields or onto the lock/swap buttons).
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) frozenAspect.current = null
+      }}
+    >
       <div className="min-w-40 flex-1">
         <NumberField label={widthLabel} value={width} max={maxWidth} onChange={emitFromWidth} />
       </div>
