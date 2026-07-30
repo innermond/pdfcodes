@@ -330,8 +330,8 @@ pub(crate) fn to_f64(obj: &Object) -> f64 {
 }
 
 // Grid layout of cards on the host page: card/host dimensions, gutters,
-// registration circle radius, and the resulting grid (columns, rows, and the
-// top-left position of the first card).
+// registration circle radius, and the resulting grid (columns, capacity, and the
+// top-left position of the first card). The row count is `cards_per_page / cols`.
 pub(crate) struct CardLayout {
     pub card_w: f32,
     pub card_h: f32,
@@ -343,7 +343,6 @@ pub(crate) struct CardLayout {
     pub gutter_y: f32,
     pub circle_r: f32,
     pub cols: usize,
-    pub rows: usize,
     pub cards_per_page: usize,
     pub start_x: f32,
     pub start_y: f32,
@@ -372,7 +371,6 @@ impl CardLayout {
                 gutter_y: 0.0,
                 circle_r: 0.0,
                 cols: 1,
-                rows: 1,
                 cards_per_page: 1,
                 start_x: 0.0,
                 start_y: 0.0,
@@ -412,7 +410,6 @@ impl CardLayout {
             gutter_y,
             circle_r,
             cols,
-            rows,
             cards_per_page,
             start_x,
             start_y,
@@ -550,7 +547,6 @@ mod tests {
 
         assert_eq!(layout.cards_per_page, 1);
         assert_eq!(layout.cols, 1);
-        assert_eq!(layout.rows, 1);
         // The page equals the card, positioned at the origin.
         assert_eq!(layout.host_w, card_w);
         assert_eq!(layout.host_h, card_h);

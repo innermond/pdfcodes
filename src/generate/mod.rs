@@ -1687,7 +1687,6 @@ mod tests {
             gutter_y: 0.0,
             circle_r: 0.0,
             cols: 2,
-            rows: 2,
             cards_per_page: 4,
             start_x: 0.0,
             start_y: 0.0,
