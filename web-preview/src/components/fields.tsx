@@ -3,6 +3,18 @@ import { cmykToSquarePos, colorToCss, formatCmyk, parseCmyk, squareColor, square
 import { ColorSampleContext } from '../lib/colorSample'
 import { m } from '../paraglide/messages'
 
+// The step's primary control — the field a user most likely reaches for first — is
+// accented so it stands out from the surrounding fields. Purely cosmetic: it changes
+// nothing about behaviour, focus or validation. Callers opt in with `highlight`.
+//
+// The two control sets are swapped, never concatenated: both define a border colour
+// (and a dark background), so appending would leave the winner up to stylesheet order
+// rather than attribute order.
+const HIGHLIGHT_LABEL = 'font-semibold text-blue-700 dark:text-blue-300'
+const HIGHLIGHT_CONTROL = 'border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30'
+const NORMAL_CONTROL = 'border-gray-300 dark:border-gray-600 dark:bg-gray-800'
+const labelClass = (highlight?: boolean) => (highlight ? HIGHLIGHT_LABEL : 'font-medium')
+
 export function NumberField({
   label,
   value,
@@ -10,6 +22,7 @@ export function NumberField({
   step = 'any',
   min,
   max,
+  highlight,
 }: {
   label: string
   value: number
@@ -18,6 +31,8 @@ export function NumberField({
   /** When set, the emitted value is clamped to [min, max] (and the spinner is bounded). */
   min?: number
   max?: number
+  /** Accent this field as the step's primary control (cosmetic only). */
+  highlight?: boolean
 }) {
   // Display rounded, human-friendly numbers (computed values otherwise show long
   // binary-float tails like 12.3456789). This is display-only: the parent state
@@ -36,7 +51,7 @@ export function NumberField({
   }
   return (
     <label className="flex flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
-      <span className="font-medium">{label}</span>
+      <span className={labelClass(highlight)}>{label}</span>
       <input
         type="number"
         step={step}
@@ -49,7 +64,10 @@ export function NumberField({
           onChange(clamp(parseFloat(e.target.value)))
         }}
         onBlur={() => setEditing(null)}
-        className="rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-blue-400"
+        className={
+          'rounded border px-2 py-1 focus:border-blue-500 focus:outline-none dark:text-gray-100 dark:focus:border-blue-400 ' +
+          (highlight ? HIGHLIGHT_CONTROL : NORMAL_CONTROL)
+        }
       />
     </label>
   )
@@ -73,6 +91,7 @@ export function LinkedDimensions({
   maxWidth,
   maxHeight,
   onSwap,
+  highlightWidth,
 }: {
   widthLabel: string
   heightLabel: string
@@ -91,6 +110,8 @@ export function LinkedDimensions({
   maxWidth?: number
   maxHeight?: number
   onSwap?: () => void
+  /** Accent the width input as the step's primary control (cosmetic only). */
+  highlightWidth?: boolean
 }) {
   const round2 = (x: number) => Math.round(x * 100) / 100
   // The ratio is recomputed live from the current width/height every render, but a
@@ -147,7 +168,7 @@ export function LinkedDimensions({
       }}
     >
       <div className="min-w-40 flex-1">
-        <NumberField label={widthLabel} value={width} max={maxWidth} onChange={emitFromWidth} />
+        <NumberField label={widthLabel} value={width} max={maxWidth} onChange={emitFromWidth} highlight={highlightWidth} />
       </div>
       <button
         type="button"
@@ -197,6 +218,7 @@ export function TextField({
   placeholder,
   readOnly,
   type = 'text',
+  highlight,
 }: {
   label: string
   value: string
@@ -204,10 +226,12 @@ export function TextField({
   placeholder?: string
   readOnly?: boolean
   type?: 'text' | 'password'
+  /** Accent this field as the step's primary control (cosmetic only). */
+  highlight?: boolean
 }) {
   return (
     <label className="flex min-w-0 flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
-      <span className="font-medium">{label}</span>
+      <span className={labelClass(highlight)}>{label}</span>
       <input
         type={type}
         value={value}
@@ -215,7 +239,10 @@ export function TextField({
         readOnly={readOnly}
         onFocus={readOnly ? (e) => e.target.select() : undefined}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
-        className="w-full min-w-0 rounded border border-gray-300 px-2 py-1 focus:border-blue-500 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-400"
+        className={
+          'w-full min-w-0 rounded border px-2 py-1 focus:border-blue-500 focus:outline-none dark:text-gray-100 dark:placeholder-gray-500 dark:focus:border-blue-400 ' +
+          (highlight ? HIGHLIGHT_CONTROL : NORMAL_CONTROL)
+        }
       />
     </label>
   )
@@ -248,15 +275,19 @@ export function RadioGroupField<T extends string>({
   value,
   options,
   onChange,
+  highlight,
 }: {
   label: string
   value: T
   options: { value: T; label: string; description?: string }[]
   onChange: (value: T) => void
+  // Accents the legend only: the option rows already encode selected/unselected
+  // through opacity and weight, so tinting them too would fight that.
+  highlight?: boolean
 }) {
   return (
     <fieldset className="flex flex-col gap-inner text-label text-gray-700 dark:text-gray-300">
-      <legend className="font-medium">{label}</legend>
+      <legend className={labelClass(highlight)}>{label}</legend>
       <div className="flex flex-wrap gap-inner">
         {options.map((opt) => {
           const isSelected = value === opt.value
@@ -294,6 +325,7 @@ export function SelectField<T extends string>({
   options,
   onChange,
   warning,
+  highlight,
 }: {
   label: string
   value: T
@@ -302,17 +334,21 @@ export function SelectField<T extends string>({
   // When set, the control is shown in an amber warning state and the message is
   // rendered below it (e.g. an alignment that risks codes overflowing the card).
   warning?: string
+  /** Accent this field as the step's primary control (cosmetic only); `warning` wins. */
+  highlight?: boolean
 }) {
   return (
     <label className="flex flex-col gap-tight text-label text-gray-700 dark:text-gray-300">
-      <span className="font-medium">{label}</span>
+      <span className={labelClass(highlight && !warning)}>{label}</span>
       <select
         value={value}
         onChange={(e: ChangeEvent<HTMLSelectElement>) => onChange(e.target.value as T)}
-        className={`rounded border px-2 py-1 focus:outline-none dark:bg-gray-800 dark:text-gray-100 ${
+        className={`rounded border px-2 py-1 focus:outline-none dark:text-gray-100 ${
           warning
             ? 'border-amber-500 bg-amber-50 focus:border-amber-600 dark:border-amber-500 dark:bg-amber-950/40 dark:focus:border-amber-400'
-            : 'border-gray-300 focus:border-blue-500 dark:border-gray-600 dark:focus:border-blue-400'
+            : highlight
+              ? `${HIGHLIGHT_CONTROL} focus:border-blue-500 dark:focus:border-blue-400`
+              : `${NORMAL_CONTROL} focus:border-blue-500 dark:focus:border-blue-400`
         }`}
       >
         {options.map((opt) => (
@@ -674,11 +710,14 @@ export function FileField({
   multiple,
   onChange,
   currentName,
+  highlight,
 }: {
   label: string
   accept?: string
   multiple?: boolean
   onChange: (files: FileList | null) => void
+  /** Accent this field as the step's primary control (cosmetic only). */
+  highlight?: boolean
   // Filename to show as a persistent hint. The native input loses its displayed
   // name when this field is remounted (e.g. switching wizard steps), so we surface
   // the retained filename from state here instead of relying on the browser UI.
@@ -710,17 +749,19 @@ export function FileField({
       }}
       onDrop={handleDrop}
     >
-      <span className="font-medium">{label}</span>
+      <span className={labelClass(highlight)}>{label}</span>
       <input
         type="file"
         accept={accept}
         multiple={multiple}
         onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.files)}
         className={
-          'w-full min-w-0 rounded border px-2 py-1 text-label file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:file:bg-blue-900 dark:file:text-blue-200 ' +
+          'w-full min-w-0 rounded border px-2 py-1 text-label file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-blue-700 dark:text-gray-300 dark:file:bg-blue-900 dark:file:text-blue-200 ' +
           (dragOver
             ? 'border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40'
-            : 'border-gray-300 dark:border-gray-600 dark:text-gray-300')
+            : highlight
+              ? HIGHLIGHT_CONTROL
+              : 'border-gray-300 dark:border-gray-600')
         }
       />
       {currentName ? (
