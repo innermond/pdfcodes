@@ -223,6 +223,7 @@ pub fn generate(
         background_spin_deg: 0.0,
         background_backdrop_color: None,
         no_cut: false,
+        no_circles: false,
         contour_offset_x_mm: 0.0,
         contour_offset_y_mm: 0.0,
         contour_canvas_width_mm: None,
@@ -328,6 +329,9 @@ struct JsOptions {
     // them transparent.
     background_backdrop_color: String,
     no_cut: bool,
+    // "Nu desena cercurile": omit the registration circles from the contour PDF
+    // (layout unchanged; the print PDF keeps its own).
+    no_circles: bool,
     contour_offset_x_mm: f32,
     contour_offset_y_mm: f32,
     contour_canvas_width_mm: Option<f32>,
@@ -423,6 +427,7 @@ impl Default for JsOptions {
             background_spin_deg: base.background_spin_deg,
             background_backdrop_color: String::new(),
             no_cut: false,
+            no_circles: false,
             contour_offset_x_mm: base.contour_offset_x_mm,
             contour_offset_y_mm: base.contour_offset_y_mm,
             contour_canvas_width_mm: None,
@@ -626,6 +631,7 @@ pub fn generate_with_options(
         background_spin_deg: js_opts.background_spin_deg,
         background_backdrop_color,
         no_cut: js_opts.no_cut,
+        no_circles: js_opts.no_circles,
         contour_offset_x_mm: js_opts.contour_offset_x_mm,
         contour_offset_y_mm: js_opts.contour_offset_y_mm,
         contour_canvas_width_mm: js_opts.contour_canvas_width_mm,

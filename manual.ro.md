@@ -673,6 +673,10 @@ doar la „Print” / „Print + Contur”, iar cele de tăiere doar la „Contu
 - **Minimal** — decupează pagina generată la caseta conturului.
 - **Contur Dreptunghi** — doar pentru forma presetată **dreptunghi**: emite
   dreptunghiuri simple în loc de liniile de tăiere optimizate (grilă).
+- **Nu desena cercurile** — omite cercurile de reglaj din PDF-ul de contur.
+  Așezarea rămâne neschimbată (grila păstrează același spațiu la margini), deci
+  printul și conturul se potrivesc în continuare; PDF-ul de print își păstrează
+  propriile cercuri. Nu apare în „Non-decupare” (acolo nu există cercuri deloc).
 - **Corectare depășire** — micșorează automat codurile care depășesc conturul
   (sau cardul) până încap, dar nu sub **Font minim (pt)**; cele care tot nu încap
   rămân semnalate. **Aplică micșorarea** alege dacă se micșorează **Pe cod**

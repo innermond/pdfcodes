@@ -151,6 +151,12 @@ pub struct Options {
     // contour outline) is emitted on its own page sized to the card, with no
     // registration circles. See `CardLayout::compute`.
     pub no_cut: bool,
+    // "Nu desena cercurile": omit the three registration circles (and their
+    // non-printable OCG) from the contour PDF's pages. The layout is unchanged —
+    // the grid stays inset by one circle diameter on every edge, so print and
+    // contour still align — only the drawing is skipped. The print PDF keeps its
+    // own (printable) circles.
+    pub no_circles: bool,
     // Translate the contour outline by this many mm (right/up positive) relative
     // to its default position, so the cut can be nudged to align with the print
     // background. Applied in the standalone contour page and the combine overlay.
@@ -290,6 +296,7 @@ impl Default for Options {
             background_spin_deg: 0.0,
             background_backdrop_color: None,
             no_cut: false,
+            no_circles: false,
             contour_offset_x_mm: 0.0,
             contour_offset_y_mm: 0.0,
             contour_canvas_width_mm: None,

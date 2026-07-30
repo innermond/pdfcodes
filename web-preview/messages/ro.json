@@ -313,6 +313,7 @@
 	"generate_circle_diameter": "Diametru cerc (mm)",
 	"generate_options": "Opțiuni",
 	"generate_no_cut": "Non-decupare",
+	"generate_no_circles": "Nu desena cercurile",
 	"generate_combine": "Combină paginile",
 	"generate_no_codes": "Nu printa codurile",
 	"generate_minimal": "Minimal",

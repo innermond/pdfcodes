@@ -4633,6 +4633,12 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
               {needsContourInput && contourSource === 'shape' && shapeKind === 'rectangle' && (
                 <CheckboxField label={m.generate_rectangle_contour()} checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
               )}
+              {/* "Nu desena cercurile" omits the registration circles from the contour PDF
+                  (the imposition is unchanged), so it only makes sense when a contour is
+                  produced — and in "Non-decupare" there are no circles at all. */}
+              {needsContourInput && !pageOptions.noCut && (
+                <CheckboxField label={m.generate_no_circles()} checked={pageOptions.noCircles} onChange={(v) => setPageOption('noCircles', v)} />
+              )}
               {/* "Corectare depășire" shrinks overflowing code text in the print
                   output, so it needs a print output (like "Nu printa codurile"). */}
               {needsPrintInput && (
