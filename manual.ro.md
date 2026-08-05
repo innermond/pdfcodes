@@ -311,7 +311,10 @@ Primul comutator, **Mod sursă**, alege de unde vin codurile:
 
 ![Număr de rânduri și separatorul dintre coduri](manual-assets/s2-generate-top.png)
 
-- **Număr de rânduri** — câte carduri se generează (un rând = un card).
+- **Număr de rânduri** — câte carduri se generează (un rând = un card). Dacă „Cod 1”
+  este un **cod lider** (vezi 5.1.5), câmpul își schimbă rolul: devine numărul
+  **implicit** folosit doar de valorile lider care nu au un număr propriu, iar sub
+  el apare totalul real.
 - **Separator între coduri pe rând** — caracterul care desparte codurile de pe
   **același** rând. Contează doar dacă un card afișează mai multe coduri (vezi
   5.1.4). Implicit este virgula `,`; poți pune un spațiu, `;`, `|` etc.
@@ -334,7 +337,10 @@ un singur cod odată. Fiecare cod se construiește după tiparul **prefix + cod 
     numere consecutive (ex. start `1`, pas `1` → 1, 2, 3 …).
   - **Text fix** — afișează **Text**: același text pe fiecare rând (ex.
     `SPECIMEN`) — util ca etichetă sau filigran. Nu are completare și este
-    exceptat de la verificarea unicității (vezi 5.1.5).
+    exceptat de la verificarea unicității (vezi 5.1.6).
+  - **Listă de valori (lider)** — **doar pentru „Cod 1”**: în loc de o singură
+    valoare pe rând, codul ține o listă de valori, iar fiecare valoare se repetă
+    pe blocul ei de rânduri. Vezi 5.1.5.
 
 ![Același bloc în modul „Interval numeric”: prefix „NR-”, completare cu zerouri](manual-assets/s2-cod-range.png)
 
@@ -365,7 +371,88 @@ coduri, blocul activ are un buton **„Elimină”** care îl șterge.
 
 ![Două coduri pe rând: taburile „Cod 1” și „Cod 2”, cu blocul activ deschis](manual-assets/s2-multi-code.png)
 
-#### 5.1.5 Unicitatea codurilor
+#### 5.1.5 Codul lider („Listă de valori”)
+
+De obicei fiecare cod produce **o valoare pe rând**. Un **cod lider** face altceva:
+ține **mai multe valori**, iar fiecare valoare se repetă pe **blocul ei de rânduri**,
+alăturată celorlalte coduri. Este felul firesc de a tipări serii: „Seria A” pe 500
+de carduri, apoi „Seria B” pe 120 etc.
+
+Alege **Tip cod → „Listă de valori (lider)”**. Opțiunea apare **doar la „Cod 1”** —
+există un singur nivel de grupare, nu un produs de mai mulți lideri.
+
+**Valorile lider.** Fiecare valoare are două câmpuri:
+
+- **Valoare** — textul tipărit (i se aplică și prefixul/sufixul codului, dar
+  **nu** completarea).
+- **Rânduri** — câte carduri primește valoarea. **Lasă-l gol** ca să folosească
+  numărul implicit din „Număr de rânduri” (5.1.1).
+
+Butonul **„+ Adaugă valoare”** adaugă un rând, iar `×` îl șterge. În dreapta apare
+mereu **totalul real** (ex. *„Total: 630 de rânduri”*) — suma tuturor blocurilor.
+
+![Editorul „Valori lider”: trei serii, ultima cu numărul de rânduri gol, și totalul](manual-assets/s2-leader.png)
+
+*„Seria C” are numărul de rânduri gol, deci primește valoarea implicită din „Număr
+de rânduri” (aici 10): 500 + 120 + 10 = 630.*
+
+**Cum se comportă celelalte coduri.** În interiorul fiecărui bloc, codurile
+următoare **o iau de la capăt**: un „Interval numeric” repornește de la valoarea de
+start, iar unicitatea codurilor aleatoare se aplică **în interiorul blocului**.
+Altfel spus, perechea (valoare lider + cod) este unică, dar același cod se poate
+repeta sub o altă valoare lider:
+
+```
+Seria A,1,K7X2
+Seria A,2,M4P9
+Seria A,3,LL08
+Seria B,1,K7X2   ← „1” repornește, iar „K7X2” se poate repeta:
+Seria B,2,QQ81      este alt bloc
+Seria B,3,ZZ40
+```
+
+Dacă ai nevoie ca un cod să fie unic pe **tot** fișierul, folosește un interval
+numeric cu un prefix diferit pe fiecare serie, sau renunță la lider.
+
+##### Încărcarea valorilor dintr-un fișier
+
+Pentru liste lungi, butonul **„↑ Încarcă fișier”** (lângă „+ Adaugă valoare”) preia
+valorile dintr-un CSV:
+
+- **Prima coloană** = valoarea, **a doua coloană** = numărul de rânduri. Restul
+  coloanelor se **ignoră**, deci poți încărca direct un export cu coloane în plus.
+- Dacă a doua coloană lipsește sau nu conține un număr, valoarea se importă cu
+  numărul de rânduri **gol** (deci folosește implicitul), iar un mesaj galben îți
+  spune câte rânduri au fost în această situație. Fișierul nu este respins.
+- Încărcarea **înlocuiește** lista existentă.
+- Separatorul este detectat automat, ca la „Încarcă CSV” (5.2).
+
+După încărcare apar numele fișierului, câte valori s-au preluat și două câmpuri:
+
+- **Sari peste primele** / **Sari peste ultimele** — elimină rânduri de la
+  începutul, respectiv sfârșitul fișierului. Pune `1` la „primele” dacă fișierul
+  are un **rând de antet** (numele coloanelor); „ultimele” scapă de un rând de
+  total.
+
+![Controalele de import: numele fișierului, câmpurile de sărire și avertismentul pentru numerele invalide](manual-assets/s2-leader-file.png)
+
+*Aici s-au sărit antetul și rândul de total, au rămas 4 valori, iar unul dintre
+rânduri nu avea un număr valid în a doua coloană.*
+
+> Atenție: aceste două câmpuri **reconstruiesc lista din fișier** de fiecare dată
+> când le modifici. Este comod (vezi imediat efectul, fără să reîncarci), dar
+> **modificările făcute de mână în listă după import se pierd** la o astfel de
+> reconstrucție. Fă întâi sărirea, apoi ajustările manuale.
+
+Dacă sărirea elimină toate rândurile, lista rămâne goală, apare un mesaj roșu
+(*„Sărirea elimină toate rândurile din fișier …”*) și pașii următori se blochează
+până micșorezi valorile.
+
+Fișierul în sine **nu se salvează** în presetare (vezi 2.2) — se salvează
+**valorile rezultate**. La reîncărcarea unei presetări vei regăsi lista, dar nu și
+legătura cu fișierul, deci câmpurile de sărire nu mai apar.
+
+#### 5.1.6 Unicitatea codurilor
 
 Pentru codurile **generate aleator**, aplicația compară numărul de rânduri cerut
 cu numărul de **combinații posibile** (dat de setul de caractere și de lungime):
@@ -379,11 +466,17 @@ cu numărul de **combinații posibile** (dat de setul de caractere și de lungim
 
 ![Tabul roșu cu ⚠ și mesajul care explică de ce generarea e blocată](manual-assets/s2-uniqueness.png)
 
+> Cu un cod lider (5.1.5), comparația se face cu **cel mai mare bloc**, nu cu
+> totalul: pentru că fiecare cod o ia de la capăt la fiecare valoare lider, e
+> destul ca el să acopere cel mai lung bloc. Ex.: blocuri de 500, 120 și 50 de
+> rânduri (total 670) cer doar 500 de combinații.
+
 După generare, sub buton apare bilanțul: **„✓ Toate codurile generate sunt
 unice.”** (verde) sau **„⚠ N coduri duplicate …”** (galben), când nu s-au putut
-genera destule coduri unice.
+genera destule coduri unice. Cu un lider, „unice” înseamnă **unice în interiorul
+fiecărui bloc**.
 
-#### 5.1.6 Generarea
+#### 5.1.7 Generarea
 
 - **Generează CSV** — produce datele. La loturi mari, butonul arată progresul
   (`Se generează… 1.234 / 250.000`).
@@ -406,6 +499,8 @@ Folosești un fișier CSV gata făcut. Fiecare rând devine un card.
   detectat: spațiu · 100 rânduri · 2 coloane”*).
 - **Avertismente** (text galben) — apar dacă fișierul are probleme minore (ex.
   rânduri cu număr inegal de coloane, rânduri goale).
+- **Sari peste primele** / **Sari peste ultimele** — apar după încărcare și
+  elimină rânduri de la începutul, respectiv sfârșitul fișierului. Vezi 5.2.1.
 - **Fiecare rând este un singur cod** — bifă (apare după încărcare): unește toate
   câmpurile unui rând într-un singur cod. Folosește-o când rândul întreg este un
   singur cod, chiar dacă el conține separatorul.
@@ -428,6 +523,37 @@ Este util când **un cod conține chiar separatorul**: de ex. codul „1A 1”, 
 separator spațiu, a fost rupt în „1A” și „1” — unești bucățile la loc într-un
 singur câmp, fără să re-editezi fișierul.
 
+#### 5.2.1 Sărirea unor rânduri (antet, total)
+
+Aplicația citește fișierul **fără antet**: nu are cum să știe dacă primul rând
+conține numele coloanelor, așa că, implicit, **fiecare rând devine un card** — și
+un antet ar fi tipărit ca atare. Cele două câmpuri rezolvă asta:
+
+- **Sari peste primele** — pune `1` dacă fișierul are un rând de antet.
+- **Sari peste ultimele** — scapă de un rând de total sau de subsol.
+
+Amândouă pornesc de la `0`, iar sub ele apare bilanțul *„Se folosesc 9 rânduri din
+10 (1 sărit).”*.
+
+![Câmpurile de sărire și bilanțul rândurilor folosite](manual-assets/s2-skip-rows.png)
+
+Rândurile sărite **rămân vizibile în previzualizare**, tăiate cu o linie și marcate
+cu *„← sărit”*, ca să confirmi dintr-o privire că ai eliminat exact ce trebuia:
+
+![Previzualizarea cu antetul și rândul de total tăiate și marcate „← sărit”](manual-assets/s2-skip-preview.png)
+
+Sărirea afectează tot ce urmează: numărul de carduri, previzualizarea și **numărul
+de cuvinte** oferit la Pasul 4 (un antet este adesea cel mai „lat” rând din fișier,
+deci altfel ar umfla lista de cuvinte).
+
+> La încărcarea unui fișier nou, ambele câmpuri revin la `0` — un fișier nou poate
+> să nu aibă antet, iar păstrarea valorilor ar șterge pe tăcute rânduri reale.
+> Corectarea manuală a separatorului **nu** le resetează: rândurile rămân aceleași,
+> se schimbă doar împărțirea în câmpuri.
+
+Dacă sărirea elimină toate rândurile, apare un mesaj roșu și pașii **Coduri** și
+**PDF** se blochează până micșorezi valorile.
+
 ### 5.3 Previzualizarea datelor
 
 Sub ambele moduri apare o **previzualizare** a primelor rânduri (maximum 15;
@@ -435,13 +561,25 @@ numărul total de rânduri este afișat în antet). Reflectă în timp real set�
 
 ![Previzualizarea CSV: prefix + interval cu zerouri pentru primul cod și cod aleator pentru al doilea](manual-assets/s2-preview.png)
 
+Două situații schimbă ce se afișează:
+
+- **Cu un cod lider** (5.1.5), previzualizarea nu mai arată doar începutul
+  fișierului — altfel un prim bloc de sute de rânduri ar ascunde exact gruparea pe
+  care vrei s-o verifici. Cele 15 rânduri se **împart între blocuri**, iar acolo
+  unde s-a sărit peste rânduri apare un marcaj *„… încă N rânduri”*.
+- **În modul „Încarcă CSV”**, rândurile eliminate prin sărire (5.2.1) rămân
+  vizibile, **tăiate** și marcate *„← sărit”*, la locul lor (sus, respectiv jos).
+
+Marcajele sunt doar informative — nu ajung în CSV și nu devin carduri.
+
 ### 5.4 Deblocarea pașilor următori
 
 Pașii **Coduri** și **PDF** se deblochează abia când datele sunt gata:
 
 - în modul **Generează coduri** — după ce apeși **„Generează CSV”** (iar dacă
   schimbi setările, trebuie să regenerezi);
-- în modul **Încarcă CSV** — imediat după o încărcare reușită.
+- în modul **Încarcă CSV** — imediat după o încărcare reușită, **dacă rămâne cel
+  puțin un rând** după sărire (5.2.1).
 
 Până atunci, sub pas apare un mesaj galben potrivit modului curent: în **Generează
 coduri** — *„Apasă «Generează CSV» în pasul «Date» pentru a continua.”*, iar în
@@ -468,7 +606,9 @@ Aici controlezi rândul de probă folosit în previzualizare și două margini g
 
 - **Rând CSV exemplu** — un rând de probă, folosit **doar pentru previzualizare**
   (nu modifică datele reale). Eticheta îți arată ce **separator** se aplică, iar
-  cuvintele rezultate apar ca butoane în secțiunea „Setări” (vezi 6.2).
+  cuvintele rezultate apar ca butoane în secțiunea „Setări” (vezi 6.2). Dacă ai un
+  **cod lider** (5.1.5), valoarea lui este primul cuvânt și se stilizează exact ca
+  oricare altul.
 - **Margine (mm)** — zona de siguranță de la marginea cardului în care **nu** se
   așază text; este și referința pentru alinierile sus/jos/stânga/dreapta.
 - **Distanțare contur (mm)** — distanța minimă față de tăietură: e folosită atât

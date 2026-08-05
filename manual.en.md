@@ -324,7 +324,10 @@ The first switch, **Source mode**, chooses where the codes come from:
 
 ![Number of rows and the separator between codes](manual-assets/s2-generate-top.png)
 
-- **Number of rows** — how many cards are generated (one row = one card).
+- **Number of rows** — how many cards are generated (one row = one card). If
+  "Code 1" is a **leader code** (see 5.1.5), this field changes role: it becomes
+  the **default** used only by leader values that have no count of their own, and
+  the real total appears underneath it.
 - **Separator between codes on a row** — the character that separates the codes
   on the **same** row. It only matters if a card displays several codes (see
   5.1.4). The default is the comma `,`; you can use a space, `;`, `|`, etc.
@@ -349,7 +352,10 @@ suffix**:
     consecutive numbers (e.g. start `1`, step `1` → 1, 2, 3 …).
   - **Fixed text** — shows **Text**: the same text on every row (e.g.
     `SPECIMEN`) — useful as a label or watermark. It has no padding and is
-    exempt from the uniqueness check (see 5.1.5).
+    exempt from the uniqueness check (see 5.1.6).
+  - **Value list (leader)** — **for "Code 1" only**: instead of one value per
+    row, the code holds a list of values, and each value repeats over its own
+    block of rows. See 5.1.5.
 
 ![The same block in "Numeric range" mode: prefix "NR-", zero padding](manual-assets/s2-cod-range.png)
 
@@ -380,7 +386,88 @@ codes, the active block has a **"Remove"** button that deletes it.
 
 ![Two codes per row: the "Code 1" and "Code 2" tabs, with the active block open](manual-assets/s2-multi-code.png)
 
-#### 5.1.5 Code uniqueness
+#### 5.1.5 The leader code ("Value list")
+
+Normally every code produces **one value per row**. A **leader code** does
+something else: it holds **several values**, and each value repeats over **its own
+block of rows**, joined with the other codes. It is the natural way to print
+series: "Series A" on 500 cards, then "Series B" on 120, and so on.
+
+Choose **Code type → "Value list (leader)"**. The option appears **only on
+"Code 1"** — there is a single level of grouping, not a product of several leaders.
+
+**The leader values.** Each value has two fields:
+
+- **Value** — the printed text (the code's prefix/suffix apply to it as well, but
+  **not** the padding).
+- **Rows** — how many cards that value gets. **Leave it empty** to use the default
+  from "Number of rows" (5.1.1).
+
+The **"+ Add value"** button adds a row and `×` deletes it. The **real total**
+is always shown on the right (e.g. *"Total: 630 rows"*) — the sum of every block.
+
+![The "Leader values" editor: three series, the last one with an empty row count, and the total](manual-assets/s2-leader.png)
+
+*"Seria C" has an empty row count, so it takes the default from "Number of rows"
+(10 here): 500 + 120 + 10 = 630.*
+
+**How the other codes behave.** Inside each block, the following codes **start
+over**: a "Numeric range" restarts from its start value, and the uniqueness of
+random codes applies **within the block**. In other words the pair (leader value +
+code) is unique, but the same code may repeat under a different leader value:
+
+```
+Series A,1,K7X2
+Series A,2,M4P9
+Series A,3,LL08
+Series B,1,K7X2   ← "1" restarts, and "K7X2" may repeat:
+Series B,2,QQ81      this is a different block
+Series B,3,ZZ40
+```
+
+If you need a code to be unique across the **whole** file, use a numeric range
+with a different prefix per series, or don't use a leader.
+
+##### Loading the values from a file
+
+For long lists, the **"↑ Load file"** button (next to "+ Add value") takes the
+values from a CSV:
+
+- **The first column** = the value, **the second column** = the row count. Any
+  further columns are **ignored**, so you can load an export with extra columns
+  as it is.
+- If the second column is missing or holds something that isn't a number, the
+  value is still imported with an **empty** row count (so it uses the default),
+  and a yellow message tells you how many rows were in that situation. The file
+  is not rejected.
+- Loading **replaces** the existing list.
+- The separator is detected automatically, as in "Upload CSV" (5.2).
+
+After loading, the file name, how many values were taken and two fields appear:
+
+- **Skip the first** / **Skip the last** — drop rows from the start and the end of
+  the file. Set "first" to `1` if the file has a **header row** (the column
+  names); "last" gets rid of a totals row.
+
+![The import controls: the file name, the skip fields and the warning about invalid numbers](manual-assets/s2-leader-file.png)
+
+*Here the header and the totals row were skipped, 4 values remain, and one of the
+rows had no valid number in the second column.*
+
+> Careful: these two fields **rebuild the list from the file** every time you
+> change them. That is convenient (you see the effect at once, without reloading),
+> but **edits you made by hand in the list after the import are lost** in such a
+> rebuild. Do the skipping first, then the manual adjustments.
+
+If the skipping removes every row, the list stays empty, a red message appears
+(*"Skipping removes every row in the file …"*) and the next steps stay locked
+until you lower the values.
+
+The file itself is **not saved** in the preset (see 2.2) — the **resulting values**
+are. When you reload a preset you will find the list, but not the link to the file,
+so the skip fields no longer appear.
+
+#### 5.1.6 Code uniqueness
 
 For **randomly generated** codes, the application compares the requested number
 of rows with the number of **possible combinations** (given by the character set
@@ -395,11 +482,17 @@ and the length):
 
 ![The red tab with ⚠ and the message explaining why generation is blocked](manual-assets/s2-uniqueness.png)
 
+> With a leader code (5.1.5), the comparison uses the **largest block**, not the
+> total: because every code starts over at each leader value, it only has to cover
+> the longest block. E.g. blocks of 500, 120 and 50 rows (670 in total) need only
+> 500 combinations.
+
 After generating, a summary appears under the button: **"✓ All generated codes
 are unique."** (green) or **"⚠ N duplicate codes …"** (yellow), when not enough
-unique codes could be generated.
+unique codes could be generated. With a leader, "unique" means **unique within
+each block**.
 
-#### 5.1.6 Generating
+#### 5.1.7 Generating
 
 - **Generate CSV** — produces the data. For large batches, the button shows the
   progress (`Generating… 1,234 / 250,000`).
@@ -423,6 +516,8 @@ You use a ready-made CSV file. Each row becomes a card.
   *"Detected separator: space · 100 rows · 2 columns"*).
 - **Warnings** (yellow text) — appear if the file has minor problems (e.g. rows
   with an unequal number of columns, empty rows).
+- **Skip the first** / **Skip the last** — appear after uploading and drop rows
+  from the start and the end of the file. See 5.2.1.
 - **Each row is a single code** — checkbox (appears after uploading): joins all
   the fields of a row into a single code. Use it when the whole row is a single
   code, even if it contains the separator.
@@ -446,6 +541,38 @@ This is useful when **a code contains the separator itself**: e.g. the code
 "1A 1", with a space separator, got broken into "1A" and "1" — you join the
 pieces back into a single field, without re-editing the file.
 
+#### 5.2.1 Skipping rows (header, totals)
+
+The application reads the file **without a header**: it has no way of knowing
+whether the first row holds the column names, so by default **every row becomes a
+card** — and a header would be printed as one. The two fields solve this:
+
+- **Skip the first** — set `1` if the file has a header row.
+- **Skip the last** — gets rid of a totals or footer row.
+
+Both start at `0`, and underneath them a summary appears: *"Using 9 rows of 10
+(1 skipped)."*.
+
+![The skip fields and the summary of the rows in use](manual-assets/s2-skip-rows.png)
+
+The skipped rows **stay visible in the preview**, struck through and marked
+*"← skipped"*, so you can confirm at a glance that you dropped exactly what you
+meant to:
+
+![The preview with the header and the totals row struck through and marked "← sărit"](manual-assets/s2-skip-preview.png)
+
+Skipping affects everything downstream: the number of cards, the preview and the
+**number of words** offered at Step 4 (a header is often the "widest" row in the
+file, so it would otherwise inflate the word list).
+
+> When you upload a new file, both fields go back to `0` — a new file may have no
+> header, and keeping the values would silently drop real rows. Correcting the
+> separator manually does **not** reset them: the rows stay the same, only the
+> split into fields changes.
+
+If the skipping removes every row, a red message appears and the **Codes** and
+**PDF** steps stay locked until you lower the values.
+
 ### 5.3 The data preview
 
 Under both modes, a **preview** of the first rows appears (at most 15; the total
@@ -453,13 +580,26 @@ number of rows is shown in the header). It reflects your settings in real time.
 
 ![The CSV preview: prefix + zero-padded range for the first code and a random code for the second](manual-assets/s2-preview.png)
 
+Two situations change what is displayed:
+
+- **With a leader code** (5.1.5), the preview no longer shows just the start of
+  the file — otherwise a first block of hundreds of rows would hide exactly the
+  grouping you want to check. The 15 rows are **spread across the blocks**, and
+  wherever rows were skipped a *"… N more rows"* marker appears.
+- **In "Upload CSV" mode**, the rows removed by skipping (5.2.1) stay visible,
+  **struck through** and marked *"← skipped"*, in place (at the top and bottom
+  respectively).
+
+The markers are informative only — they never reach the CSV and never become cards.
+
 ### 5.4 Unlocking the next steps
 
 The **Codes** and **PDF** steps only unlock once the data is ready:
 
 - in **Generate codes** mode — after you press **"Generate CSV"** (and if you
   change the settings, you must regenerate);
-- in **Upload CSV** mode — immediately after a successful upload.
+- in **Upload CSV** mode — immediately after a successful upload, **if at least
+  one row remains** after skipping (5.2.1).
 
 Until then, a yellow message appropriate to the current mode appears under the
 step: in **Generate codes** — *"Press “Generate CSV” in the “Data” step to
@@ -487,7 +627,9 @@ Here you control the sample row used in the preview and two global margins.
 
 - **Sample CSV row** — a sample row, used **only for the preview** (it does not
   change the real data). The label shows you which **separator** applies, and the
-  resulting words appear as buttons in the "Settings" section (see 6.2).
+  resulting words appear as buttons in the "Settings" section (see 6.2). If you
+  have a **leader code** (5.1.5), its value is the first word and is styled just
+  like any other.
 - **Margin (mm)** — the safety zone at the card's edge where **no** text is
   placed; it is also the reference for the top/bottom/left/right alignments.
 - **Contour inset (mm)** — the minimum distance from the cut: it is used both for
