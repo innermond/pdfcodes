@@ -1,0 +1,59 @@
+# Deploys to:  public_html/.htaccess  (server document root)
+# NOT part of the Vite build - do not place this in web-preview/dist/,
+# `npm run build` empties that directory and deletes it.
+
+#AddHandler application/x-httpd-php .html
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Block sensitive directories first
+    RewriteRule ^(tipografie-urgenta|modules|system)(/|$) - [F,L]
+
+    # Trailing-slash canonicalisation for static pages
+    RewriteRule ^decupare-imagine-online/$ /decupare-imagine-online [R=301,L]
+    RewriteRule ^etichete/coduri-unice-decupare-contur/$ /etichete/coduri-unice-decupare-contur [R=301,L]
+
+    # Serve existing physical files/directories directly
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Static HTML rewrites - check if kh/{path}.html exists
+    RewriteCond %{REQUEST_URI} !^/evaluator [NC]
+    RewriteCond %{DOCUMENT_ROOT}/kh%{REQUEST_URI}.html -f
+    RewriteRule ^(.+?)/?$ kh/$1.html [L]
+
+    # Assets belonging to directory-style pages (Vite JS/CSS/wasm/fonts).
+    # The .html exclusion keeps the flat kh/*.html pages reachable at one URL only.
+    RewriteCond %{REQUEST_URI} !\.html$ [NC]
+    RewriteCond %{DOCUMENT_ROOT}/kh%{REQUEST_URI} -f
+    RewriteRule ^(.+)$ kh/$1 [L]
+
+    # Directory-style static pages - check if kh/{path}/index.html exists
+    RewriteCond %{REQUEST_URI} !^/evaluator [NC]
+    RewriteCond %{DOCUMENT_ROOT}/kh%{REQUEST_URI}/index.html -f
+    RewriteRule ^(.+?)/?$ kh/$1/index.html [L]
+
+    # Kohana bootstrap for everything else
+    RewriteRule ^(.*)$ index.php/$1 [QSA,L]
+</IfModule>
+
+# php -- BEGIN cPanel-generated handler, do not edit
+# Set the “ea-php71” package as the default “PHP” programming language.
+<IfModule mime_module>
+  AddHandler application/x-httpd-ea-php71 .php .php7 .phtml
+</IfModule>
+# php -- END cPanel-generated handler, do not edit
+
+# BEGIN cPanel-generated php ini directives, do not edit
+# Manual editing of this file may result in unexpected behavior.
+# To make changes to this file, use the cPanel MultiPHP INI Editor (Home >> Software >> MultiPHP INI Editor)
+# For more information, read our documentation (https://go.cpanel.net/EA4ModifyINI)
+<IfModule php7_module>
+
+</IfModule>
+<IfModule lsapi_module>
+
+</IfModule>
+# END cPanel-generated php ini directives, do not edit

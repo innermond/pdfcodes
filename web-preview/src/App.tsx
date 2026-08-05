@@ -3779,11 +3779,14 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
               // them wrap when the row genuinely can't fit.
               <div className="flex flex-wrap items-start gap-field">
                 <div className="min-w-0 flex-1">
+                  {/* Step 1's primary control in "Încarcă PDF" mode — accented so the
+                      step reads as "start here". Cosmetic only; see `highlight` in fields.tsx. */}
                   <FileField
                     label={m.background_pdf_label()}
                     accept="application/pdf"
                     onChange={(files) => handleBackgroundFileChange(files?.[0] ?? null)}
                     currentName={backgroundFile?.name}
+                    highlight
                   />
                 </div>
                 {backgroundPageCount > 1 && (
@@ -3809,6 +3812,8 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                   aspect={simpleBgWidthMm / simpleBgHeightMm}
                   locked={lockAspect}
                   onToggleLock={() => setLockAspect((v) => !v)}
+                  // Step 1's primary control in "Simplu" mode.
+                  highlightWidth
                 />
                 <ColorField
                   label={m.background_color_label()}
@@ -3836,6 +3841,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                     accept="image/png,image/jpeg,image/svg+xml,.svg"
                     onChange={(files) => handleGenBgImageChange(files?.[0] ?? null)}
                     currentName={genBgImageFile?.name}
+                    highlight
                   />
                 ) : genBgImageSource === 'url' ? (
                   <div className="flex items-end gap-inner">
@@ -3845,6 +3851,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                         value={genBgImageUrl}
                         onChange={(v) => setBgField('genBgImageUrl', v)}
                         placeholder={m.background_url_placeholder()}
+                        highlight
                       />
                     </div>
                     <button
@@ -4064,6 +4071,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                         accept="application/pdf,image/svg+xml,.svg,image/png,image/jpeg,.png,.jpg,.jpeg"
                         onChange={(files) => handleContourFileChange(files?.[0] ?? null)}
                         currentName={contourTraceImage?.name ?? contourBackgroundFile?.name}
+                        highlight
                       />
                     </div>
                     {contourPageCount > 1 && (
@@ -4084,6 +4092,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                         value={contourUploadUrl}
                         onChange={(v) => setContourField('contourUploadUrl', v)}
                         placeholder={m.contour_url_placeholder()}
+                        highlight
                       />
                     </div>
                     <button
@@ -4218,6 +4227,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                     value={shapeKind}
                     options={SHAPE_OPTIONS}
                     onChange={(v) => setContourField('shapeKind', v)}
+                    highlight
                   />
                   {shapeKind === 'rounded-rectangle' && (
                     <>
@@ -4454,10 +4464,13 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
           {step === 'aspect' && (
           <>
           <Section title={m.words_sample_title()} frame="top">
+            {/* Step 4's primary control: the pills below auto-select "Cod 1" on entry,
+                so this is the first field the user actually edits. */}
             <TextField
               label={m.words_sample_label({ separator: describeSeparator(codeSeparator) })}
               value={sampleTextDisplay}
               onChange={(v) => handleSampleTextChange(v, codeSeparator)}
+              highlight
             />
             <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
               <NumberField label={m.words_margin_label()} value={safeMarginMm} onChange={(v) => setStyleField('safeMarginMm', v)} />
@@ -4785,7 +4798,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
           <Section title={m.common_settings_title()} frame="top">
             {!generateUnlocked ? (
               <>
-                <TextField label={m.generate_password_label()} type="password" value={passwordInput} onChange={setPasswordInput} />
+                <TextField label={m.generate_password_label()} type="password" value={passwordInput} onChange={setPasswordInput} highlight />
                 <button
                   type="button"
                   onClick={handleUnlock}
@@ -4806,6 +4819,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                 { value: 'contour', label: m.generate_mode_contour(), description: m.generate_mode_contour_desc() },
                 { value: 'both', label: m.generate_mode_both(), description: m.generate_mode_both_desc() },
               ]}
+              highlight
             />
 
             {/* No-cut mode skips imposition, so the host-sheet/circle fields are ignored. */}
@@ -4845,6 +4859,12 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
                   lines — only for a rectangle contour in a contour-producing mode. */}
               {needsContourInput && contourSource === 'shape' && shapeKind === 'rectangle' && (
                 <CheckboxField label={m.generate_rectangle_contour()} checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
+              )}
+              {/* "Nu desena cercurile" omits the registration circles from the contour PDF
+                  (the imposition is unchanged), so it only makes sense when a contour is
+                  produced — and in "Non-decupare" there are no circles at all. */}
+              {needsContourInput && !pageOptions.noCut && (
+                <CheckboxField label={m.generate_no_circles()} checked={pageOptions.noCircles} onChange={(v) => setPageOption('noCircles', v)} />
               )}
               {/* "Corectare depășire" shrinks overflowing code text in the print
                   output, so it needs a print output (like "Nu printa codurile"). */}

@@ -110,34 +110,36 @@ fn compute_cutting_metrics(pm: &PathMetrics, opts: &Options, total_cards: usize,
 // Grid-mode counterpart of `compute_cutting_metrics`. The optimized grid cuts
 // shared lines once per *page*, so totals come from the page's line geometry
 // (`GridPageMetrics`) times the number of full sheets, and the "per card"
-// figures are those totals averaged over the cards. When an explicit card
-// count leaves a partially-filled last sheet, that sheet is emitted as stamped
-// per-card outlines (see the page-emission logic in `generate_pdf`), so its
-// `rem` cards are measured from the card `outline` exactly like the tiled path.
+// figures are those totals averaged over the cards. A partially-filled last
+// sheet is a grid page too (its lines stop at the last card), so it is measured
+// the same way — from its own line geometry, not by scaling a card outline.
 fn compute_grid_cutting_metrics(
     grid: &contour::GridPageMetrics,
-    outline: &PathMetrics,
+    // Line geometry of the partial last sheet, when the job leaves one.
+    partial: Option<&contour::GridPageMetrics>,
     opts: &Options,
     total_cards: usize,
     layout: &CardLayout,
 ) -> CuttingMetrics {
     let cpp = layout.cards_per_page.max(1);
     // Mirrors which pages are emitted: only an explicit total (the web worker's
-    // row count) gets the partial outline sheet; otherwise the full grid page
-    // is rerun for every sheet, remainder included.
+    // row count) gets the partial sheet; otherwise the full grid page is rerun
+    // for every sheet, remainder included.
     let rem = if opts.contour_total_cards.is_some() { total_cards % cpp } else { 0 };
     let full_pages = if rem > 0 { total_cards / cpp } else { ((total_cards + cpp - 1) / cpp).max(1) };
     let num_pages = full_pages + usize::from(rem > 0);
+    let partial = if rem > 0 { partial } else { None };
 
     let mm = crate::geometry::MM;
-    let length_total_mm = full_pages as f32 * (grid.length / mm) + rem as f32 * (outline.length / mm);
-    let node_count_total = full_pages * grid.node_count + rem * outline.node_count;
-    let sharp_turn_count_total = rem * outline.sharp_turn_count;
+    let length_total_mm = full_pages as f32 * (grid.length / mm)
+        + partial.map_or(0.0, |p| p.length / mm);
+    let node_count_total = full_pages * grid.node_count + partial.map_or(0, |p| p.node_count);
+    // Every cut is a straight two-node line on both kinds of page.
+    let sharp_turn_count_total = 0;
 
-    // Travel: the serpentine line walk on each full grid page, plus the usual
-    // card-to-card hops on the partial outline sheet.
+    // Travel: the serpentine line walk on each page, full or partial.
     let travel_total_mm = full_pages as f32 * (grid.travel / mm)
-        + rem.saturating_sub(1) as f32 * layout.pitch_mm();
+        + partial.map_or(0.0, |p| p.travel / mm);
 
     let total_time = length_total_mm / opts.cutting_speed_mm_s
         + sharp_turn_count_total as f32 * opts.corner_penalty_s
@@ -431,12 +433,15 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             if opts.contour_as_grid {
                 // The grid page shares cut lines between neighbouring cards, so its
                 // totals come from the page's drawn line geometry, not from scaling
-                // one card's outline. A partially-filled last sheet is emitted below
-                // as stamped per-card outlines, so those cards are measured from the
-                // outline exactly like the tiled path.
-                let grid = contour::grid_page_metrics(&layout, offset_x, offset_y);
-                let outline = measure_stroked_paths(&bg_content_bytes)?;
-                Some(compute_grid_cutting_metrics(&grid, &outline, opts, total_cards, &layout))
+                // one card's outline. The partially-filled last sheet emitted below is
+                // a grid page as well, so it is measured from its own line geometry.
+                let grid = contour::grid_page_metrics(&layout, layout.cards_per_page, offset_x, offset_y);
+                let cpp = layout.cards_per_page.max(1);
+                let partial = opts.contour_total_cards
+                    .map(|_| total_cards % cpp)
+                    .filter(|&rem| rem > 0)
+                    .map(|rem| contour::grid_page_metrics(&layout, rem, offset_x, offset_y));
+                Some(compute_grid_cutting_metrics(&grid, partial.as_ref(), opts, total_cards, &layout))
             } else {
                 let path_metrics = measure_stroked_paths(&bg_content_bytes)?;
                 // The contour PDF is a single sheet, but the cutting machine
@@ -462,14 +467,23 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             let page_id = if opts.contour_as_grid {
                 let stroke = extract_stroke_color(&bg_content_bytes)
                     .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
-                contour::build_grid_contour_page(&mut doc, pages_id, catalog_id, &layout, stroke, offset_x, offset_y)?
+                contour::build_grid_contour_page(&mut doc, pages_id, catalog_id, &layout, stroke, layout.cards_per_page, !opts.no_circles, offset_x, offset_y)?
             } else {
-                contour::build_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, offset_x, offset_y)?
+                contour::build_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, !opts.no_circles, offset_x, offset_y)?
             };
             page_ids.push(page_id);
         }
         if opts.contour_total_cards.is_some() && rem > 0 {
-            let partial = contour::build_partial_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, rem, offset_x, offset_y)?;
+            // The partial sheet gets the same treatment as a full one: in grid mode its
+            // cut lines are shared between neighbouring cards too (and extended past the
+            // outermost card), so it isn't a set of overlapping per-card rectangles.
+            let partial = if opts.contour_as_grid {
+                let stroke = extract_stroke_color(&bg_content_bytes)
+                    .unwrap_or(TextColor::Cmyk(0.0, 0.0, 0.0, 1.0));
+                contour::build_grid_contour_page(&mut doc, pages_id, catalog_id, &layout, stroke, rem, !opts.no_circles, offset_x, offset_y)?
+            } else {
+                contour::build_partial_contour_page(&mut doc, pages_id, catalog_id, bg_form_id, &layout, rem, !opts.no_circles, offset_x, offset_y)?
+            };
             page_ids.push(partial);
         }
 
@@ -1190,6 +1204,54 @@ mod tests {
     }
 
     #[test]
+    fn contour_pdf_omits_registration_circles_when_requested() {
+        // "Nu desena cercurile": the cut PDF drops the three circles (and the OCG that
+        // made them non-printable), but the imposition is untouched — the cut positions
+        // must stay exactly where they are without the option, so print and cut align.
+        let base = Options { contour: true, ..Options::default() };
+        let with_circles = generate_pdf(None, BACKGROUND_PDF, None, &base).expect("contour generation should succeed");
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &Options { no_circles: true, ..base })
+            .expect("contour generation should succeed");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+
+        // No circles drawn → no Optional Content Group at all, and no page /Properties
+        // mapping one (nothing references /OC0 any more).
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        assert!(
+            doc.get_object(catalog_id).unwrap().as_dict().unwrap().get(b"OCProperties").is_err(),
+            "no circles means no OCG to declare",
+        );
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        assert!(
+            doc.get_object(page_id).unwrap().as_dict().unwrap()
+                .get(b"Resources").unwrap().as_dict().unwrap()
+                .get(b"Properties").is_err(),
+            "no circles means no /OC0 to resolve",
+        );
+
+        // The circles are the page's only marked content and its only fills, so both
+        // operators disappear entirely.
+        let parsed = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap();
+        assert!(
+            !parsed.operations.iter().any(|op| op.operator == "BDC" || op.operator == "f"),
+            "the registration circles must not be drawn",
+        );
+
+        // Same imposition: same cards per page, and every cell placed identically.
+        assert_eq!(out.cards_per_page, with_circles.cards_per_page);
+        let placements = |pdf: &[u8]| {
+            let d = Document::load_mem(pdf).unwrap();
+            let (_, pid) = d.get_pages().into_iter().next().unwrap();
+            Content::decode(&d.get_page_content(pid).unwrap()).unwrap().operations
+                .iter()
+                .filter(|op| op.operator == "cm")
+                .map(|op| format!("{:?}", op.operands))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(placements(&out.pdf), placements(&with_circles.pdf), "cut positions must not move");
+    }
+
+    #[test]
     fn grid_contour_doubles_lines_with_gutter() {
         use crate::geometry::MM;
         // A rectangle contour with a gutter (Decalaj) must draw two cut lines a
@@ -1234,6 +1296,108 @@ mod tests {
         let gutter = 5.0 * MM;
         let has_gutter_pair = vxs.windows(2).any(|w| (w[1] - w[0] - gutter).abs() < 0.5);
         assert!(has_gutter_pair, "expected two lines a gutter apart, xs (pt) = {vxs:?}");
+    }
+
+    // Every stroked line of a page as (from, to) in mm, in drawing order.
+    // Grid pages stroke each line on its own (`m … l … S`).
+    fn stroked_lines_mm(doc: &Document, page_id: lopdf::ObjectId) -> Vec<((f32, f32), (f32, f32))> {
+        let mm = crate::geometry::MM;
+        let parsed = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap();
+        let n = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        let mut lines = Vec::new();
+        let mut from: Option<(f32, f32)> = None;
+        for op in &parsed.operations {
+            match op.operator.as_str() {
+                "m" => from = Some((n(&op.operands[0]) / mm, n(&op.operands[1]) / mm)),
+                "l" => {
+                    if let Some(f) = from {
+                        lines.push((f, (n(&op.operands[0]) / mm, n(&op.operands[1]) / mm)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        lines
+    }
+
+    #[test]
+    fn partial_grid_sheet_shares_lines_and_stops_at_the_last_card() {
+        // The partially-filled last sheet is a grid page too: neighbouring cards share
+        // one cut line instead of each getting its own rectangle, and every line runs
+        // only as far as the cards that need it — plus the same 3 mm overshoot past the
+        // outermost card that the full page draws.
+        //
+        // 15×15 mm cards on a 100×100 mm sheet → a 6×6 grid (36 per sheet). 44 cards
+        // leave a last sheet of 8: a full row of 6 plus 2 in the row above.
+        let opts = Options {
+            contour: true,
+            contour_as_grid: true,
+            measure_paths: true,
+            host_width_mm: 100.0,
+            host_height_mm: 100.0,
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            circle_diameter_mm: 0.0,
+            contour_total_cards: Some(44),
+            ..Options::default()
+        };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("grid contour generation should succeed");
+        assert_eq!(out.cards_per_page, 36);
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let pages: Vec<_> = doc.get_pages().into_values().collect();
+        assert_eq!(pages.len(), 2, "a full grid sheet plus the partial one");
+
+        // Not stamped per-card outlines: the partial page draws lines, no card XObject.
+        let parsed = Content::decode(&doc.get_page_content(pages[1]).unwrap()).unwrap();
+        assert!(
+            !parsed.operations.iter().any(|op| op.operator == "Do"),
+            "the partial sheet must be drawn as grid lines, not tiled card outlines",
+        );
+
+        let lines = stroked_lines_mm(&doc, pages[1]);
+        let mut verticals: Vec<(f32, f32, f32)> = Vec::new();   // (x, y_lo, y_hi)
+        let mut horizontals: Vec<(f32, f32, f32)> = Vec::new(); // (y, x_lo, x_hi)
+        for (a, b) in &lines {
+            if (a.0 - b.0).abs() < 1e-3 {
+                verticals.push((a.0, a.1.min(b.1), a.1.max(b.1)));
+            } else {
+                assert!((a.1 - b.1).abs() < 1e-3, "cut lines are axis-aligned");
+                horizontals.push((a.1, a.0.min(b.0), a.0.max(b.0)));
+            }
+        }
+        verticals.sort_by(|a, b| a.0.total_cmp(&b.0));
+        horizontals.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        // Shared edges are stroked once: 7 verticals (6 columns) and 3 horizontals
+        // (the 2 occupied rows), not 8 separate card rectangles.
+        assert_eq!(verticals.len(), 7, "one line per column edge, shared: {verticals:?}");
+        assert_eq!(horizontals.len(), 3, "one line per row edge, shared: {horizontals:?}");
+
+        let x0 = verticals[0].0;
+        let y0 = verticals[0].1 + 3.0; // the bottom line starts 3 mm below the cards
+        let len = |lo: f32, hi: f32| hi - lo;
+        // The 2 cards of the short row sit at columns 0–1, so only the first three
+        // verticals reach up into it (2 rows = 30 mm + 3 mm overshoot at each end);
+        // the other four stop after the full row below (15 mm + the two overshoots).
+        for (i, &(_, lo, hi)) in verticals.iter().enumerate() {
+            let expected = if i < 3 { 36.0 } else { 21.0 };
+            assert!((len(lo, hi) - expected).abs() < 0.05, "vertical {i} spans {} mm, expected {expected}", len(lo, hi));
+            assert!((lo - (y0 - 3.0)).abs() < 0.05, "every vertical starts 3 mm below the bottom row");
+        }
+        // The two lower horizontals run the full 6-card row (90 mm + 3 mm each side);
+        // the top edge of the short row spans just its 2 cards.
+        for (j, &(_, lo, hi)) in horizontals.iter().enumerate() {
+            let expected = if j < 2 { 96.0 } else { 36.0 };
+            assert!((len(lo, hi) - expected).abs() < 0.05, "horizontal {j} spans {} mm, expected {expected}", len(lo, hi));
+            assert!((lo - (x0 - 3.0)).abs() < 0.05, "every horizontal starts 3 mm left of the first column");
+        }
+
+        // The reported cutting metrics measure that same geometry: the full sheet's
+        // 14 × 96 mm plus the partial sheet's 3·36 + 4·21 + 2·96 + 36 = 420 mm.
+        let total_len = out.path_length_total_mm.expect("grid metrics should include path length");
+        assert!((total_len - (14.0 * 96.0 + 420.0)).abs() < 0.5, "expected 1764 mm, got {total_len}");
+        assert_eq!(out.node_count_total, Some(28 + 20), "two nodes per line on both sheets");
+        assert_eq!(out.sharp_turn_count_total, Some(0), "straight grid lines have no sharp turns");
     }
 
     #[test]
@@ -1498,12 +1662,12 @@ mod tests {
     }
 
     #[test]
-    fn compute_grid_cutting_metrics_mixes_grid_pages_and_partial_outline_sheet() {
+    fn compute_grid_cutting_metrics_mixes_full_and_partial_grid_sheets() {
         use crate::geometry::MM;
         // 10 cards at 4 per page → two full grid sheets plus a partial sheet of 2
-        // cards, which is emitted as stamped per-card outlines (not grid lines).
+        // cards, itself a grid page with its own (shorter) line geometry.
         let grid = contour::GridPageMetrics { length: 1000.0 * MM, node_count: 20, travel: 100.0 * MM };
-        let outline = PathMetrics { length: 60.0 * MM, node_count: 4, sharp_turn_count: 4 };
+        let partial = contour::GridPageMetrics { length: 600.0 * MM, node_count: 12, travel: 50.0 * MM };
         let opts = Options {
             cutting_speed_mm_s: 10.0,
             corner_penalty_s: 0.5,
@@ -1523,21 +1687,20 @@ mod tests {
             gutter_y: 0.0,
             circle_r: 0.0,
             cols: 2,
-            rows: 2,
             cards_per_page: 4,
             start_x: 0.0,
             start_y: 0.0,
         };
 
-        let m = compute_grid_cutting_metrics(&grid, &outline, &opts, 10, &layout);
+        let m = compute_grid_cutting_metrics(&grid, Some(&partial), &opts, 10, &layout);
 
-        // 2 grid pages + 2 outline cards: 2·1000 + 2·60 = 2120 mm.
-        assert!((m.path_length_total_mm - 2120.0).abs() < 1e-2);
-        assert!((m.path_length_per_card_mm - 212.0).abs() < 1e-2);
-        assert_eq!(m.node_count_total, 2 * 20 + 2 * 4);
-        assert_eq!(m.sharp_turn_count_total, 2 * 4, "only the outline cards contribute sharp turns");
-        // cut 2120/10 + corners 8·0.5 + prep 3·30 + travel (2·100 + 1·50)/20
-        let expected = 212.0 + 4.0 + 90.0 + 12.5;
+        // 2 full grid pages + the partial one: 2·1000 + 600 = 2600 mm.
+        assert!((m.path_length_total_mm - 2600.0).abs() < 1e-2);
+        assert!((m.path_length_per_card_mm - 260.0).abs() < 1e-2);
+        assert_eq!(m.node_count_total, 2 * 20 + 12);
+        assert_eq!(m.sharp_turn_count_total, 0, "straight grid lines have no sharp turns");
+        // cut 2600/10 + prep 3·30 + travel (2·100 + 50)/20
+        let expected = 260.0 + 90.0 + 12.5;
         assert!((m.time_cutting_total_s - expected).abs() < 1e-2, "expected {expected}s, got {}", m.time_cutting_total_s);
         assert!((m.time_cutting_per_card_s - expected / 10.0).abs() < 1e-3);
     }

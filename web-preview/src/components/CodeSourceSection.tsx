@@ -562,11 +562,13 @@ export function CodeSourceSection({
           <p className="text-label text-gray-500 dark:text-gray-400">
             {m.codes_upload_hint()}
           </p>
+          {/* Step 3's primary control in upload mode. */}
           <FileField
             label={m.codes_csv_file_label()}
             accept=".csv,text/csv,text/plain"
             onChange={(files) => onCsvUpload(files?.[0] ?? null)}
             currentName={uploadFileName}
+            highlight
           />
           {/* Gated on the file's total rows, not the kept count: over-skipping
               drives the kept count to 0, and the controls must stay on screen so
@@ -664,7 +666,8 @@ export function CodeSourceSection({
           </p>
 
           <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-            <NumberField label={m.codes_row_count_label()} value={rowCount} onChange={onRowCountChange} step={1} />
+            {/* Step 3's primary control in generate mode. */}
+            <NumberField label={m.codes_row_count_label()} value={rowCount} onChange={onRowCountChange} step={1} highlight />
             <TextField
               label={m.codes_separator_label()}
               value={separator}

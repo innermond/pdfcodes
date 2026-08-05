@@ -259,6 +259,10 @@ export interface PageOptions {
   // "Non-decupare" (no-cut): one card per page, page sized to the card, no
   // imposition grid and no registration circles.
   noCut: boolean
+  // "Nu desena cercurile": omit the three registration circles from the contour
+  // PDF. The imposition is unchanged (the grid keeps its circle-diameter inset),
+  // and the print PDF keeps its own printable circles.
+  noCircles: boolean
   // "Minimal": crop the generated page (and each card cell) down to the contour's
   // bounding box instead of the background size, so the output is a smaller page
   // tightly bounding the contour. Only has an effect once a contour is loaded.
@@ -284,6 +288,7 @@ export const defaultPageOptions: PageOptions = {
   preparationTimeS: 60,
   travelSpeedMmS: 16,
   noCut: false,
+  noCircles: false,
   minimal: true,
   noCodes: false,
 }
@@ -407,6 +412,8 @@ export function buildJsOptions(
     combine: page.combine,
     debug: page.debug,
     noCut: page.noCut,
+    // "Nu desena cercurile" → Options::no_circles; only the contour job acts on it.
+    noCircles: page.noCircles,
     minimal: page.minimal,
     // "Nu printa codurile" → Options::skip_codes; the contour job ignores it.
     skipCodes: page.noCodes,
