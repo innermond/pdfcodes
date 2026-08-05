@@ -22,7 +22,7 @@ import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
-import { serializeRows, describeDelimiter, isRaggedRowsWarning, keptRows, skippedRows } from './lib/csvSerialize'
+import { serializeRows, describeDelimiter, isRaggedRowsWarning, keptRows, rowsToLeaderValues, skippedRows } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
@@ -936,6 +936,21 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   const [uploadedSkippedPreview, setUploadedSkippedPreview] = useState<{ before: string[]; after: string[] }>(
     { before: [], after: [] },
   )
+
+  // ---- Leader-list import (generate mode, Cod 1 = "Listă de valori") ----
+  // The rows parsed from the file loaded into the leader editor, kept so a skip
+  // change re-derives the list without re-reading the file. These are artifacts,
+  // not user config: the derived values live in `codeColumns[0].values`, and that
+  // is what round-trips through `Preset` and undo. The file itself is not
+  // persisted, so after a preset reload the values remain and these controls
+  // simply don't appear — better than fields pointing at a file that is gone.
+  const [leaderRows, setLeaderRows] = useState<string[][]>([])
+  const [leaderFileName, setLeaderFileName] = useState<string | null>(null)
+  const [leaderSkipFirst, setLeaderSkipFirst] = useState(0)
+  const [leaderSkipLast, setLeaderSkipLast] = useState(0)
+  /** Rows whose second column held something that wasn't a number. */
+  const [leaderBadCounts, setLeaderBadCounts] = useState(0)
+  const [leaderImportError, setLeaderImportError] = useState<string | null>(null)
   // The widest merged row in the uploaded file (sentinel-joined), used to size
   // the per-word styles. Sizing from the *widest* row — not just the first —
   // ensures every row fits the configured word count, so the generator (which
@@ -1812,6 +1827,46 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     setDataField('codeSkipFirst', first)
     setDataField('codeSkipLast', last)
     applyUploadedCsvRows(uploadedRows, codeFieldMerges, codeSeparator || ' ', codeSingleField, first, last)
+  }
+
+  // Rebuild the leader's value list from the rows imported into it. The single
+  // derivation path for both the file pick and every skip change — which is what
+  // makes a skip change take effect live, and equally what makes it discard
+  // edits typed into the list after the import.
+  function applyLeaderImport(rows: string[][], skipFirst: number, skipLast: number) {
+    const { values, badCounts } = rowsToLeaderValues(keptRows(rows, skipFirst, skipLast))
+    setLeaderBadCounts(badCounts)
+    handleCodeColumnsChange(codeColumns.map((c, i) => (i === 0 ? { ...c, values } : c)))
+  }
+
+  async function handleLeaderFileLoad(file: File | null) {
+    if (!file) return
+    setLeaderImportError(null)
+    let parsed
+    try {
+      parsed = await parseUploadedCsv(file)
+    } catch (err) {
+      setLeaderImportError(m.csv_read_failed({ error: err instanceof Error ? err.message : String(err) }))
+      return
+    }
+    // An unreadable or empty file leaves the current list alone — blanking the
+    // user's values because a pick went wrong would be the worse failure.
+    if (parsed.rows.length === 0) {
+      setLeaderImportError(m.csv_no_data())
+      return
+    }
+    setLeaderRows(parsed.rows)
+    setLeaderFileName(file.name)
+    // A fresh file is a fresh shape, so the skips start over (as in `ingestCsvFile`).
+    setLeaderSkipFirst(0)
+    setLeaderSkipLast(0)
+    applyLeaderImport(parsed.rows, 0, 0)
+  }
+
+  function handleLeaderSkipChange(first: number, last: number) {
+    setLeaderSkipFirst(first)
+    setLeaderSkipLast(last)
+    applyLeaderImport(leaderRows, first, last)
   }
 
   // Read a file (the original upload, or a re-parse with a corrected delimiter)
@@ -4675,6 +4730,14 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
             onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
             onColumnsChange={handleCodeColumnsChange}
+            leaderFileName={leaderFileName}
+            leaderFileRows={leaderRows.length}
+            leaderSkipFirst={leaderSkipFirst}
+            leaderSkipLast={leaderSkipLast}
+            leaderBadCounts={leaderBadCounts}
+            leaderImportError={leaderImportError}
+            onLeaderFileLoad={(f) => void handleLeaderFileLoad(f)}
+            onLeaderSkipChange={handleLeaderSkipChange}
             fieldPieces={widestUploadedRow}
             fieldMerges={codeFieldMerges}
             onFieldMergesChange={handleUploadFieldMergesChange}

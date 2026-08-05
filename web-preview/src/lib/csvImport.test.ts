@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseUploadedCsv } from './csvImport'
-import { describeDelimiter, keptRows, serializeRows, skippedRows } from './csvSerialize'
+import { describeDelimiter, keptRows, rowsToLeaderValues, serializeRows, skippedRows } from './csvSerialize'
 
 // PapaParse accepts a raw string as well as a File; passing a string lets us
 // exercise the real delimiter-detection and warning logic without a DOM/File.
@@ -191,5 +191,82 @@ describe('skippedRows', () => {
 
   it('clamps nonsense counts the same way keptRows does', () => {
     expect(skippedRows(rows, -1, NaN)).toEqual({ before: [], after: [] })
+  })
+})
+
+describe('rowsToLeaderValues', () => {
+  it('maps the first column to the value and the second to the count', () => {
+    expect(rowsToLeaderValues([['Seria A', '500'], ['Seria B', '120']])).toEqual({
+      values: [{ value: 'Seria A', rows: 500 }, { value: 'Seria B', rows: 120 }],
+      badCounts: 0,
+    })
+  })
+
+  it('ignores every column past the second', () => {
+    expect(rowsToLeaderValues([['Seria A', '500', 'note', 'x']]).values).toEqual([
+      { value: 'Seria A', rows: 500 },
+    ])
+  })
+
+  it('gives a single-column file blank counts, with no complaint', () => {
+    // No count column at all is a normal shape, not a mistake — every value
+    // simply inherits the default row count.
+    expect(rowsToLeaderValues([['Seria A'], ['Seria B']])).toEqual({
+      values: [{ value: 'Seria A', rows: null }, { value: 'Seria B', rows: null }],
+      badCounts: 0,
+    })
+  })
+
+  it('treats an empty or whitespace-only count cell as blank, not as junk', () => {
+    expect(rowsToLeaderValues([['Seria A', ''], ['Seria B', '   ']])).toEqual({
+      values: [{ value: 'Seria A', rows: null }, { value: 'Seria B', rows: null }],
+      badCounts: 0,
+    })
+  })
+
+  it('blanks an unparseable count and reports it', () => {
+    const r = rowsToLeaderValues([['Seria A', '500'], ['Seria B', 'abc'], ['Seria C', '12x']])
+    expect(r.values).toEqual([
+      { value: 'Seria A', rows: 500 },
+      { value: 'Seria B', rows: null },
+      { value: 'Seria C', rows: null },
+    ])
+    expect(r.badCounts).toBe(2)
+  })
+
+  it('floors fractional counts and clamps negatives to zero', () => {
+    expect(rowsToLeaderValues([['A', '12.9'], ['B', '-5']]).values).toEqual([
+      { value: 'A', rows: 12 },
+      { value: 'B', rows: 0 },
+    ])
+  })
+
+  it('trims whitespace around both cells', () => {
+    expect(rowsToLeaderValues([['  Seria A  ', '  500  ']]).values).toEqual([
+      { value: 'Seria A', rows: 500 },
+    ])
+  })
+
+  it('keeps an empty value cell rather than dropping the row', () => {
+    // Dropping rows would silently shift the user's list; an empty value is
+    // visible in the editor and can be fixed there.
+    expect(rowsToLeaderValues([['', '10']]).values).toEqual([{ value: '', rows: 10 }])
+  })
+
+  it('handles an empty input', () => {
+    expect(rowsToLeaderValues([])).toEqual({ values: [], badCounts: 0 })
+  })
+
+  it('composes with keptRows to drop a header and a totals line', () => {
+    const file = [
+      ['Nume', 'Cantitate'],
+      ['Seria A', '500'],
+      ['Seria B', '120'],
+      ['TOTAL', '620'],
+    ]
+    expect(rowsToLeaderValues(keptRows(file, 1, 1))).toEqual({
+      values: [{ value: 'Seria A', rows: 500 }, { value: 'Seria B', rows: 120 }],
+      badCounts: 0,
+    })
   })
 })

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { CheckboxField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, defaultLeaderValue, mergeFields, randomCodeSpace, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode, type LeaderValue } from '../lib/codeSource'
 import { m } from '../paraglide/messages'
@@ -27,6 +27,22 @@ const PAD_MODE_OPTIONS: { value: CodePadMode; label: string }[] = [
   { value: 'fixed', label: m.codes_pad_fixed() },
 ]
 
+// Everything about importing the leader list from a file. Grouped so it can be
+// drilled from `CodeSourceSection` down to the editor as one prop.
+interface LeaderImportProps {
+  /** Name of the file the list was imported from, or null when hand-typed. */
+  fileName: string | null
+  /** Rows that file holds before skipping — bounds the skip inputs. */
+  fileRows: number
+  skipFirst: number
+  skipLast: number
+  /** Imported rows whose second column wasn't a number. */
+  badCounts: number
+  importError: string | null
+  onFileLoad: (file: File | null) => void
+  onSkipChange: (first: number, last: number) => void
+}
+
 // The leader's values: each one is repeated over its own block of rows and
 // joined with the other codes. A blank row count inherits the global default,
 // which is why the count input accepts an empty value (NumberField emits NaN,
@@ -35,12 +51,25 @@ function LeaderValuesEditor({
   values,
   totalRows,
   onChange,
+  fileName,
+  fileRows,
+  skipFirst,
+  skipLast,
+  badCounts,
+  importError,
+  onFileLoad,
+  onSkipChange,
 }: {
   values: LeaderValue[]
   /** Rows the whole config will emit — computed upstream so the math lives in one place. */
   totalRows: number
   onChange: (next: LeaderValue[]) => void
-}) {
+} & LeaderImportProps) {
+  // A plain file input renders as a wide labelled control (see `FileField`),
+  // which doesn't belong on the same row as the "add value" pill. Keep the input
+  // hidden and drive it from a matching button instead.
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
   function update(index: number, next: LeaderValue) {
     onChange(values.map((v, i) => (i === index ? next : v)))
   }
@@ -50,7 +79,10 @@ function LeaderValuesEditor({
       <p className="text-label font-semibold text-gray-900 dark:text-gray-100">{m.codes_leader_values()}</p>
       <p className="text-hint text-gray-500 dark:text-gray-400">{m.codes_leader_hint()}</p>
 
-      {values.length === 0 && (
+      {/* Only for a hand-built list: with a file loaded, an empty list means the
+          skips ate it, and `codes_leader_skip_empty` below says so precisely —
+          "add at least one value" would point at the wrong fix. */}
+      {values.length === 0 && fileName === null && (
         <p className="text-hint text-amber-600 dark:text-amber-400">{m.codes_leader_empty()}</p>
       )}
 
@@ -87,19 +119,88 @@ function LeaderValuesEditor({
       ))}
 
       <div className="flex flex-wrap items-center justify-between gap-field">
-        <button
-          type="button"
-          onClick={() => onChange([...values, defaultLeaderValue()])}
-          className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-label font-medium text-gray-600 hover:border-gray-400 hover:text-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:text-gray-100"
-        >
-          {m.codes_leader_add()}
-        </button>
+        <div className="flex flex-wrap items-center gap-inner">
+          <button
+            type="button"
+            onClick={() => onChange([...values, defaultLeaderValue()])}
+            className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-label font-medium text-gray-600 hover:border-gray-400 hover:text-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:text-gray-100"
+          >
+            {m.codes_leader_add()}
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-label font-medium text-gray-600 hover:border-gray-400 hover:text-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:text-gray-100"
+          >
+            {m.codes_leader_load()}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv,text/plain"
+            className="hidden"
+            onChange={(e) => {
+              onFileLoad(e.target.files?.[0] ?? null)
+              // Clear it, or picking the same file twice fires no change event —
+              // re-loading after an edit would silently do nothing.
+              e.target.value = ''
+            }}
+          />
+        </div>
         {values.length > 0 && (
           <span className="text-label font-medium text-gray-700 dark:text-gray-300">
             {m.codes_total_rows({ count: totalRows, countFormatted: formatNumber(totalRows) })}
           </span>
         )}
       </div>
+
+      {importError && (
+        <p className="text-label text-red-600 dark:text-red-400">{importError}</p>
+      )}
+
+      {/* Import controls appear only once a file is loaded: the hand-typed flow
+          stays exactly as it was, and they're never shown pointing at a file
+          that no longer exists (a preset restores the values, not the file). */}
+      {fileName !== null && (
+        <>
+          <p className="text-label font-medium text-green-700 dark:text-green-400">
+            {m.codes_leader_loaded({
+              file: fileName,
+              count: values.length,
+              countFormatted: formatNumber(values.length),
+            })}
+          </p>
+          <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
+            <NumberField
+              label={m.csv_skip_first_label()}
+              value={skipFirst}
+              onChange={(v) => onSkipChange(Number.isNaN(v) ? 0 : v, skipLast)}
+              step={1}
+              min={0}
+              max={Math.max(0, fileRows - skipLast)}
+            />
+            <NumberField
+              label={m.csv_skip_last_label()}
+              value={skipLast}
+              onChange={(v) => onSkipChange(skipFirst, Number.isNaN(v) ? 0 : v)}
+              step={1}
+              min={0}
+              max={Math.max(0, fileRows - skipFirst)}
+            />
+          </div>
+          <p className="text-hint text-gray-500 dark:text-gray-400">{m.codes_leader_file_hint()}</p>
+          {values.length === 0 && (
+            <p className="text-label text-red-600 dark:text-red-400">
+              {m.codes_leader_skip_empty({ total: formatNumber(fileRows) })}
+            </p>
+          )}
+          {badCounts > 0 && (
+            <p className="text-label text-amber-600 dark:text-amber-400">
+              {m.codes_leader_bad_counts({ count: badCounts, countFormatted: formatNumber(badCounts) })}
+            </p>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -112,6 +213,7 @@ function CodeColumnEditor({
   canRemove,
   rowCount,
   totalRows,
+  leader,
 }: {
   index: number
   column: CodeColumnConfig
@@ -126,6 +228,8 @@ function CodeColumnEditor({
   rowCount: number
   /** Rows the whole config emits, shown as the leader's running total. */
   totalRows: number
+  /** Leader-list import state and handlers, passed straight through to the editor. */
+  leader: LeaderImportProps
 }) {
   function set<K extends keyof CodeColumnConfig>(key: K, value: CodeColumnConfig[K]) {
     onChange({ ...column, [key]: value })
@@ -192,6 +296,7 @@ function CodeColumnEditor({
           values={column.values}
           totalRows={totalRows}
           onChange={(values) => set('values', values)}
+          {...leader}
         />
       )}
 
@@ -319,6 +424,14 @@ export function CodeSourceSection({
   onSeparatorChange,
   columns,
   onColumnsChange,
+  leaderFileName,
+  leaderFileRows,
+  leaderSkipFirst,
+  leaderSkipLast,
+  leaderBadCounts,
+  leaderImportError,
+  onLeaderFileLoad,
+  onLeaderSkipChange,
   fieldPieces,
   fieldMerges,
   onFieldMergesChange,
@@ -365,6 +478,15 @@ export function CodeSourceSection({
   onSeparatorChange: (value: string) => void
   columns: CodeColumnConfig[]
   onColumnsChange: (columns: CodeColumnConfig[]) => void
+  /** Leader-list import — see `LeaderImportProps`; regrouped for the editor below. */
+  leaderFileName: string | null
+  leaderFileRows: number
+  leaderSkipFirst: number
+  leaderSkipLast: number
+  leaderBadCounts: number
+  leaderImportError: string | null
+  onLeaderFileLoad: (file: File | null) => void
+  onLeaderSkipChange: (first: number, last: number) => void
   /** Raw parsed fields of the first uploaded row (for the merge editor). */
   fieldPieces: string[]
   /** Indices of gaps (between parsed fields) merged into one field. */
@@ -606,6 +728,16 @@ export function CodeSourceSection({
               canRemove={columns.length > 1}
               rowCount={maxGroupRows}
               totalRows={totalRows}
+              leader={{
+                fileName: leaderFileName,
+                fileRows: leaderFileRows,
+                skipFirst: leaderSkipFirst,
+                skipLast: leaderSkipLast,
+                badCounts: leaderBadCounts,
+                importError: leaderImportError,
+                onFileLoad: onLeaderFileLoad,
+                onSkipChange: onLeaderSkipChange,
+              }}
             />
           )}
           <p className="text-label text-gray-500 dark:text-gray-400">

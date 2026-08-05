@@ -4,6 +4,7 @@
 // bundle — PapaParse is loaded on demand only when a file is actually parsed.
 
 import { m } from '../paraglide/messages'
+import type { LeaderValue } from './codeSource'
 
 // Friendly, UI-language name for a detected delimiter.
 export function describeDelimiter(delimiter: string): string {
@@ -76,4 +77,29 @@ export function skippedRows<T>(rows: T[], skipFirst: number, skipLast: number): 
 
 function clampSkip(n: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
+// Maps parsed CSV rows onto leader values: the first column is the value, the
+// second its row count, and any further columns are ignored (a source file often
+// carries extra bookkeeping columns the leader has no use for).
+//
+// A count that is absent or unusable becomes `null`, which makes that value
+// inherit the global default row count — importing a value with a wrong number
+// is worse than importing it with none. `badCounts` separates "the file has no
+// count column" (silent, expected) from "the count column had junk in it"
+// (worth telling the user about), by counting only rows that HAD a second cell
+// with something in it that wasn't a number.
+export function rowsToLeaderValues(rows: string[][]): { values: LeaderValue[]; badCounts: number } {
+  let badCounts = 0
+  const values = rows.map((row) => {
+    const raw = (row[1] ?? '').trim()
+    let count: number | null = null
+    if (raw.length > 0) {
+      const n = Number(raw)
+      if (Number.isFinite(n)) count = Math.max(0, Math.floor(n))
+      else badCounts++
+    }
+    return { value: (row[0] ?? '').trim(), rows: count }
+  })
+  return { values, badCounts }
 }

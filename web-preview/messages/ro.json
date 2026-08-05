@@ -82,6 +82,27 @@
 	"codes_leader_add": "+ Adaugă valoare",
 	"codes_leader_remove": "Elimină valoarea",
 	"codes_leader_empty": "Nicio valoare încă — adaugă cel puțin una pentru ca acest cod să devină lider.",
+	"codes_leader_load": "↑ Încarcă fișier",
+	"codes_leader_file_hint": "Prima coloană este valoarea, a doua numărul de rânduri; restul coloanelor se ignoră. Modificarea valorilor de sărire reconstruiește lista din fișier.",
+	"codes_leader_loaded": [{
+		"declarations": ["input count", "input file", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "{file} · {countFormatted} valoare încărcată",
+			"countPlural=few": "{file} · {countFormatted} valori încărcate",
+			"countPlural=other": "{file} · {countFormatted} de valori încărcate"
+		}
+	}],
+	"codes_leader_bad_counts": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "⚠ {countFormatted} rând nu are un număr valid în a doua coloană — folosește numărul implicit de rânduri.",
+			"countPlural=few": "⚠ {countFormatted} rânduri nu au un număr valid în a doua coloană — folosesc numărul implicit de rânduri.",
+			"countPlural=other": "⚠ {countFormatted} de rânduri nu au un număr valid în a doua coloană — folosesc numărul implicit de rânduri."
+		}
+	}],
+	"codes_leader_skip_empty": "Sărirea elimină toate rândurile din fișier ({total}). Micșorează valorile de mai sus.",
 	"codes_pad_width": "Până la o lățime",
 	"codes_pad_fixed": "Text fix adăugat",
 	"codes_pad_hidden_hint": "Completarea nu apare când lățimea totală ({padLength}) ≤ lungimea codului ({length}). Mărește lățimea totală pentru a vedea caracterele de completare.",

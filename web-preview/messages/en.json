@@ -82,6 +82,25 @@
 	"codes_leader_add": "+ Add value",
 	"codes_leader_remove": "Remove value",
 	"codes_leader_empty": "No values yet — add at least one for this code to become a leader.",
+	"codes_leader_load": "↑ Load file",
+	"codes_leader_file_hint": "The first column is the value, the second the row count; any further columns are ignored. Changing the skip counts rebuilds the list from the file.",
+	"codes_leader_loaded": [{
+		"declarations": ["input count", "input file", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "{file} · {countFormatted} value loaded",
+			"countPlural=other": "{file} · {countFormatted} values loaded"
+		}
+	}],
+	"codes_leader_bad_counts": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "⚠ {countFormatted} row has no valid number in the second column — using the default row count.",
+			"countPlural=other": "⚠ {countFormatted} rows have no valid number in the second column — using the default row count."
+		}
+	}],
+	"codes_leader_skip_empty": "Skipping removes every row in the file ({total}). Lower the values above.",
 	"codes_pad_width": "Up to a width",
 	"codes_pad_fixed": "Fixed text appended",
 	"codes_pad_hidden_hint": "The padding does not appear when the total width ({padLength}) ≤ the code length ({length}). Increase the total width to see the padding characters.",
