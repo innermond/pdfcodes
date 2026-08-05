@@ -841,10 +841,13 @@ for "Print" / "Print + Contour", and the cutting ones only for "Contour" /
 - **Minimal** — crops the generated page to the contour's box.
 - **Rectangle contour** — only for the preset **rectangle** shape: emits plain
   rectangles instead of the optimized cutting lines (grid).
-- **Don't draw the circles** — omits the registration circles from the contour
-  PDF. The layout is unchanged (the grid keeps the same edge inset), so print and
-  contour still line up; the print PDF keeps its own circles. It does not appear
-  in "No cutting" (there are no circles there at all).
+- **Draw the registration circles** — by default the contour PDF does **not**
+  carry the registration circles: they are positioning marks for the print, not
+  cutting lines, so they mean nothing to the cutter. Tick the option if you want
+  them in the generated contour anyway. Either way the layout is unchanged (the
+  grid keeps the same edge inset), so print and contour still line up; the print
+  PDF keeps its own circles. It does not appear in "No cutting" (there are no
+  circles there at all).
 - **Overflow correction** — automatically shrinks the codes that overflow the
   contour (or the card) until they fit, but not below **Minimum font (pt)**;
   those that still don't fit remain flagged. **Apply the shrinking** chooses

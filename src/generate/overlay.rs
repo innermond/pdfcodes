@@ -4,7 +4,8 @@ use crate::geometry::CardLayout;
 use crate::pdf_import::import_object;
 
 // Build a non-printable overlay layer showing the contour grid (background
-// tiles + registration circles) at the same positions as the print grid, so
+// tiles, plus the registration circles when the cut sheet itself draws them)
+// at the same positions as the print grid, so
 // print/contour alignment can be checked visually. Returns the overlay Form
 // XObject's ID and the Optional Content Group ID used to mark it
 // view-only/non-printing; also installs the OCProperties on the catalog.
@@ -46,6 +47,11 @@ pub(crate) fn build_overlay(
     // grid — matching the standalone contour's extra partial page. `None`/full ⇒ no second
     // overlay.
     partial_cells: Option<usize>,
+    // Draw the registration circles inside the overlay layer. Cleared when the cut sheet
+    // itself omits them (`Options::no_circles`), so the alignment view shows exactly what
+    // the contour PDF contains. The print page draws its own (printable) circles either
+    // way — see the host-page loop in `mod.rs`.
+    draw_circles: bool,
 ) -> Result<(ObjectId, Option<ObjectId>, ObjectId), Box<dyn std::error::Error>> {
     let contour_doc = Document::load_mem(contour_background_bytes)?;
     let contour_pages = contour_doc.get_pages();
@@ -188,10 +194,10 @@ pub(crate) fn build_overlay(
 
     // The full overlay draws the contour at every card position; when the last print
     // sheet is partial, a second overlay draws it only at the filled cells.
-    let overlay_id = tile_overlay_form(doc, bg_form_c_id, layout, layout.cards_per_page, offset_x, offset_y)?;
+    let overlay_id = tile_overlay_form(doc, bg_form_c_id, layout, layout.cards_per_page, offset_x, offset_y, draw_circles)?;
     let partial_overlay_id = match partial_cells {
         Some(n) if n > 0 && n < layout.cards_per_page => {
-            Some(tile_overlay_form(doc, bg_form_c_id, layout, n, offset_x, offset_y)?)
+            Some(tile_overlay_form(doc, bg_form_c_id, layout, n, offset_x, offset_y, draw_circles)?)
         }
         _ => None,
     };
@@ -204,9 +210,9 @@ pub(crate) fn build_overlay(
 }
 
 // Build one overlay Form XObject that draws the `BGC` contour at the first `cells` card
-// positions (row-major, via `layout.position`), plus the registration circles — exactly
-// as `--contour` would lay them out. `cells == cards_per_page` gives the full grid;
-// a smaller count gives the partial last-sheet overlay.
+// positions (row-major, via `layout.position`), plus the registration circles when
+// `draw_circles` — exactly as `--contour` would lay them out. `cells == cards_per_page`
+// gives the full grid; a smaller count gives the partial last-sheet overlay.
 fn tile_overlay_form(
     doc: &mut Document,
     bg_form_c_id: ObjectId,
@@ -214,6 +220,7 @@ fn tile_overlay_form(
     cells: usize,
     offset_x: f32,
     offset_y: f32,
+    draw_circles: bool,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut operations = Vec::new();
     for i in 0..cells {
@@ -228,7 +235,9 @@ fn tile_overlay_form(
         operations.push(Operation::new("Do", vec![Object::Name(b"BGC".to_vec())]));
         operations.push(Operation::new("Q", vec![]));
     }
-    operations.extend(layout.registration_circles());
+    if draw_circles {
+        operations.extend(layout.registration_circles());
+    }
 
     let overlay_content = Content { operations };
     let mut overlay_dict = Dictionary::new();

@@ -363,7 +363,7 @@
 	"generate_circle_diameter": "Circle diameter (mm)",
 	"generate_options": "Options",
 	"generate_no_cut": "No cutting",
-	"generate_no_circles": "Don't draw the circles",
+	"generate_draw_circles": "Draw the registration circles",
 	"generate_combine": "Combine the pages",
 	"generate_no_codes": "Don't print the codes",
 	"generate_minimal": "Minimal",

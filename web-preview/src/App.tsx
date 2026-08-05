@@ -2221,7 +2221,17 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
         if (typeof preset.contourOffsetXMm === 'number') setContourField('contourOffsetXMm', preset.contourOffsetXMm)
         if (typeof preset.contourOffsetYMm === 'number') setContourField('contourOffsetYMm', preset.contourOffsetYMm)
         if (preset.mode) setMode(preset.mode)
-        if (preset.pageOptions) setPageOptions((prev) => ({ ...prev, ...preset.pageOptions }))
+        if (preset.pageOptions) {
+          // Presets saved before the option flipped polarity carry the negative `noCircles`.
+          // Honor what they stored — an old preset must still regenerate the PDF it did
+          // before — and drop the dead key. A preset predating the option entirely was made
+          // when the contour always carried the circles, so it keeps them too.
+          const { noCircles, ...rest } = preset.pageOptions as PageOptions & { noCircles?: boolean }
+          const loaded = typeof rest.drawCircles === 'boolean'
+            ? rest
+            : { ...rest, drawCircles: typeof noCircles === 'boolean' ? !noCircles : true }
+          setPageOptions((prev) => ({ ...prev, ...loaded }))
+        }
         const loadedBackgroundSource = preset.backgroundSource === 'simple' ? 'simple' : 'upload'
         setBgField('backgroundSource', loadedBackgroundSource)
         if (typeof preset.simpleBgWidthMm === 'number') setBgField('simpleBgWidthMm', preset.simpleBgWidthMm)
@@ -4860,11 +4870,12 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
               {needsContourInput && contourSource === 'shape' && shapeKind === 'rectangle' && (
                 <CheckboxField label={m.generate_rectangle_contour()} checked={rectangleContour} onChange={(v) => setContourField('rectangleContour', v)} />
               )}
-              {/* "Nu desena cercurile" omits the registration circles from the contour PDF
-                  (the imposition is unchanged), so it only makes sense when a contour is
+              {/* The contour PDF omits the registration circles by default (they're print
+                  marks, not cut lines); "Desenează cercurile de reglaj" adds them back. The
+                  imposition is the same either way, so it only makes sense when a contour is
                   produced — and in "Non-decupare" there are no circles at all. */}
               {needsContourInput && !pageOptions.noCut && (
-                <CheckboxField label={m.generate_no_circles()} checked={pageOptions.noCircles} onChange={(v) => setPageOption('noCircles', v)} />
+                <CheckboxField label={m.generate_draw_circles()} checked={pageOptions.drawCircles} onChange={(v) => setPageOption('drawCircles', v)} />
               )}
               {/* "Corectare depășire" shrinks overflowing code text in the print
                   output, so it needs a print output (like "Nu printa codurile"). */}

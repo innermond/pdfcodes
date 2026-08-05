@@ -563,9 +563,10 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     let crop_off_x = opts.contour_offset_x_mm * crate::geometry::MM;
     let crop_off_y = opts.contour_offset_y_mm * crate::geometry::MM;
 
-    // If requested, build a non-printable overlay layer showing the contour
-    // grid (background tiles + registration circles) at the same positions
-    // as the print grid, so print/contour alignment can be checked visually.
+    // If requested, build a non-printable overlay layer showing the contour grid
+    // (background tiles, plus the registration circles only when the cut sheet draws
+    // them too) at the same positions as the print grid, so print/contour alignment
+    // can be checked visually.
     let overlay = if opts.combine {
         let contour_bytes = contour_background_bytes.ok_or("--combineb requires a contour background PDF")?;
         // In minimal mode the page is cropped to the contour window and the contour is
@@ -589,7 +590,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             (Some(l), Some(b), Some(w), Some(h)) => Some((l, b, w, h)),
             _ => None,
         };
-        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, spin_footprint, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path, partial_cells)?)
+        Some(overlay::build_overlay(&mut doc, contour_bytes, catalog_id, tile_layout, opts.contour_page_number, offset_x, offset_y, opts.contour_rotation, opts.contour_spin_deg, spin_footprint, opts.contour_target_width_mm, opts.contour_target_height_mm, opts.contour_trim_to_path, partial_cells, !opts.no_circles)?)
     } else {
         None
     };
@@ -1946,6 +1947,66 @@ mod tests {
         assert_eq!(full_cells, cpp, "first page overlay tiles the full grid");
         assert_eq!(partial_cells, 2, "last page overlay tiles only the 2 existing cards");
         assert_ne!(full_ov, partial_ov, "the partial overlay is a distinct Form XObject");
+    }
+
+    #[test]
+    fn combine_overlay_drops_circles_when_the_cut_does() {
+        // The alignment overlay must show what the cut sheet actually contains: with
+        // "Nu desena cercurile" it draws no circles either, instead of stamping a second
+        // copy over the print page's own. The print page keeps its (printable) circles,
+        // and the overlay's card placements are untouched — only the drawing is skipped.
+        fn overlay_ops(pdf: &[u8]) -> Vec<Operation> {
+            let doc = Document::load_mem(pdf).unwrap();
+            let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+            let ov_ref = doc.get_object(page_id).unwrap().as_dict().unwrap()
+                .get(b"Resources").unwrap().as_dict().unwrap()
+                .get(b"XObject").unwrap().as_dict().unwrap()
+                .get(b"OV").unwrap().as_reference().unwrap();
+            let ov = doc.get_object(ov_ref).unwrap().as_stream().unwrap();
+            let content = ov.decompressed_content().unwrap_or_else(|_| ov.content.clone());
+            Content::decode(&content).unwrap().operations
+        }
+
+        let base = Options { combine: true, ..Options::default() };
+        let with_circles = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(BACKGROUND_PDF), &base)
+            .expect("combine generation should succeed");
+        let out = generate_pdf(
+            Some("1A 1\n"),
+            BACKGROUND_PDF,
+            Some(BACKGROUND_PDF),
+            &Options { no_circles: true, ..base },
+        ).expect("combine generation should succeed");
+
+        // The circles are the overlay's only fills, so `f` disappears entirely.
+        let ops = overlay_ops(&out.pdf);
+        assert!(
+            !ops.iter().any(|op| op.operator == "f"),
+            "the overlay must not draw the registration circles",
+        );
+        assert!(
+            overlay_ops(&with_circles.pdf).iter().any(|op| op.operator == "f"),
+            "without the option the overlay still draws them",
+        );
+
+        // Same tiling: every overlaid cell stays exactly where it was.
+        let placements = |ops: &[Operation]| ops.iter()
+            .filter(|op| op.operator == "cm")
+            .map(|op| format!("{:?}", op.operands))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            placements(&ops),
+            placements(&overlay_ops(&with_circles.pdf)),
+            "overlay cell positions must not move",
+        );
+
+        // The print page itself keeps drawing its own circles.
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        let page_ops = Content::decode(&doc.get_page_content(page_id).unwrap()).unwrap().operations;
+        assert!(
+            page_ops.iter().any(|op| op.operator == "f"),
+            "the print page keeps its own printable circles",
+        );
     }
 
     #[test]
