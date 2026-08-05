@@ -74,6 +74,11 @@ At the bottom you find the **Back / Continue** navigation buttons and the
   computer.
 - The **"Presets"** section (collapsible, at the top) — **Load settings (.zip or
   .json)** reloads a previously saved configuration.
+- Settings can also arrive **already loaded**: if you opened the app from a
+  preset gallery (a page showing saved configurations by their thumbnail), the
+  archive is downloaded automatically and a "Settings loaded from the gallery: …"
+  notice appears at the top, which you can dismiss. You stay on Step 1, with
+  every choice already filled in.
 
 ---
 

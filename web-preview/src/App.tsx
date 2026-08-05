@@ -16,6 +16,7 @@ import { svgToPdf } from './lib/svgWasm'
 import { useUndoHistory } from './lib/undoHistory'
 import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
+import { fetchHostPreset, readHostPreset } from './lib/hostPreset'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
@@ -810,6 +811,10 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // True once the user has set the star spike depth explicitly, so the "auto-follow"
   // effect stops resetting it to the classic ratio when the side count changes.
   const starInnerRatioTouchedRef = useRef(false)
+  // True once the host page's preset (if any) has been picked up, so StrictMode's
+  // second effect run doesn't download and re-apply it. Deliberately not reset by
+  // `handleReset`: a reset means "start clean", not "reload the gallery preset".
+  const hostPresetLoadedRef = useRef(false)
 
   // Data-step user config, grouped into one object (see DataConfig) with a
   // `setDataField` helper — same pattern as bgConfig/contourConfig. Reads stay
@@ -920,6 +925,13 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // re-parse it with the forced delimiter.
   const [uploadedRawFile, setUploadedRawFile] = useState<File | null>(null)
   const [presetError, setPresetError] = useState<string | null>(null)
+  // Banner for a preset the host page handed over (see `lib/hostPreset.ts`).
+  // The settings arrive without the user picking a file, so both outcomes need
+  // saying out loud: which preset loaded, or why none did. It sits outside the
+  // "Presetări" section because that starts collapsed — `presetError` alone
+  // would leave a broken gallery link looking like an empty app. Dismissible,
+  // and cleared by any later load or reset.
+  const [presetNotice, setPresetNotice] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null)
   const [quoteError, setQuoteError] = useState<string | null>(null)
 
   // For an uploaded CSV whose delimiter was auto-detected wrongly: the raw parsed
@@ -2142,6 +2154,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     setContourBackgroundError(null)
     setShapeError(null)
     setPresetError(null)
+    setPresetNotice(null)
     setQuoteError(null)
     setFontsError(null)
     setFontsNotice(null)
@@ -2169,8 +2182,11 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     await downloadPresetBundle('pdfcodes-cerere-oferta.zip', preset, resources)
   }
 
-  function handleLoadPresetFile(file: File | null) {
+  // `notice` is shown once the restore succeeds, for loads the user didn't
+  // trigger from the file picker (a preset handed over by the host page).
+  function handleLoadPresetFile(file: File | null, notice?: string) {
     setPresetError(null)
+    setPresetNotice(null)
     setFontsError(null)
     setFontsNotice(null)
     if (!file) return
@@ -2335,9 +2351,37 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
             m.fonts_missing_custom({ count: missingCustomWords.length, list: missingCustomWords.join(', ') }),
           )
         }
+        if (notice) setPresetNotice({ text: notice, tone: 'ok' })
       })
-      .catch((err) => setPresetError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setPresetError(message)
+        // A host-page load has no file picker for the user to look back at, so
+        // the failure has to be stated where the success would have been.
+        if (notice) setPresetNotice({ text: message, tone: 'error' })
+      })
   }
+
+  // A preset handed over by the host page (a gallery of saved settings linking
+  // here) is downloaded once on mount and restored through the very same path
+  // as a hand-picked file, so the user lands on step 1 with everything already
+  // filled in. The ref guards against StrictMode's double-invoked effect: the
+  // second run must not re-download and re-apply on top of the first.
+  useEffect(() => {
+    if (hostPresetLoadedRef.current) return
+    hostPresetLoadedRef.current = true
+    const hosted = readHostPreset()
+    if (!hosted) return
+    fetchHostPreset(hosted)
+      .then((file) => handleLoadPresetFile(file, m.presets_gallery_loaded({ name: hosted.name ?? file.name })))
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setPresetError(message)
+        setPresetNotice({ text: message, tone: 'error' })
+      })
+    // Runs once on mount; `handleLoadPresetFile` only closes over state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function handleBackgroundFileChange(file: File | null) {
     setBackground(null)
@@ -3739,6 +3783,30 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
       <p className="mb-block text-label text-gray-500 dark:text-gray-400">
         {m.app_subtitle()}
       </p>
+
+      {/* Outside the (collapsed by default) "Presetări" section, so the outcome
+          is visible the moment the page opens from the gallery. */}
+      {presetNotice && (
+        <div
+          role={presetNotice.tone === 'error' ? 'alert' : 'status'}
+          className={`mb-block flex items-start justify-between gap-inner rounded-lg border px-3 py-2 text-label ${
+            presetNotice.tone === 'error'
+              ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200'
+          }`}
+        >
+          <span>{presetNotice.text}</span>
+          <button
+            type="button"
+            onClick={() => setPresetNotice(null)}
+            title={m.presets_gallery_dismiss()}
+            aria-label={m.presets_gallery_dismiss()}
+            className="shrink-0 px-1 leading-none hover:opacity-70"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <Section title={m.presets_title()} collapsible defaultCollapsed>
         <div className="flex flex-wrap items-end gap-field">

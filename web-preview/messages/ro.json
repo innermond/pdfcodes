@@ -181,6 +181,8 @@
 
 	"presets_title": "Presetări",
 	"presets_load_label": "Încarcă setări (.zip sau .json)",
+	"presets_gallery_loaded": "Setări încărcate din galerie: {name}",
+	"presets_gallery_dismiss": "Închide",
 
 	"wizard_step_background": "Fundal",
 	"wizard_step_contour": "Contur",
@@ -543,6 +545,9 @@
 	"errors_contour_image_load": "Nu am putut încărca imaginea conturului",
 	"errors_svg_invalid": "Fișierul nu este un SVG valid.",
 	"errors_preset_bundle_invalid": "Arhivă invalidă: lipsește settings.json.",
+	"errors_preset_url_http": "Nu s-au putut descărca setările din galerie (HTTP {status}).",
+	"errors_preset_url_unreachable": "Nu s-a putut contacta serverul cu setările din galerie.",
+	"errors_preset_url_not_zip": "Răspunsul serverului nu este o arhivă de setări.",
 	"errors_generation_cancelled": "Generarea a fost anulată.",
 	"errors_generation_worker": "Eroare în worker-ul de generare.",
 	"errors_zip_too_large": "Arhiva ZIP estimată (~{mb} MB) depășește memoria disponibilă a acestui browser. Reduceți numărul de rânduri (sau cardurile pe pagină) ori folosiți un browser Chromium, care permite scrierea pe disc."

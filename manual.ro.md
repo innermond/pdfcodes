@@ -68,6 +68,11 @@ Jos găsești butoanele de navigare **Înapoi / Continuă** și indicatorul „P
   calculator.
 - Secțiunea **„Presetări”** (pliabilă, sus) — **Încarcă setări (.zip sau .json)**
   reîncarcă o configurație salvată anterior.
+- Setările pot veni și **gata încărcate**: dacă ai deschis aplicația dintr-o
+  galerie de presetări (o pagină care arată configurațiile salvate prin
+  miniatura lor), arhiva este descărcată automat, iar sus apare mesajul
+  „Setări încărcate din galerie: …”, pe care îl poți închide. Rămâi la Pasul 1,
+  cu toate alegerile deja completate.
 
 ---
 

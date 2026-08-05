@@ -19,6 +19,16 @@
         if (dark) document.documentElement.classList.add('dark')
       })()
     </script>
+    <script>
+      // Settings handed over by the host page. A gallery of saved presets (the
+      // Laravel page listing each .zip by its thumbnail) links here and serves
+      // this file through a controller that replaces the marker below with a
+      // descriptor, e.g. {"url":"/etichete/presetari/flori-2026.zip","name":"Flori 2026"}.
+      // The app then downloads that archive and opens with its settings applied.
+      // Left as null when the app is opened directly — see the reference
+      // implementation in scripts/laravel-preset-gallery.php.
+      window.__PDFCODES_PRESET__ = null /* pdfcodes:preset */
+    </script>
   </head>
   <body>
     <div id="root"></div>
