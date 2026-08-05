@@ -445,6 +445,35 @@
 	"csv_info_one_column": "A single code per row · {rows}",
 	"csv_info_detected": "Detected separator: {delimiter} · {rows} · {columns} columns",
 	"csv_info_forced": "Separator: {delimiter} · {rows} · {columns} columns",
+	"csv_skip_first_label": "Skip the first",
+	"csv_skip_last_label": "Skip the last",
+	"csv_skip_hint": "Set \"first\" to 1 if the file has a header row (the column names). Skipped rows stay visible, struck through, in the preview.",
+	"csv_skip_summary": [{
+		"declarations": ["input count", "input keptFormatted", "input totalFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "Using {keptFormatted} row of {totalFormatted}",
+			"countPlural=other": "Using {keptFormatted} rows of {totalFormatted}"
+		}
+	}],
+	"csv_skip_summary_skipped": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "{countFormatted} skipped",
+			"countPlural=other": "{countFormatted} skipped"
+		}
+	}],
+	"csv_skipped_marker": "skipped",
+	"csv_skipped_more": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "… {countFormatted} more skipped row",
+			"countPlural=other": "… {countFormatted} more skipped rows"
+		}
+	}],
+	"csv_skip_removes_all": "Skipping removes every row (the file has {total}). Lower the values above.",
 
 	"errors_wrong_password": "Incorrect password.",
 	"errors_preset_missing_words": "Invalid settings file: the word list is missing.",

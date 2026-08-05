@@ -453,6 +453,38 @@
 	"csv_info_one_column": "Un singur cod pe rând · {rows}",
 	"csv_info_detected": "Separator detectat: {delimiter} · {rows} · {columns} coloane",
 	"csv_info_forced": "Separator: {delimiter} · {rows} · {columns} coloane",
+	"csv_skip_first_label": "Sari peste primele",
+	"csv_skip_last_label": "Sari peste ultimele",
+	"csv_skip_hint": "Pune 1 la „primele\" dacă fișierul are un rând de antet (numele coloanelor). Rândurile sărite rămân vizibile, tăiate, în previzualizare.",
+	"csv_skip_summary": [{
+		"declarations": ["input count", "input keptFormatted", "input totalFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "Se folosește {keptFormatted} rând din {totalFormatted}",
+			"countPlural=few": "Se folosesc {keptFormatted} rânduri din {totalFormatted}",
+			"countPlural=other": "Se folosesc {keptFormatted} de rânduri din {totalFormatted}"
+		}
+	}],
+	"csv_skip_summary_skipped": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "{countFormatted} sărit",
+			"countPlural=few": "{countFormatted} sărite",
+			"countPlural=other": "{countFormatted} sărite"
+		}
+	}],
+	"csv_skipped_marker": "sărit",
+	"csv_skipped_more": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "… încă {countFormatted} rând sărit",
+			"countPlural=few": "… încă {countFormatted} rânduri sărite",
+			"countPlural=other": "… încă {countFormatted} de rânduri sărite"
+		}
+	}],
+	"csv_skip_removes_all": "Sărirea elimină toate rândurile (fișierul are {total}). Micșorează valorile de mai sus.",
 
 	"errors_wrong_password": "Parolă incorectă.",
 	"errors_preset_missing_words": "Fișier de setări invalid: lipsește lista de cuvinte.",

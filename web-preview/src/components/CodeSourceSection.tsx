@@ -303,8 +303,13 @@ export function CodeSourceSection({
   onCsvUpload,
   uploadFileName,
   uploadRowCount,
+  uploadTotalRows,
   uploadInfo,
   uploadWarnings,
+  skipFirst,
+  skipLast,
+  onSkipChange,
+  skippedPreview,
   rowCount,
   onRowCountChange,
   totalRows,
@@ -333,11 +338,20 @@ export function CodeSourceSection({
   onCsvUpload: (file: File | null) => void
   /** Name of the currently uploaded CSV, shown as a persistent hint on remount. */
   uploadFileName?: string | null
+  /** Rows that will become cards — the file's rows minus the skipped ones. */
   uploadRowCount: number
+  /** Rows the file holds *before* skipping. Gates the skip controls and caps them. */
+  uploadTotalRows: number
   /** Human-readable summary of the detected delimiter / row & column counts. */
   uploadInfo?: string | null
   /** Non-fatal issues found while parsing the uploaded CSV. */
   uploadWarnings?: string[]
+  /** Rows dropped off the front/back of the uploaded file. */
+  skipFirst: number
+  skipLast: number
+  onSkipChange: (first: number, last: number) => void
+  /** Display-ready skipped rows shown around the preview (already capped). */
+  skippedPreview: { before: string[]; after: string[] }
   /** The row count field: a plain row count, or the default for blank leader counts. */
   rowCount: number
   onRowCountChange: (value: number) => void
@@ -394,6 +408,15 @@ export function CodeSourceSection({
     setActiveColumn(columns.length)
   }
 
+  // Rows the file has but that won't become cards. Drives the summary line and
+  // keeps it hidden entirely in the default (nothing skipped) case.
+  const skippedCount = Math.max(0, uploadTotalRows - uploadRowCount)
+  // Skipped rows past the few the preview renders, summarised instead.
+  const skippedMore = {
+    before: Math.max(0, Math.floor(skipFirst) - skippedPreview.before.length),
+    after: Math.max(0, Math.floor(skipLast) - skippedPreview.after.length),
+  }
+
   const previewRowCount = dataMode === 'upload' ? uploadRowCount : totalRows
   // Data rows actually rendered. With a leader the preview spreads its budget
   // across the blocks, so this is not simply `CSV_PREVIEW_ROW_COUNT`.
@@ -423,6 +446,56 @@ export function CodeSourceSection({
             onChange={(files) => onCsvUpload(files?.[0] ?? null)}
             currentName={uploadFileName}
           />
+          {/* Gated on the file's total rows, not the kept count: over-skipping
+              drives the kept count to 0, and the controls must stay on screen so
+              the user can dial it back. Each field is capped by what the other
+              one leaves, so the empty case is hard to reach from the UI at all. */}
+          {uploadTotalRows > 0 && (
+            <>
+              <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
+                <NumberField
+                  label={m.csv_skip_first_label()}
+                  value={skipFirst}
+                  onChange={(v) => onSkipChange(Number.isNaN(v) ? 0 : v, skipLast)}
+                  step={1}
+                  min={0}
+                  max={Math.max(0, uploadTotalRows - skipLast)}
+                />
+                <NumberField
+                  label={m.csv_skip_last_label()}
+                  value={skipLast}
+                  onChange={(v) => onSkipChange(skipFirst, Number.isNaN(v) ? 0 : v)}
+                  step={1}
+                  min={0}
+                  max={Math.max(0, uploadTotalRows - skipFirst)}
+                />
+              </div>
+              <p className="text-hint text-gray-500 dark:text-gray-400">{m.csv_skip_hint()}</p>
+              {/* Two messages, not one: the kept and skipped counts each need
+                  their own plural form, and a single message can only select on
+                  one number (which produced "1 sărite"). */}
+              {skippedCount > 0 && (
+                <p className="text-label font-medium text-gray-700 dark:text-gray-300">
+                  {m.csv_skip_summary({
+                    count: uploadRowCount,
+                    keptFormatted: formatNumber(uploadRowCount),
+                    totalFormatted: formatNumber(uploadTotalRows),
+                  })}
+                  {' ('}
+                  {m.csv_skip_summary_skipped({ count: skippedCount, countFormatted: formatNumber(skippedCount) })}
+                  {').'}
+                </p>
+              )}
+              {/* Derived, not stored: it must disappear the instant the counts
+                  become valid again. Generation is already blocked upstream (the
+                  CSV is dropped, so the step gate closes). */}
+              {uploadRowCount === 0 && (
+                <p className="text-label text-red-600 dark:text-red-400">
+                  {m.csv_skip_removes_all({ total: formatNumber(uploadTotalRows) })}
+                </p>
+              )}
+            </>
+          )}
           {uploadRowCount > 0 && (
             <CheckboxField
               label={m.codes_single_field_per_row()}
@@ -589,10 +662,41 @@ export function CodeSourceSection({
               : m.codes_preview()}
           </span>
           <pre className="max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 text-hint text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
+            {/* Skipped rows stay visible, struck through, in the position they
+                occupy in the file — so the user can see at a glance that they
+                dropped the header and not the first real record. */}
+            {skippedPreview.before.map((line, i) => (
+              <SkippedLine key={`b${i}`} line={line} />
+            ))}
+            {skippedMore.before > 0 && <SkippedMore count={skippedMore.before} />}
             {preview}
+            {skippedMore.after > 0 && <SkippedMore count={skippedMore.after} />}
+            {skippedPreview.after.map((line, i) => (
+              <SkippedLine key={`a${i}`} line={line} />
+            ))}
           </pre>
         </div>
       )}
     </Section>
+  )
+}
+
+// One row the skip settings dropped: struck through and muted, with a trailing
+// word so the reason is readable and not carried by styling alone.
+function SkippedLine({ line }: { line: string }) {
+  return (
+    <span className="block text-gray-400 line-through dark:text-gray-500">
+      {line}
+      <span className="ml-2 no-underline">← {m.csv_skipped_marker()}</span>
+    </span>
+  )
+}
+
+// Stands in for skipped rows beyond the few the preview renders.
+function SkippedMore({ count }: { count: number }) {
+  return (
+    <span className="block text-gray-400 dark:text-gray-500">
+      {m.csv_skipped_more({ count, countFormatted: formatNumber(count) })}
+    </span>
   )
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseUploadedCsv } from './csvImport'
-import { describeDelimiter, serializeRows } from './csvSerialize'
+import { describeDelimiter, keptRows, serializeRows, skippedRows } from './csvSerialize'
 
 // PapaParse accepts a raw string as well as a File; passing a string lets us
 // exercise the real delimiter-detection and warning logic without a DOM/File.
@@ -107,5 +107,89 @@ describe('describeDelimiter', () => {
     expect(describeDelimiter(';')).toContain('punct')
     expect(describeDelimiter('\t')).toBe('tab')
     expect(describeDelimiter(' ')).toBe('spațiu')
+  })
+})
+
+describe('keptRows', () => {
+  const rows = ['header', 'a', 'b', 'c', 'total']
+
+  it('returns every row when nothing is skipped', () => {
+    // The default path must be a no-op — this is what every existing upload does.
+    expect(keptRows(rows, 0, 0)).toEqual(rows)
+  })
+
+  it('drops rows off the front', () => {
+    expect(keptRows(rows, 1, 0)).toEqual(['a', 'b', 'c', 'total'])
+    expect(keptRows(rows, 2, 0)).toEqual(['b', 'c', 'total'])
+  })
+
+  it('drops rows off the back', () => {
+    expect(keptRows(rows, 0, 1)).toEqual(['header', 'a', 'b', 'c'])
+  })
+
+  it('drops from both ends at once', () => {
+    expect(keptRows(rows, 1, 1)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('returns nothing when the skips consume every row', () => {
+    // Must never produce a reversed or wrapped slice.
+    expect(keptRows(rows, 3, 2)).toEqual([])
+    expect(keptRows(rows, 5, 0)).toEqual([])
+    expect(keptRows(rows, 0, 5)).toEqual([])
+    expect(keptRows(rows, 99, 99)).toEqual([])
+  })
+
+  it('keeps a single row when the skips leave exactly one', () => {
+    expect(keptRows(rows, 2, 2)).toEqual(['b'])
+  })
+
+  it('clamps negative, fractional and non-finite counts to no skip', () => {
+    // NaN is what an emptied NumberField emits; the rest can arrive from a
+    // hand-edited preset or an old undo snapshot. Nonsense input keeps the
+    // user's rows visible rather than silently emptying the file.
+    expect(keptRows(rows, -3, 0)).toEqual(rows)
+    expect(keptRows(rows, NaN, NaN)).toEqual(rows)
+    expect(keptRows(rows, Infinity, 0)).toEqual(rows)
+    expect(keptRows(rows, 1.9, 0)).toEqual(['a', 'b', 'c', 'total'])
+  })
+
+  it('treats a huge but finite skip as dropping everything', () => {
+    expect(keptRows(rows, 1e9, 0)).toEqual([])
+  })
+
+  it('handles an empty input', () => {
+    expect(keptRows([], 0, 0)).toEqual([])
+    expect(keptRows([], 2, 2)).toEqual([])
+  })
+})
+
+describe('skippedRows', () => {
+  const rows = ['header', 'a', 'b', 'c', 'total']
+
+  it('returns nothing when nothing is skipped', () => {
+    expect(skippedRows(rows, 0, 0)).toEqual({ before: [], after: [] })
+  })
+
+  it('splits the dropped rows by which end they came off', () => {
+    expect(skippedRows(rows, 1, 1)).toEqual({ before: ['header'], after: ['total'] })
+    expect(skippedRows(rows, 2, 0)).toEqual({ before: ['header', 'a'], after: [] })
+    expect(skippedRows(rows, 0, 2)).toEqual({ before: [], after: ['c', 'total'] })
+  })
+
+  it('reports every row as skipped when the skips consume the file', () => {
+    // Must agree with keptRows returning [] for the same arguments.
+    expect(keptRows(rows, 3, 3)).toEqual([])
+    expect(skippedRows(rows, 3, 3)).toEqual({ before: rows, after: [] })
+  })
+
+  it('partitions the rows exactly — no row lost, none counted twice', () => {
+    for (const [first, last] of [[0, 0], [1, 0], [0, 1], [2, 2], [1, 3]]) {
+      const skipped = skippedRows(rows, first, last)
+      expect([...skipped.before, ...keptRows(rows, first, last), ...skipped.after]).toEqual(rows)
+    }
+  })
+
+  it('clamps nonsense counts the same way keptRows does', () => {
+    expect(skippedRows(rows, -1, NaN)).toEqual({ before: [], after: [] })
   })
 })

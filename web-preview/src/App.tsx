@@ -22,7 +22,7 @@ import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
-import { serializeRows, describeDelimiter, isRaggedRowsWarning } from './lib/csvSerialize'
+import { serializeRows, describeDelimiter, isRaggedRowsWarning, keptRows, skippedRows } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
 import { computeContourInteriorMaskPath } from './lib/contourInteriorMask'
@@ -136,6 +136,8 @@ interface Preset {
   codeColumns: CodeColumnConfig[]
   codeFieldMerges: number[]
   codeSingleField: boolean
+  codeSkipFirst?: number
+  codeSkipLast?: number
   words: WordStyle[]
   safeMarginMm: number
   correctOverflow?: boolean
@@ -266,6 +268,24 @@ const SEPARATOR_DEFAULT = ','
 // contains the file's original delimiter (e.g. a quoted "a,b"). The friendly
 // detected delimiter is still what the user sees; this is plumbing only.
 const UPLOAD_SEPARATOR = '\u001F'
+
+// How many skipped rows the preview renders at each end before summarising the
+// rest. Enough to recognise a header (or a totals block) without letting a long
+// preamble flood the panel.
+const SKIPPED_PREVIEW_ROWS = 3
+
+// Per-file upload choices carried across a re-parse. Each is independently
+// optional because the two callers preserve different things: a preset restore
+// reloads the very same file and keeps all of them, while a manual delimiter
+// correction re-splits the same rows — so the merges must be dropped (the field
+// boundaries just moved) but the skips must survive (row 1 is still the header).
+// Anything omitted falls back to the fresh-upload default.
+interface UploadRestore {
+  merges?: number[]
+  singleField?: boolean
+  skipFirst?: number
+  skipLast?: number
+}
 
 // Heuristic for "the user picked the same file in two pickers": the browser
 // gives a distinct File object per <input>, but the same on-disk file has the
@@ -564,7 +584,7 @@ const defaultContourConfig: ContourConfig = {
 // CSV is interpreted. Everything derived from parsing an uploaded file (preview
 // text, row/warning info, the parsed rows, the raw File, the generated CSV URL
 // and its progress/stale/duplicate status) stays as its own useState — those are
-// artifacts, not user config. All seven fields here round-trip through `Preset`.
+// artifacts, not user config. Every field here round-trips through `Preset`.
 interface DataConfig {
   sampleText: string
   codeDataMode: CodeDataMode
@@ -575,6 +595,10 @@ interface DataConfig {
   codeFieldMerges: number[]
   // Treat each uploaded row as a single code (re-join all its fields).
   codeSingleField: boolean
+  // Uploaded rows discarded off the front/back of the file — how a header line
+  // (or a trailing totals row) is kept from becoming a card.
+  codeSkipFirst: number
+  codeSkipLast: number
 }
 const defaultDataConfig: DataConfig = {
   sampleText: '',
@@ -584,6 +608,8 @@ const defaultDataConfig: DataConfig = {
   codeColumns: [defaultCodeColumn()],
   codeFieldMerges: [],
   codeSingleField: false,
+  codeSkipFirst: 0,
+  codeSkipLast: 0,
 }
 
 // Coduri-step (text/layout) user config, grouped into one object (mirrors the
@@ -793,6 +819,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   const {
     sampleText, codeDataMode, codeRowCount, codeSeparator,
     codeColumns, codeFieldMerges, codeSingleField,
+    codeSkipFirst, codeSkipLast,
   } = dataConfig
   function setDataField<K extends keyof DataConfig>(
     key: K,
@@ -898,7 +925,17 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // For an uploaded CSV whose delimiter was auto-detected wrongly: the raw parsed
   // rows (the merges the user applied to them live in DataConfig.codeFieldMerges,
   // e.g. so a value like "1A 1" mis-split into ["1A","1"] becomes one field again).
+  //
+  // This holds EVERY parsed row, including the ones `codeSkipFirst`/`codeSkipLast`
+  // discard: it's the re-derivation source, so lowering a skip count must be able
+  // to bring rows back without re-reading the file.
   const [uploadedRows, setUploadedRows] = useState<string[][]>([])
+  // The skipped rows shown around the preview so the user can confirm they
+  // dropped the right lines. Sentinel-joined like `uploadedCsvPreview`, and
+  // capped — a 200-row preamble must not be rendered in full.
+  const [uploadedSkippedPreview, setUploadedSkippedPreview] = useState<{ before: string[]; after: string[] }>(
+    { before: [], after: [] },
+  )
   // The widest merged row in the uploaded file (sentinel-joined), used to size
   // the per-word styles. Sizing from the *widest* row — not just the first —
   // ensures every row fits the configured word count, so the generator (which
@@ -1036,10 +1073,12 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // The "Câmpuri pe rând" editor shows this row so every mergeable gap is
   // available — a shorter first row would hide gaps that exist only in longer
   // rows, which is why merges defined on the first row didn't cover every row.
-  const widestUploadedRow = useMemo(
-    () => uploadedRows.reduce<string[]>((max, r) => (r.length > max.length ? r : max), uploadedRows[0] ?? []),
-    [uploadedRows],
-  )
+  // Skipped rows are excluded: a header line is often the widest row in a file,
+  // and it must not define the gaps for rows that will never include it.
+  const widestUploadedRow = useMemo(() => {
+    const kept = keptRows(uploadedRows, codeSkipFirst, codeSkipLast)
+    return kept.reduce<string[]>((max, r) => (r.length > max.length ? r : max), kept[0] ?? [])
+  }, [uploadedRows, codeSkipFirst, codeSkipLast])
 
   // Active preview shown in the data-source step: the uploaded file's rows
   // when in upload mode, the generated preview otherwise. In upload mode the
@@ -1050,6 +1089,15 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     codeDataMode === 'upload'
       ? activePreview.split(UPLOAD_SEPARATOR).join(codeSeparator || ' ')
       : activePreview
+  // The skipped rows shown around the preview need the same sentinel → friendly
+  // separator swap as the preview itself.
+  const displaySkippedPreview = useMemo(() => {
+    const toDisplay = (line: string) => line.split(UPLOAD_SEPARATOR).join(codeSeparator || ' ')
+    return {
+      before: uploadedSkippedPreview.before.map(toDisplay),
+      after: uploadedSkippedPreview.after.map(toDisplay),
+    }
+  }, [uploadedSkippedPreview, codeSeparator])
   // The sample-row field is user-editable, so it always shows/edits with the
   // friendly separator even though uploaded samples are stored sentinel-joined.
   const sampleTextDisplay =
@@ -1669,8 +1717,11 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     setUploadedCsvWarnings([])
     setUploadedRawFile(null)
     setUploadedRows([])
+    setUploadedSkippedPreview({ before: [], after: [] })
     setDataField('codeFieldMerges', [])
     setDataField('codeSingleField', false)
+    setDataField('codeSkipFirst', 0)
+    setDataField('codeSkipLast', 0)
     setUploadedMaxRow('')
   }
 
@@ -1686,12 +1737,41 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // a value that contained the delimiter), re-joined with `joiner` (the delimiter).
   // When `singleField` is set, every field on a row is re-joined into one value
   // (each row becomes a single code), which `gaps` can't guarantee on ragged rows.
-  function applyUploadedCsvRows(rows: string[][], gaps: number[], joiner: string, singleField: boolean) {
+  //
+  // `rows` is always the FULL parsed set; `skipFirst`/`skipLast` are applied here
+  // so every derived value below comes from the kept rows only. Storing the full
+  // set keeps skipping reversible without re-reading the file.
+  function applyUploadedCsvRows(
+    rows: string[][],
+    gaps: number[],
+    joiner: string,
+    singleField: boolean,
+    skipFirst: number,
+    skipLast: number,
+  ) {
     setUploadedRows(rows)
     const gapSet = new Set(gaps)
-    const merged = singleField
-      ? rows.map((r) => [r.join(joiner)])
-      : rows.map((r) => mergeFields(r, gapSet, joiner))
+    const mergeRow = (r: string[]) => (singleField ? [r.join(joiner)] : mergeFields(r, gapSet, joiner))
+    const kept = keptRows(rows, skipFirst, skipLast)
+
+    // Skipping everything leaves nothing to print. Drop the downstream CSV so
+    // `dataSourceDone` closes the step-3 gate rather than letting the user walk
+    // on to a zero-card PDF. The explanation is *not* pushed into
+    // `uploadedCsvWarnings` — those describe the parse and are only rewritten on
+    // re-ingest, so this one would linger after the skips were fixed. The panel
+    // derives it from the row counts instead, which can't go stale.
+    if (kept.length === 0) {
+      setCsvDataFile(null)
+      setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null })
+      setUploadedCsvPreview('')
+      setUploadedCsvRowCount(0)
+      setUploadedMaxRow('')
+      setUploadedSkippedPreview({ before: [], after: [] })
+      setCodeCsvStale(false)
+      return
+    }
+
+    const merged = kept.map(mergeRow)
     // Track the row with the most fields — equivalently, the most separation
     // chars (fields = separators + 1) — so the per-word styles cover every row.
     const widest = merged.reduce<string[]>((max, r) => (r.length > max.length ? r : max), merged[0] ?? [])
@@ -1699,7 +1779,16 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     const file = new File([serializeRows(merged, UPLOAD_SEPARATOR)], 'uploaded.csv', { type: 'text/csv' })
     setCsvDataFile(file)
     setUploadedCsvPreview(serializeRows(merged.slice(0, CSV_PREVIEW_ROW_COUNT), UPLOAD_SEPARATOR))
-    setUploadedCsvRowCount(rows.length)
+    setUploadedCsvRowCount(kept.length)
+    // The skipped rows, merged the same way so their fields line up with the kept
+    // ones. Show the head of the leading block and the tail of the trailing block:
+    // the header line and the final totals row are what the user needs to eyeball.
+    const skipped = skippedRows(rows, skipFirst, skipLast)
+    const toLine = (r: string[]) => mergeRow(r).join(UPLOAD_SEPARATOR)
+    setUploadedSkippedPreview({
+      before: skipped.before.slice(0, SKIPPED_PREVIEW_ROWS).map(toLine),
+      after: skipped.after.slice(-SKIPPED_PREVIEW_ROWS).map(toLine),
+    })
     setCodeCsvUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file) })
     setCodeCsvStale(false)
   }
@@ -1707,13 +1796,22 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // Re-apply merges to the already-parsed rows when the user toggles a field gap.
   function handleUploadFieldMergesChange(gaps: number[]) {
     setDataField('codeFieldMerges', gaps)
-    applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ', codeSingleField)
+    applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ', codeSingleField, codeSkipFirst, codeSkipLast)
   }
 
   // Toggle "each row is a single code" and re-build the downstream CSV.
   function handleSingleFieldChange(value: boolean) {
     setDataField('codeSingleField', value)
-    applyUploadedCsvRows(uploadedRows, codeFieldMerges, codeSeparator || ' ', value)
+    applyUploadedCsvRows(uploadedRows, codeFieldMerges, codeSeparator || ' ', value, codeSkipFirst, codeSkipLast)
+  }
+
+  // Change how many rows are dropped off each end. `uploadedRows` still holds the
+  // whole file, so this re-derives from it — no re-parse, and lowering a count
+  // brings the rows straight back.
+  function handleUploadSkipChange(first: number, last: number) {
+    setDataField('codeSkipFirst', first)
+    setDataField('codeSkipLast', last)
+    applyUploadedCsvRows(uploadedRows, codeFieldMerges, codeSeparator || ' ', codeSingleField, first, last)
   }
 
   // Read a file (the original upload, or a re-parse with a corrected delimiter)
@@ -1721,7 +1819,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   async function ingestCsvFile(
     file: File,
     forcedDelimiter?: string,
-    restore?: { merges: number[]; singleField: boolean },
+    restore?: UploadRestore,
   ) {
     let parsed
     try {
@@ -1748,13 +1846,18 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     // to treating each row as one code. A manual override (forcedDelimiter) is an
     // explicit "split like this", so it's respected as-is.
     const ragged = forcedDelimiter === undefined && parsed.rows.some((r) => r.length !== parsed.columnCount)
-    // Restoring a preset reloads the same file, so honour the saved field merges
-    // and single-code choice. A fresh parse instead drops any previous merges
-    // (the layout may have changed) and falls back to the ragged default.
-    const merges = restore ? restore.merges : []
-    const singleField = restore ? restore.singleField : ragged
+    // Each choice falls back to its fresh-upload default unless the caller asked
+    // to preserve it (see `UploadRestore`). Fresh defaults: no merges (the layout
+    // may have changed), the ragged-driven single-code guess, and no skipping —
+    // carrying skips onto a different file would silently drop real rows.
+    const merges = restore?.merges ?? []
+    const singleField = restore?.singleField ?? ragged
+    const skipFirst = restore?.skipFirst ?? 0
+    const skipLast = restore?.skipLast ?? 0
     setDataField('codeFieldMerges', merges)
     setDataField('codeSingleField', singleField)
+    setDataField('codeSkipFirst', skipFirst)
+    setDataField('codeSkipLast', skipLast)
     const rowsLabel = m.csv_rows_count({ count: parsed.rows.length, countFormatted: formatNumber(parsed.rows.length) })
     if (singleField) {
       setUploadedCsvInfo(m.csv_info_single_field({ rows: rowsLabel }))
@@ -1770,12 +1873,12 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     setUploadedCsvWarnings(
       singleField ? parsed.warnings.filter((w) => !isRaggedRowsWarning(w)) : parsed.warnings,
     )
-    applyUploadedCsvRows(parsed.rows, merges, parsed.delimiter || ' ', singleField)
+    applyUploadedCsvRows(parsed.rows, merges, parsed.delimiter || ' ', singleField, skipFirst, skipLast)
   }
 
   async function handleCsvUpload(
     file: File | null,
-    restore?: { merges: number[]; singleField: boolean },
+    restore?: UploadRestore,
   ) {
     if (!file) {
       clearUploadedCsv()
@@ -1829,6 +1932,8 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
       codeColumns,
       codeFieldMerges,
       codeSingleField,
+      codeSkipFirst,
+      codeSkipLast,
       words,
       safeMarginMm,
       correctOverflow,
@@ -2028,8 +2133,13 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
         if (Array.isArray(preset.codeColumns)) setDataField('codeColumns', normalizeColumns(preset.codeColumns))
         const presetMerges = Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : []
         const presetSingleField = preset.codeSingleField === true
+        // Absent in presets written before row skipping existed.
+        const presetSkipFirst = typeof preset.codeSkipFirst === 'number' ? preset.codeSkipFirst : 0
+        const presetSkipLast = typeof preset.codeSkipLast === 'number' ? preset.codeSkipLast : 0
         setDataField('codeFieldMerges', presetMerges)
         setDataField('codeSingleField', presetSingleField)
+        setDataField('codeSkipFirst', presetSkipFirst)
+        setDataField('codeSkipLast', presetSkipLast)
         const length = preset.words.length
         setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
@@ -2123,7 +2233,12 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
         if (csvFile && loadedDataMode === 'upload') {
           // Re-ingesting the file would otherwise re-detect the layout and wipe
           // the merges set above, so pass the saved joining through to be honoured.
-          void handleCsvUpload(csvFile, { merges: presetMerges, singleField: presetSingleField })
+          void handleCsvUpload(csvFile, {
+            merges: presetMerges,
+            singleField: presetSingleField,
+            skipFirst: presetSkipFirst,
+            skipLast: presetSkipLast,
+          })
         } else if (csvFile) {
           setCsvDataFile(csvFile)
         }
@@ -2989,8 +3104,10 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
       invalidateCsv()
     } else if (uploadedRawFile && value.length > 0) {
       // Manual override after auto-detection: re-parse the original file with
-      // the corrected delimiter so fields split (and re-join) correctly.
-      void ingestCsvFile(uploadedRawFile, value)
+      // the corrected delimiter so fields split (and re-join) correctly. Only the
+      // field boundaries move — the rows themselves are unchanged, so the skip
+      // counts still point at the same header/footer lines and must be kept.
+      void ingestCsvFile(uploadedRawFile, value, { skipFirst: codeSkipFirst, skipLast: codeSkipLast })
     }
   }
 
@@ -4542,8 +4659,13 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
             onCsvUpload={(f) => void handleCsvUpload(f)}
             uploadFileName={uploadedRawFile?.name}
             uploadRowCount={uploadedCsvRowCount}
+            uploadTotalRows={uploadedRows.length}
             uploadInfo={uploadedCsvInfo}
             uploadWarnings={uploadedCsvWarnings}
+            skipFirst={codeSkipFirst}
+            skipLast={codeSkipLast}
+            onSkipChange={handleUploadSkipChange}
+            skippedPreview={displaySkippedPreview}
             rowCount={codeRowCount}
             onRowCountChange={handleCodeRowCountChange}
             totalRows={codeTotalRows}
