@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { CheckboxField, FileField, NumberField, RadioGroupField, Section, SelectField, TextField } from './fields'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, mergeFields, randomCodeSpace, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode } from '../lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, defaultLeaderValue, mergeFields, randomCodeSpace, type CodeCharset, type CodeColumnConfig, type CodeMode, type CodePadMode, type LeaderValue } from '../lib/codeSource'
 import { m } from '../paraglide/messages'
 import { formatNumber } from '../lib/formatNumber'
 
@@ -16,12 +16,93 @@ const MODE_OPTIONS: { value: CodeMode; label: string }[] = [
   { value: 'random', label: m.codes_mode_random() },
   { value: 'range', label: m.codes_mode_range() },
   { value: 'text', label: m.codes_mode_text() },
+  // Only the first code may lead, so this option is filtered out elsewhere.
+  { value: 'list', label: m.codes_mode_list() },
 ]
+
+const FOLLOWER_MODE_OPTIONS = MODE_OPTIONS.filter((o) => o.value !== 'list')
 
 const PAD_MODE_OPTIONS: { value: CodePadMode; label: string }[] = [
   { value: 'width', label: m.codes_pad_width() },
   { value: 'fixed', label: m.codes_pad_fixed() },
 ]
+
+// The leader's values: each one is repeated over its own block of rows and
+// joined with the other codes. A blank row count inherits the global default,
+// which is why the count input accepts an empty value (NumberField emits NaN,
+// stored as null).
+function LeaderValuesEditor({
+  values,
+  totalRows,
+  onChange,
+}: {
+  values: LeaderValue[]
+  /** Rows the whole config will emit — computed upstream so the math lives in one place. */
+  totalRows: number
+  onChange: (next: LeaderValue[]) => void
+}) {
+  function update(index: number, next: LeaderValue) {
+    onChange(values.map((v, i) => (i === index ? next : v)))
+  }
+
+  return (
+    <div className="flex flex-col gap-inner">
+      <p className="text-label font-semibold text-gray-900 dark:text-gray-100">{m.codes_leader_values()}</p>
+      <p className="text-hint text-gray-500 dark:text-gray-400">{m.codes_leader_hint()}</p>
+
+      {values.length === 0 && (
+        <p className="text-hint text-amber-600 dark:text-amber-400">{m.codes_leader_empty()}</p>
+      )}
+
+      {values.map((value, index) => (
+        // The value takes the room the count doesn't need, and both keep a
+        // min-width floor so the pair shares one row until it genuinely can't.
+        <div key={index} className="flex flex-wrap items-end gap-field">
+          <div className="min-w-40 flex-[3]">
+            <TextField
+              label={m.codes_leader_value_label()}
+              value={value.value}
+              onChange={(v) => update(index, { ...value, value: v })}
+            />
+          </div>
+          <div className="min-w-20 flex-1">
+            <NumberField
+              label={m.codes_leader_rows_label()}
+              value={value.rows ?? NaN}
+              onChange={(n) => update(index, { ...value, rows: Number.isNaN(n) ? null : n })}
+              step={1}
+              min={0}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => onChange(values.filter((_, i) => i !== index))}
+            title={m.codes_leader_remove()}
+            aria-label={m.codes_leader_remove()}
+            className="py-1 text-label font-medium text-red-600 hover:underline dark:text-red-400"
+          >
+            ×
+          </button>
+        </div>
+      ))}
+
+      <div className="flex flex-wrap items-center justify-between gap-field">
+        <button
+          type="button"
+          onClick={() => onChange([...values, defaultLeaderValue()])}
+          className="rounded-full border border-dashed border-gray-300 px-3 py-1 text-label font-medium text-gray-600 hover:border-gray-400 hover:text-gray-800 dark:border-gray-600 dark:text-gray-300 dark:hover:border-gray-500 dark:hover:text-gray-100"
+        >
+          {m.codes_leader_add()}
+        </button>
+        {values.length > 0 && (
+          <span className="text-label font-medium text-gray-700 dark:text-gray-300">
+            {m.codes_total_rows({ count: totalRows, countFormatted: formatNumber(totalRows) })}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function CodeColumnEditor({
   index,
@@ -30,18 +111,28 @@ function CodeColumnEditor({
   onRemove,
   canRemove,
   rowCount,
+  totalRows,
 }: {
   index: number
   column: CodeColumnConfig
   onChange: (next: CodeColumnConfig) => void
   onRemove: () => void
   canRemove: boolean
-  /** Number of rows requested — used to flag when random codes can't be unique. */
+  /**
+   * Rows a single code has to cover — the largest leader block when there is a
+   * leader (followers restart inside each block), the plain row count otherwise.
+   * Used to flag when random codes can't be unique.
+   */
   rowCount: number
+  /** Rows the whole config emits, shown as the leader's running total. */
+  totalRows: number
 }) {
   function set<K extends keyof CodeColumnConfig>(key: K, value: CodeColumnConfig[K]) {
     onChange({ ...column, [key]: value })
   }
+
+  // Only the first code may lead: one level of nesting, no cartesian product.
+  const modeOptions = index === 0 ? MODE_OPTIONS : FOLLOWER_MODE_OPTIONS
 
   // For random codes, warn when the requested rows exceed the combination space
   // (duplicates unavoidable) or merely approach it (duplicates very likely, by
@@ -76,7 +167,7 @@ function CodeColumnEditor({
           shrink together and share the row, wrapping only as a last resort when
           the column is genuinely too narrow. */}
       <div className="flex flex-wrap gap-field [&>*]:min-w-24 [&>*]:flex-1">
-        <SelectField label={m.codes_type_label()} value={column.mode} options={MODE_OPTIONS} onChange={(v) => set('mode', v)} />
+        <SelectField label={m.codes_type_label()} value={column.mode} options={modeOptions} onChange={(v) => set('mode', v)} />
         {column.mode === 'random' && (
           <>
             <SelectField label={m.codes_charset_label()} value={column.charset} options={CHARSET_OPTIONS} onChange={(v) => set('charset', v)} />
@@ -94,11 +185,21 @@ function CodeColumnEditor({
         )}
       </div>
 
-      {/* Padding only applies to generated codes, not a fixed text label. Same
-          single-row-until-last-resort treatment for the completion controls: a
-          small min-width floor keeps the three fields sharing one row and wrapping
-          only as a last resort. */}
-      {column.mode !== 'text' && (
+      {/* The leader's values get their own editor: they replace the single
+          per-row value the other modes emit. */}
+      {column.mode === 'list' && (
+        <LeaderValuesEditor
+          values={column.values}
+          totalRows={totalRows}
+          onChange={(values) => set('values', values)}
+        />
+      )}
+
+      {/* Padding only applies to generated codes, not a fixed text label or the
+          leader's typed values. Same single-row-until-last-resort treatment for
+          the completion controls: a small min-width floor keeps the three fields
+          sharing one row and wrapping only as a last resort. */}
+      {column.mode !== 'text' && column.mode !== 'list' && (
         <div className="flex flex-wrap gap-field [&>*]:min-w-24 [&>*]:flex-1">
           <SelectField label={m.codes_pad_mode_label()} value={column.padMode} options={PAD_MODE_OPTIONS} onChange={(v) => set('padMode', v)} />
           <TextField label={m.codes_pad_char_label()} value={column.padChar} onChange={(v) => set('padChar', v)} />
@@ -206,6 +307,9 @@ export function CodeSourceSection({
   uploadWarnings,
   rowCount,
   onRowCountChange,
+  totalRows,
+  maxGroupRows,
+  hasLeader,
   separator,
   onSeparatorChange,
   columns,
@@ -217,6 +321,7 @@ export function CodeSourceSection({
   onSingleFieldPerRowChange,
   onGenerate,
   preview,
+  previewShown,
   downloadUrl,
   progress,
   stale,
@@ -233,8 +338,15 @@ export function CodeSourceSection({
   uploadInfo?: string | null
   /** Non-fatal issues found while parsing the uploaded CSV. */
   uploadWarnings?: string[]
+  /** The row count field: a plain row count, or the default for blank leader counts. */
   rowCount: number
   onRowCountChange: (value: number) => void
+  /** Rows the config will actually emit — the sum of the leader's blocks. */
+  totalRows: number
+  /** Rows a single code must cover: the largest leader block, or `rowCount`. */
+  maxGroupRows: number
+  /** True when code 1 is a non-empty value list. */
+  hasLeader: boolean
   separator: string
   onSeparatorChange: (value: string) => void
   columns: CodeColumnConfig[]
@@ -249,6 +361,8 @@ export function CodeSourceSection({
   onSingleFieldPerRowChange: (value: boolean) => void
   onGenerate: () => void
   preview: string
+  /** Data rows in `preview` (generate mode) — marker lines excluded. */
+  previewShown: number
   downloadUrl: string | null
   /** Rows written so far while streaming the CSV, or `null` when idle. */
   progress: number | null
@@ -280,7 +394,11 @@ export function CodeSourceSection({
     setActiveColumn(columns.length)
   }
 
-  const previewRowCount = dataMode === 'upload' ? uploadRowCount : rowCount
+  const previewRowCount = dataMode === 'upload' ? uploadRowCount : totalRows
+  // Data rows actually rendered. With a leader the preview spreads its budget
+  // across the blocks, so this is not simply `CSV_PREVIEW_ROW_COUNT`.
+  const previewShownRows =
+    dataMode === 'upload' ? Math.min(uploadRowCount, CSV_PREVIEW_ROW_COUNT) : previewShown
 
   return (
     <Section title={m.codes_settings_title()} frame="top">
@@ -359,12 +477,23 @@ export function CodeSourceSection({
               placeholder=" "
             />
           </div>
+          {/* With a leader the field no longer states how many rows come out —
+              it only fills in the blanks — so say what it means and show the
+              real total next to it. */}
+          {hasLeader && (
+            <p className="text-hint text-gray-500 dark:text-gray-400">
+              {m.codes_row_count_leader_hint()}{' '}
+              <span className="font-medium text-gray-700 dark:text-gray-300">
+                {m.codes_total_rows({ count: totalRows, countFormatted: formatNumber(totalRows) })}
+              </span>
+            </p>
+          )}
 
           <div className="flex flex-wrap gap-inner border-t border-gray-200 pt-block mt-inner dark:border-gray-700">
             {columns.map((column, index) => {
               // Flag a tab whose random code can't yield enough unique values for
-              // the requested rows (the editor shows the full explanation).
-              const exceeds = column.mode === 'random' && rowCount > randomCodeSpace(column.charset, column.length)
+              // the rows it has to cover (the editor shows the full explanation).
+              const exceeds = column.mode === 'random' && maxGroupRows > randomCodeSpace(column.charset, column.length)
               return (
                 <button
                   key={index}
@@ -402,7 +531,8 @@ export function CodeSourceSection({
               onChange={(next) => updateColumn(active, next)}
               onRemove={() => removeColumn(active)}
               canRemove={columns.length > 1}
-              rowCount={rowCount}
+              rowCount={maxGroupRows}
+              totalRows={totalRows}
             />
           )}
           <p className="text-label text-gray-500 dark:text-gray-400">
@@ -428,7 +558,7 @@ export function CodeSourceSection({
               disabled={generating || blocked}
               className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
             >
-              {generating ? m.codes_generating_progress({ done: formatNumber(progress), total: formatNumber(rowCount) }) : m.codes_generate_csv()}
+              {generating ? m.codes_generating_progress({ done: formatNumber(progress), total: formatNumber(totalRows) }) : m.codes_generate_csv()}
             </button>
             {downloadUrl && !generating && (
               <a href={downloadUrl} download="codes.csv" className="text-label font-medium text-blue-600 hover:underline dark:text-blue-400">
@@ -454,8 +584,8 @@ export function CodeSourceSection({
       {preview && (
         <div className="flex flex-col gap-tight">
           <span className="text-label font-medium text-gray-700 dark:text-gray-300">
-            {previewRowCount > CSV_PREVIEW_ROW_COUNT
-              ? m.codes_preview_truncated({ shown: CSV_PREVIEW_ROW_COUNT, total: formatNumber(previewRowCount) })
+            {previewShownRows < previewRowCount
+              ? m.codes_preview_truncated({ shown: previewShownRows, total: formatNumber(previewRowCount) })
               : m.codes_preview()}
           </span>
           <pre className="max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 text-hint text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">

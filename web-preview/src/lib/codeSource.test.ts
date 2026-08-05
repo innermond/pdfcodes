@@ -4,13 +4,25 @@ import {
   defaultCodeColumn,
   generateCodesCsv,
   generateCsvPreview,
+  generateSampleRow,
+  leaderColumn,
+  maxGroupRowCount,
   mergeFields,
+  normalizeColumns,
   streamCodesCsv,
+  totalRowCount,
   type CodeColumnConfig,
+  type LeaderValue,
 } from './codeSource'
 
 function column(overrides: Partial<CodeColumnConfig>): CodeColumnConfig {
   return { ...defaultCodeColumn(), ...overrides }
+}
+
+/** A leader column: `values` is a list of [value, rows] pairs; null rows inherit the default. */
+function leader(values: [string, number | null][], overrides: Partial<CodeColumnConfig> = {}): CodeColumnConfig {
+  const list: LeaderValue[] = values.map(([value, rows]) => ({ value, rows }))
+  return column({ mode: 'list', values: list, ...overrides })
 }
 
 describe('mergeFields', () => {
@@ -186,13 +198,15 @@ describe('generateCodesCsv', () => {
 describe('generateCsvPreview', () => {
   it('caps the preview at CSV_PREVIEW_ROW_COUNT rows even for large row counts', () => {
     const preview = generateCsvPreview(100_000, [column({ mode: 'range', rangeStart: 1 })], ' ')
-    expect(preview.split('\n')).toHaveLength(CSV_PREVIEW_ROW_COUNT)
-    expect(preview.split('\n')).toEqual(Array.from({ length: CSV_PREVIEW_ROW_COUNT }, (_, i) => String(i + 1)))
+    expect(preview.text.split('\n')).toHaveLength(CSV_PREVIEW_ROW_COUNT)
+    expect(preview.text.split('\n')).toEqual(Array.from({ length: CSV_PREVIEW_ROW_COUNT }, (_, i) => String(i + 1)))
+    expect(preview).toMatchObject({ shown: CSV_PREVIEW_ROW_COUNT, total: 100_000 })
   })
 
   it('does not cap below the requested row count', () => {
     const preview = generateCsvPreview(5, [column({ mode: 'range', rangeStart: 1 })], ' ')
-    expect(preview.split('\n')).toEqual(['1', '2', '3', '4', '5'])
+    expect(preview.text.split('\n')).toEqual(['1', '2', '3', '4', '5'])
+    expect(preview).toMatchObject({ shown: 5, total: 5 })
   })
 })
 
@@ -234,5 +248,199 @@ describe('streamCodesCsv', () => {
     const chunks = await collect(streamCodesCsv(7, columns, ';', 4))
     const streamed = chunks.map((c) => c.text).join('').trimEnd()
     expect(streamed).toBe(generateCodesCsv(7, columns, ';'))
+  })
+})
+
+describe('normalizeColumns', () => {
+  it('demotes a list mode outside the first column to a fixed text', () => {
+    const columns = [column({ mode: 'random' }), leader([['B', 3]])]
+    expect(normalizeColumns(columns)[1].mode).toBe('text')
+  })
+
+  it('keeps a list mode on the first column', () => {
+    const columns = [leader([['A', 3]]), column({ mode: 'random' })]
+    expect(normalizeColumns(columns)[0].mode).toBe('list')
+  })
+
+  it('returns the same array when nothing needs fixing', () => {
+    const columns = [column({ mode: 'range' })]
+    expect(normalizeColumns(columns)).toBe(columns)
+  })
+
+  it('backfills values missing from a preset written before leaders existed', () => {
+    const legacy = { ...defaultCodeColumn(), values: undefined } as unknown as CodeColumnConfig
+    expect(normalizeColumns([legacy])[0].values).toEqual([])
+  })
+})
+
+describe('leader row counts', () => {
+  it('reports no leader when the first code is not a list', () => {
+    expect(leaderColumn([column({ mode: 'random' })])).toBeNull()
+  })
+
+  it('reports no leader for a list with no values yet', () => {
+    expect(leaderColumn([leader([])])).toBeNull()
+  })
+
+  it('ignores a list that is not the first code', () => {
+    expect(leaderColumn([column({ mode: 'random' }), leader([['B', 3]])])).toBeNull()
+  })
+
+  it('totals the leader blocks instead of the default row count', () => {
+    const columns = [leader([['A', 500], ['B', 120], ['C', 50]])]
+    expect(totalRowCount(columns, 10)).toBe(670)
+    expect(maxGroupRowCount(columns, 10)).toBe(500)
+  })
+
+  it('inherits the default row count for a blank per-value count', () => {
+    const columns = [leader([['A', 5], ['B', null], ['C', null]])]
+    expect(totalRowCount(columns, 10)).toBe(25)
+    expect(maxGroupRowCount(columns, 10)).toBe(10)
+  })
+
+  it('falls back to the plain row count with no leader', () => {
+    const columns = [column({ mode: 'range' })]
+    expect(totalRowCount(columns, 42)).toBe(42)
+    expect(maxGroupRowCount(columns, 42)).toBe(42)
+  })
+})
+
+describe('generateCodesCsv with a leader', () => {
+  it('repeats each leader value over its own block, joined with the other codes', () => {
+    const columns = [leader([['A', 2], ['B', 3]]), column({ mode: 'range', rangeStart: 1 })]
+    expect(generateCodesCsv(10, columns, ',').split('\n')).toEqual([
+      'A,1', 'A,2',
+      'B,1', 'B,2', 'B,3',
+    ])
+  })
+
+  it('restarts a range follower at rangeStart inside every block', () => {
+    const columns = [leader([['A', 3], ['B', 3]]), column({ mode: 'range', rangeStart: 10, rangeStep: 5 })]
+    expect(generateCodesCsv(1, columns, ',').split('\n')).toEqual([
+      'A,10', 'A,15', 'A,20',
+      'B,10', 'B,15', 'B,20',
+    ])
+  })
+
+  it('uses the default row count for blocks with a blank count', () => {
+    const columns = [leader([['A', null], ['B', 1]]), column({ mode: 'range', rangeStart: 1 })]
+    expect(generateCodesCsv(2, columns, ',').split('\n')).toEqual(['A,1', 'A,2', 'B,1'])
+  })
+
+  it('applies the leader prefix/postfix but never padding', () => {
+    const columns = [
+      leader([['A', 2]], { prefix: '[', postfix: ']', padMode: 'width', padChar: '0', padLength: 10 }),
+      column({ mode: 'range', rangeStart: 1 }),
+    ]
+    expect(generateCodesCsv(1, columns, ',').split('\n')).toEqual(['[A],1', '[A],2'])
+  })
+
+  it('emits leader-only rows when there are no follower codes', () => {
+    expect(generateCodesCsv(1, [leader([['A', 2], ['B', 1]])], ',').split('\n')).toEqual(['A', 'A', 'B'])
+  })
+
+  it('keeps random followers unique within a block', () => {
+    // 100 possible codes, blocks of 100 rows: uniqueness is achievable per block
+    // but impossible across the 200-row total — which is exactly the point.
+    const columns = [leader([['A', 100], ['B', 100]]), column({ mode: 'random', charset: 'numeric', length: 2 })]
+    const rows = generateCodesCsv(1, columns, ',').split('\n')
+    for (const value of ['A', 'B']) {
+      const codes = rows.filter((r) => r.startsWith(`${value},`)).map((r) => r.split(',')[1])
+      expect(new Set(codes).size).toBe(100)
+    }
+  })
+
+  it('treats a list with no values as a plain column, not as random codes', () => {
+    // The user picked the mode but hasn't typed a value yet: emit the bare
+    // prefix/postfix rather than random codes the leader will never produce.
+    const columns = [leader([], { prefix: '<', postfix: '>' })]
+    expect(generateCodesCsv(2, columns, ',').split('\n')).toEqual(['<>', '<>'])
+  })
+
+  it('skips a block whose row count is zero', () => {
+    const columns = [leader([['A', 0], ['B', 2]]), column({ mode: 'range', rangeStart: 1 })]
+    expect(generateCodesCsv(5, columns, ',').split('\n')).toEqual(['B,1', 'B,2'])
+  })
+})
+
+describe('generateSampleRow', () => {
+  it('returns the first row of the first leader block', () => {
+    const columns = [leader([['A', 3], ['B', 3]]), column({ mode: 'range', rangeStart: 7 })]
+    expect(generateSampleRow(1, columns, ',')).toBe('A,7')
+  })
+
+  it('returns the first row without a leader', () => {
+    expect(generateSampleRow(10, [column({ mode: 'range', rangeStart: 4 })], ',')).toBe('4')
+  })
+
+  it('returns an empty string when nothing would be generated', () => {
+    expect(generateSampleRow(0, [column({ mode: 'range' })], ',')).toBe('')
+  })
+})
+
+describe('generateCsvPreview with a leader', () => {
+  const labels = {
+    skippedRows: (count: number) => `<skip ${count}>`,
+    moreGroups: (count: number) => `<groups ${count}>`,
+  }
+
+  it('shows a slice of every block instead of only the first one', () => {
+    const columns = [leader([['A', 500], ['B', 120], ['C', 50]]), column({ mode: 'range', rangeStart: 1 })]
+    const preview = generateCsvPreview(10, columns, ',', labels)
+    const lines = preview.text.split('\n')
+
+    // 15 lines over 3 blocks → 5 rows each, with the remainder marked.
+    expect(lines.filter((l) => l.startsWith('A,'))).toHaveLength(5)
+    expect(lines.filter((l) => l.startsWith('B,'))).toHaveLength(5)
+    expect(lines.filter((l) => l.startsWith('C,'))).toHaveLength(5)
+    expect(lines).toContain('<skip 495>')
+    expect(lines).toContain('<skip 115>')
+    expect(lines).toContain('<skip 45>')
+    // Markers are not data rows.
+    expect(preview).toMatchObject({ shown: 15, total: 670 })
+  })
+
+  it('never renders more than CSV_PREVIEW_ROW_COUNT data rows', () => {
+    const columns = [leader(Array.from({ length: 40 }, (_, i) => [`V${i}`, 100] as [string, number]))]
+    const preview = generateCsvPreview(10, columns, ',', labels)
+    expect(preview.shown).toBeLessThanOrEqual(CSV_PREVIEW_ROW_COUNT)
+    expect(preview.total).toBe(4000)
+    // Blocks beyond the cap are summarised rather than rendered.
+    expect(preview.text.split('\n')).toContain('<groups 25>')
+  })
+
+  it('marks nothing when every block fits in the budget', () => {
+    const columns = [leader([['A', 2], ['B', 3]]), column({ mode: 'range', rangeStart: 1 })]
+    const preview = generateCsvPreview(10, columns, ',', labels)
+    expect(preview.text.split('\n')).toEqual(['A,1', 'A,2', 'B,1', 'B,2', 'B,3'])
+    expect(preview).toMatchObject({ shown: 5, total: 5 })
+  })
+})
+
+describe('streamCodesCsv with a leader', () => {
+  async function collect(generator: AsyncGenerator<{ text: string; rowsDone: number; duplicates: number }>) {
+    const chunks: { text: string; rowsDone: number; duplicates: number }[] = []
+    for await (const chunk of generator) chunks.push(chunk)
+    return chunks
+  }
+
+  it('matches generateCodesCsv when a chunk is smaller than a block', async () => {
+    const columns = [leader([['A', 5], ['B', 4]]), column({ mode: 'range', rangeStart: 1 })]
+    const chunks = await collect(streamCodesCsv(10, columns, ',', 2))
+    expect(chunks.map((c) => c.text).join('').trimEnd()).toBe(generateCodesCsv(10, columns, ','))
+    expect(chunks.at(-1)?.rowsDone).toBe(9)
+  })
+
+  it('matches generateCodesCsv when a block is smaller than a chunk', async () => {
+    const columns = [leader([['A', 2], ['B', 3], ['C', 1]]), column({ mode: 'range', rangeStart: 1 })]
+    const chunks = await collect(streamCodesCsv(10, columns, ',', 100))
+    expect(chunks.map((c) => c.text).join('').trimEnd()).toBe(generateCodesCsv(10, columns, ','))
+    expect(chunks.at(-1)?.rowsDone).toBe(6)
+  })
+
+  it('counts rowsDone over the leader total, not the default row count', async () => {
+    const columns = [leader([['A', 3], ['B', 3]])]
+    const chunks = await collect(streamCodesCsv(10, columns, ',', 2))
+    expect(chunks.map((c) => c.rowsDone)).toEqual([2, 4, 6])
   })
 })

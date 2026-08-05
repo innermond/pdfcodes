@@ -51,8 +51,9 @@
 	"codes_single_field_per_row": "Fiecare rând este un singur cod",
 	"codes_wrong_separator_summary": "Separator detectat greșit? Corectează manual",
 	"codes_separator_label": "Separator între coduri pe rând",
-	"codes_generate_hint": "Generează un CSV pentru a personaliza PDF-ul. Fiecare cod are formatul „prefix cod sufix\" (prefixul și sufixul sunt opționale), iar codurile pot fi generate aleator (alfabetic, numeric sau mixt), ca interval numeric, sau ca „Text fix” — același text pe fiecare rând (un filigran, exceptat de la verificarea unicității).",
+	"codes_generate_hint": "Generează un CSV pentru a personaliza PDF-ul. Fiecare cod are formatul „prefix cod sufix\" (prefixul și sufixul sunt opționale), iar codurile pot fi generate aleator (alfabetic, numeric sau mixt), ca interval numeric, sau ca „Text fix” — același text pe fiecare rând (un filigran, exceptat de la verificarea unicității). Primul cod poate fi și „Listă de valori (lider)”: are mai multe valori, iar fiecare valoare se repetă pe blocul ei de rânduri, alăturată celorlalte coduri.",
 	"codes_row_count_label": "Număr de rânduri",
+	"codes_row_count_leader_hint": "Implicit pentru valorile lider care nu au număr propriu de rânduri.",
 	"codes_code_n": "Cod {n}",
 	"codes_remove": "Elimină",
 	"codes_prefix_label": "Prefix (opțional)",
@@ -73,6 +74,14 @@
 	"codes_mode_random": "Generat aleator",
 	"codes_mode_range": "Interval numeric",
 	"codes_mode_text": "Text fix",
+	"codes_mode_list": "Listă de valori (lider)",
+	"codes_leader_values": "Valori lider",
+	"codes_leader_hint": "Fiecare valoare se repetă pe blocul ei de rânduri și este alăturată celorlalte coduri. Celelalte coduri o iau de la capăt la fiecare valoare (intervalul repornește, iar unicitatea se aplică în interiorul blocului). Lasă numărul de rânduri gol pentru a folosi valoarea implicită de mai sus.",
+	"codes_leader_value_label": "Valoare",
+	"codes_leader_rows_label": "Rânduri",
+	"codes_leader_add": "+ Adaugă valoare",
+	"codes_leader_remove": "Elimină valoarea",
+	"codes_leader_empty": "Nicio valoare încă — adaugă cel puțin una pentru ca acest cod să devină lider.",
 	"codes_pad_width": "Până la o lățime",
 	"codes_pad_fixed": "Text fix adăugat",
 	"codes_pad_hidden_hint": "Completarea nu apare când lățimea totală ({padLength}) ≤ lungimea codului ({length}). Mărește lățimea totală pentru a vedea caracterele de completare.",
@@ -98,6 +107,33 @@
 	}],
 	"codes_preview": "Previzualizare",
 	"codes_preview_truncated": "Previzualizare (primele {shown} din {total} rânduri)",
+	"codes_total_rows": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "Total: {countFormatted} rând",
+			"countPlural=few": "Total: {countFormatted} rânduri",
+			"countPlural=other": "Total: {countFormatted} de rânduri"
+		}
+	}],
+	"codes_preview_skipped": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "    … încă {countFormatted} rând",
+			"countPlural=few": "    … încă {countFormatted} rânduri",
+			"countPlural=other": "    … încă {countFormatted} de rânduri"
+		}
+	}],
+	"codes_preview_more_groups": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "    … încă {countFormatted} valoare lider",
+			"countPlural=few": "    … încă {countFormatted} valori lider",
+			"countPlural=other": "    … încă {countFormatted} de valori lider"
+		}
+	}],
 	"codes_fields_per_row": "Câmpuri pe rând",
 	"codes_fields_hint": "Apasă pe spațiul dintre două bucăți pentru a le uni într-un singur cod — util când un cod conține separatorul (ex. „1A 1\").",
 	"codes_gap_merged": "Unite — apasă pentru a separa",

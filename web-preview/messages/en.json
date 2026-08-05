@@ -51,8 +51,9 @@
 	"codes_single_field_per_row": "Each row is a single code",
 	"codes_wrong_separator_summary": "Separator detected wrongly? Correct it manually",
 	"codes_separator_label": "Separator between codes on a row",
-	"codes_generate_hint": "Generate a CSV to personalize the PDF. Each code has the format \"prefix code suffix\" (the prefix and suffix are optional), and codes can be generated randomly (alphabetic, numeric or mixed), as a numeric range, or as \"Fixed text\" — the same text on every row (a watermark, exempt from the uniqueness check).",
+	"codes_generate_hint": "Generate a CSV to personalize the PDF. Each code has the format \"prefix code suffix\" (the prefix and suffix are optional), and codes can be generated randomly (alphabetic, numeric or mixed), as a numeric range, or as \"Fixed text\" — the same text on every row (a watermark, exempt from the uniqueness check). The first code can also be a \"Value list (leader)\": it holds several values, and each value repeats over its own block of rows, joined with the other codes.",
 	"codes_row_count_label": "Number of rows",
+	"codes_row_count_leader_hint": "Default for leader values that have no row count of their own.",
 	"codes_code_n": "Code {n}",
 	"codes_remove": "Remove",
 	"codes_prefix_label": "Prefix (optional)",
@@ -73,6 +74,14 @@
 	"codes_mode_random": "Randomly generated",
 	"codes_mode_range": "Numeric range",
 	"codes_mode_text": "Fixed text",
+	"codes_mode_list": "Value list (leader)",
+	"codes_leader_values": "Leader values",
+	"codes_leader_hint": "Each value repeats over its own block of rows and is joined with the other codes. The other codes restart at every value (the range starts over, and uniqueness applies within the block). Leave the row count empty to use the default above.",
+	"codes_leader_value_label": "Value",
+	"codes_leader_rows_label": "Rows",
+	"codes_leader_add": "+ Add value",
+	"codes_leader_remove": "Remove value",
+	"codes_leader_empty": "No values yet — add at least one for this code to become a leader.",
 	"codes_pad_width": "Up to a width",
 	"codes_pad_fixed": "Fixed text appended",
 	"codes_pad_hidden_hint": "The padding does not appear when the total width ({padLength}) ≤ the code length ({length}). Increase the total width to see the padding characters.",
@@ -97,6 +106,30 @@
 	}],
 	"codes_preview": "Preview",
 	"codes_preview_truncated": "Preview (first {shown} of {total} rows)",
+	"codes_total_rows": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "Total: {countFormatted} row",
+			"countPlural=other": "Total: {countFormatted} rows"
+		}
+	}],
+	"codes_preview_skipped": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "    … {countFormatted} more row",
+			"countPlural=other": "    … {countFormatted} more rows"
+		}
+	}],
+	"codes_preview_more_groups": [{
+		"declarations": ["input count", "input countFormatted", "local countPlural = count: plural"],
+		"selectors": ["countPlural"],
+		"match": {
+			"countPlural=one": "    … {countFormatted} more leader value",
+			"countPlural=other": "    … {countFormatted} more leader values"
+		}
+	}],
 	"codes_fields_per_row": "Fields per row",
 	"codes_fields_hint": "Click the gap between two pieces to join them into a single code — useful when a code contains the separator (e.g. \"1A 1\").",
 	"codes_gap_merged": "Joined — click to separate",

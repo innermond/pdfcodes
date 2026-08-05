@@ -21,7 +21,7 @@ import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/c
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, mergeFields, randomCodeSpace, streamCodesCsv, type CodeColumnConfig } from './lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter, isRaggedRowsWarning } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
@@ -995,8 +995,28 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
     restore: applyUndoSnapshot,
   })
 
+  // Rows the generated CSV will actually contain, and the largest block a single
+  // code has to cover. They differ only when code 1 is a leader: each of its
+  // values spans its own block of rows, and the follower codes restart inside
+  // every block — so uniqueness only has to hold per block, not over the total.
+  const codeTotalRows = useMemo(() => totalRowCount(codeColumns, codeRowCount), [codeColumns, codeRowCount])
+  const codeMaxGroupRows = useMemo(() => maxGroupRowCount(codeColumns, codeRowCount), [codeColumns, codeRowCount])
+  const codeHasLeader = useMemo(() => leaderColumn(codeColumns) !== null, [codeColumns])
+
   const codeCsvPreview = useMemo(
-    () => generateCsvPreview(codeRowCount, codeColumns, codeSeparator),
+    () =>
+      generateCsvPreview(codeRowCount, codeColumns, codeSeparator, {
+        skippedRows: (count) => m.codes_preview_skipped({ count, countFormatted: formatNumber(count) }),
+        moreGroups: (count) => m.codes_preview_more_groups({ count, countFormatted: formatNumber(count) }),
+      }),
+    [codeRowCount, codeColumns, codeSeparator],
+  )
+
+  // The first row the config emits. Taken straight from the generator rather
+  // than off the preview, whose leader markers are cosmetic lines that must
+  // never reach the sample text or the sample card.
+  const codeSampleRow = useMemo(
+    () => generateSampleRow(codeRowCount, codeColumns, codeSeparator),
     [codeRowCount, codeColumns, codeSeparator],
   )
 
@@ -1005,7 +1025,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // until the user fixes the config (longer code, different charset, range).
   const codeUniquenessImpossible =
     codeDataMode === 'generate' &&
-    codeColumns.some((c) => c.mode === 'random' && codeRowCount > randomCodeSpace(c.charset, c.length))
+    codeColumns.some((c) => c.mode === 'random' && codeMaxGroupRows > randomCodeSpace(c.charset, c.length))
 
   // The separator the renderer actually splits rows by. Generated CSVs use the
   // user's chosen separator; uploaded CSVs are re-joined with the collision-safe
@@ -1025,7 +1045,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // when in upload mode, the generated preview otherwise. In upload mode the
   // rows are joined with `UPLOAD_SEPARATOR` (so the card sample splits into the
   // exact parsed fields); the visible separator is restored only for display.
-  const activePreview = codeDataMode === 'upload' ? uploadedCsvPreview : codeCsvPreview
+  const activePreview = codeDataMode === 'upload' ? uploadedCsvPreview : codeCsvPreview.text
   const displayPreview =
     codeDataMode === 'upload'
       ? activePreview.split(UPLOAD_SEPARATOR).join(codeSeparator || ' ')
@@ -1057,11 +1077,11 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
       // A row count of 0 has no representative row to mirror — skip so this
       // momentary state doesn't blank the sample text and wipe the per-word
       // styles (font, color, size…) already configured once rows resume.
-      if (codeRowCount === 0) return
-      handleSampleTextChange(activePreview.split('\n')[0] ?? '')
+      if (codeTotalRows === 0) return
+      handleSampleTextChange(codeSampleRow)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, activePreview, effectiveSeparator, codeDataMode, uploadedMaxRow])
+  }, [step, activePreview, codeSampleRow, effectiveSeparator, codeDataMode, uploadedMaxRow])
 
   // On the "Aspect & Cuvinte" step, default the selection to the first word so
   // its editing controls are shown right away. Also recovers from a stale
@@ -1777,7 +1797,9 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   }
 
   function handleCodeColumnsChange(columns: CodeColumnConfig[]) {
-    setDataField('codeColumns', columns)
+    // Removing code 1 promotes code 2 into its place; only the first code may
+    // lead, so a promoted list has to be demoted.
+    setDataField('codeColumns', normalizeColumns(columns))
     invalidateCsv()
   }
 
@@ -2001,7 +2023,9 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
         setDataField('sampleText', preset.sampleText ?? '')
         setDataField('codeSeparator', preset.codeSeparator ?? '')
         if (typeof preset.codeRowCount === 'number') setDataField('codeRowCount', preset.codeRowCount)
-        if (Array.isArray(preset.codeColumns)) setDataField('codeColumns', preset.codeColumns)
+        // Presets written before leaders existed have no `values` at all, so
+        // normalising also backfills it.
+        if (Array.isArray(preset.codeColumns)) setDataField('codeColumns', normalizeColumns(preset.codeColumns))
         const presetMerges = Array.isArray(preset.codeFieldMerges) ? preset.codeFieldMerges : []
         const presetSingleField = preset.codeSingleField === true
         setDataField('codeFieldMerges', presetMerges)
@@ -3189,7 +3213,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
       // Effective row count of the data source feeding the job: the uploaded
       // CSV's rows in upload mode, the generated row count otherwise. Drives the
       // progress total and the ZIP-size estimate that gates OPFS streaming.
-      const effectiveRowCount = codeDataMode === 'upload' ? uploadedCsvRowCount : codeRowCount
+      const effectiveRowCount = codeDataMode === 'upload' ? uploadedCsvRowCount : codeTotalRows
 
       const handle = generateBatched(
         {
@@ -3255,7 +3279,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
         }
         row = (await csvDataFile.text()).split('\n').find((l) => l.trim().length > 0) ?? ''
       } else {
-        row = generateCsvPreview(1, codeColumns, codeSeparator).split('\n')[0] ?? ''
+        row = codeSampleRow
       }
 
       const bgWidthOverride = isFinite(cardTargetWidthMm) && cardTargetWidthMm > 0 ? cardTargetWidthMm : null
@@ -4522,6 +4546,9 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
             uploadWarnings={uploadedCsvWarnings}
             rowCount={codeRowCount}
             onRowCountChange={handleCodeRowCountChange}
+            totalRows={codeTotalRows}
+            maxGroupRows={codeMaxGroupRows}
+            hasLeader={codeHasLeader}
             separator={codeSeparator}
             onSeparatorChange={handleCodeSeparatorChange}
             columns={codeColumns}
@@ -4533,6 +4560,7 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
             onSingleFieldPerRowChange={handleSingleFieldChange}
             onGenerate={handleGenerateCsv}
             preview={displayPreview}
+            previewShown={codeCsvPreview.shown}
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
             progress={codeCsvProgress}
             stale={codeCsvStale}

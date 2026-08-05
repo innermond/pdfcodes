@@ -5,10 +5,21 @@ export type CodeCharset = 'numeric' | 'alpha' | 'alphanumeric'
 // 'random' draws codes from a charset, 'range' increments a number, and 'text'
 // emits the same user-supplied text on every row (a fixed watermark-style label).
 // 'text' is exempt from uniqueness — every row repeats it by design.
-export type CodeMode = 'random' | 'range' | 'text'
+//
+// 'list' turns the FIRST code into a *leader*: instead of one value per row it
+// holds several typed values, and each value is repeated over its own block of
+// rows, joined with the other codes. See `leaderGroups`.
+export type CodeMode = 'random' | 'range' | 'text' | 'list'
 // How a code is padded: 'width' left-pads with `padChar` up to `padLength`
 // characters; 'fixed' simply prepends `padChar` to every code.
 export type CodePadMode = 'width' | 'fixed'
+
+// One value of a leader code, plus how many rows it spans.
+export interface LeaderValue {
+  value: string
+  /** Rows emitted for this value; null inherits the global default row count. */
+  rows: number | null
+}
 
 export interface CodeColumnConfig {
   prefix: string
@@ -23,6 +34,8 @@ export interface CodeColumnConfig {
   padLength: number
   // The literal text emitted on every row when `mode === 'text'`.
   text: string
+  // Leader values, meaningful only for `mode === 'list'` on the first column.
+  values: LeaderValue[]
 }
 
 export function defaultCodeColumn(): CodeColumnConfig {
@@ -38,7 +51,76 @@ export function defaultCodeColumn(): CodeColumnConfig {
     padChar: '0',
     padLength: 0,
     text: '',
+    values: [],
   }
+}
+
+export function defaultLeaderValue(): LeaderValue {
+  return { value: '', rows: null }
+}
+
+// Only the first code can lead — one level of nesting, no cartesian product of
+// several leaders. Presets and undo snapshots can carry an arbitrary array, and
+// removing code 1 promotes code 2 into its place, so `normalizeColumns` demotes
+// a stray 'list' outside the first slot (and backfills `values` for presets
+// written before leaders existed).
+export function normalizeColumns(columns: CodeColumnConfig[]): CodeColumnConfig[] {
+  let changed = false
+  const next = columns.map((column, index) => {
+    const values = column.values ?? []
+    const mode: CodeMode = index > 0 && column.mode === 'list' ? 'text' : column.mode
+    if (values === column.values && mode === column.mode) return column
+    changed = true
+    return { ...column, values, mode }
+  })
+  return changed ? next : columns
+}
+
+// The active leader column, or null when the first code isn't a non-empty list.
+// A 'list' with no values yet (the user just switched the mode) is deliberately
+// NOT a leader — the config still describes a plain `rowCount` run.
+export function leaderColumn(columns: CodeColumnConfig[]): CodeColumnConfig | null {
+  const first = columns[0]
+  if (!first || first.mode !== 'list') return null
+  return (first.values?.length ?? 0) > 0 ? first : null
+}
+
+// A blank count (null, or the NaN an emptied number input emits) inherits the
+// global default; an explicit count is used as typed, floored at zero.
+function resolveRows(rows: number | null, defaultRowCount: number): number {
+  const n = rows === null || Number.isNaN(rows) ? defaultRowCount : rows
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
+}
+
+// The leader's values resolved into emit-ready blocks: the value with its
+// prefix/postfix attached (no padding — like 'text', it's emitted verbatim) and
+// its row count. Empty when there is no leader.
+export function leaderGroups(
+  columns: CodeColumnConfig[],
+  defaultRowCount: number,
+): { text: string; rows: number }[] {
+  const leader = leaderColumn(columns)
+  if (leader === null) return []
+  return leader.values.map((v) => ({
+    text: leader.prefix + v.value + leader.postfix,
+    rows: resolveRows(v.rows, defaultRowCount),
+  }))
+}
+
+/** Total rows the config emits: the sum of the leader's blocks, or `defaultRowCount`. */
+export function totalRowCount(columns: CodeColumnConfig[], defaultRowCount: number): number {
+  const groups = leaderGroups(columns, defaultRowCount)
+  if (groups.length === 0) return resolveRows(defaultRowCount, defaultRowCount)
+  return groups.reduce((sum, g) => sum + g.rows, 0)
+}
+
+// The largest block a follower code has to cover. Followers restart inside each
+// leader block, so uniqueness only has to hold within a block — this, not the
+// total, is what the random-code-space warnings must be measured against.
+export function maxGroupRowCount(columns: CodeColumnConfig[], defaultRowCount: number): number {
+  const groups = leaderGroups(columns, defaultRowCount)
+  if (groups.length === 0) return resolveRows(defaultRowCount, defaultRowCount)
+  return groups.reduce((max, g) => Math.max(max, g.rows), 0)
 }
 
 // Regroup separator-split pieces into fields. `mergedGaps` holds the indices of
@@ -154,6 +236,14 @@ function codeForRow(column: CodeColumnConfig, rowIndex: number, seen: Set<string
     return { code: column.prefix + (column.text ?? '') + column.postfix, duplicate: false }
   }
 
+  // A 'list' only reaches here when it isn't an active leader — the mode was
+  // just picked and no value has been typed yet. Emit the bare prefix/postfix
+  // rather than falling through to the random branch, which would fill the
+  // preview with codes the leader is never going to produce.
+  if (column.mode === 'list') {
+    return { code: column.prefix + (column.values[0]?.value ?? '') + column.postfix, duplicate: false }
+  }
+
   let raw: string
   let duplicate = false
   if (column.mode === 'range') {
@@ -170,16 +260,71 @@ function codeForRow(column: CodeColumnConfig, rowIndex: number, seen: Set<string
   return { code: column.prefix + code + column.postfix, duplicate }
 }
 
-export function generateCodesCsv(rowCount: number, columns: CodeColumnConfig[], separator: string): string {
-  const sep = separator || ' '
-  // One Set of already-used random values per column, so codes stay distinct
-  // within a column across all rows.
-  const seen = columns.map(() => new Set<string>())
-  const lines: string[] = []
-  for (let row = 0; row < rowCount; row++) {
-    lines.push(columns.map((column, c) => codeForRow(column, row, seen[c]).code).join(sep))
+// Builds one row's fields: the leader value (when there is one) followed by
+// each follower column's code for `rowInGroup`. `seen` holds one already-used
+// set per follower, so codes stay distinct for as long as the caller keeps it.
+function rowFields(
+  leaderText: string | null,
+  followers: CodeColumnConfig[],
+  rowInGroup: number,
+  seen: Set<string>[],
+): { fields: string[]; duplicates: number } {
+  const fields: string[] = leaderText === null ? [] : [leaderText]
+  let duplicates = 0
+  followers.forEach((column, c) => {
+    const { code, duplicate } = codeForRow(column, rowInGroup, seen[c])
+    if (duplicate) duplicates++
+    fields.push(code)
+  })
+  return { fields, duplicates }
+}
+
+// The single source of truth for what the CSV contains — the bulk generator,
+// the streaming one and the sample row all consume this, so they cannot drift.
+// `duplicates` counts the codes in THAT row which could not be made unique.
+function* iterateRows(
+  rowCount: number,
+  columns: CodeColumnConfig[],
+  sep: string,
+): Generator<{ text: string; duplicates: number }> {
+  const leader = leaderColumn(columns)
+
+  if (leader === null) {
+    // One implicit block: every column emits one value per row, as before.
+    const seen = columns.map(() => new Set<string>())
+    for (let row = 0; row < rowCount; row++) {
+      const { fields, duplicates } = rowFields(null, columns, row, seen)
+      yield { text: fields.join(sep), duplicates }
+    }
+    return
   }
+
+  // Followers restart inside every leader block: `rowInGroup` counts from 0, so
+  // a range code begins at `rangeStart` again, and a fresh `seen` per block
+  // scopes random uniqueness to the block. The unique key is (leader, code) —
+  // a bare code may legitimately repeat under a different leader value.
+  const followers = columns.slice(1)
+  for (const group of leaderGroups(columns, rowCount)) {
+    const seen = followers.map(() => new Set<string>())
+    for (let row = 0; row < group.rows; row++) {
+      const { fields, duplicates } = rowFields(group.text, followers, row, seen)
+      yield { text: fields.join(sep), duplicates }
+    }
+  }
+}
+
+export function generateCodesCsv(rowCount: number, columns: CodeColumnConfig[], separator: string): string {
+  const lines: string[] = []
+  for (const row of iterateRows(rowCount, columns, separator || ' ')) lines.push(row.text)
   return lines.join('\n')
+}
+
+// The first row the config would emit — used for the sample card and to mirror
+// a representative row into the "Cuvinte" step. Kept separate from the preview
+// so the preview's cosmetic markers can never leak into it.
+export function generateSampleRow(rowCount: number, columns: CodeColumnConfig[], separator: string): string {
+  for (const row of iterateRows(rowCount, columns, separator || ' ')) return row.text
+  return ''
 }
 
 // Number of rows rendered in the "Previzualizare" panel — cheap enough to
@@ -187,8 +332,65 @@ export function generateCodesCsv(rowCount: number, columns: CodeColumnConfig[], 
 // used for the actual CSV download.
 export const CSV_PREVIEW_ROW_COUNT = 15
 
-export function generateCsvPreview(rowCount: number, columns: CodeColumnConfig[], separator: string): string {
-  return generateCodesCsv(Math.min(rowCount, CSV_PREVIEW_ROW_COUNT), columns, separator)
+// Leader blocks rendered before the preview gives up and summarises the rest.
+const PREVIEW_MAX_GROUPS = 15
+
+// Localised markers for the rows/blocks the preview leaves out. Injected rather
+// than imported so this module stays free of i18n.
+export interface PreviewLabels {
+  skippedRows: (count: number) => string
+  moreGroups: (count: number) => string
+}
+
+const DEFAULT_PREVIEW_LABELS: PreviewLabels = {
+  skippedRows: (count) => `   … (${count})`,
+  moreGroups: (count) => `   … (+${count})`,
+}
+
+export interface CsvPreview {
+  text: string
+  /** Data rows rendered — marker lines are not counted. */
+  shown: number
+  /** Rows the full CSV would contain. */
+  total: number
+}
+
+// With a leader, the head of the file would only ever show the first block (a
+// block can be thousands of rows), which hides exactly the structure the user
+// is trying to check. So spread the line budget across the blocks instead and
+// mark what was skipped.
+export function generateCsvPreview(
+  rowCount: number,
+  columns: CodeColumnConfig[],
+  separator: string,
+  labels: PreviewLabels = DEFAULT_PREVIEW_LABELS,
+): CsvPreview {
+  const groups = leaderGroups(columns, rowCount)
+
+  if (groups.length === 0) {
+    const shown = Math.max(0, Math.min(Math.floor(rowCount) || 0, CSV_PREVIEW_ROW_COUNT))
+    return { text: generateCodesCsv(shown, columns, separator), shown, total: totalRowCount(columns, rowCount) }
+  }
+
+  const sep = separator || ' '
+  const followers = columns.slice(1)
+  const visible = groups.slice(0, PREVIEW_MAX_GROUPS)
+  const perGroup = Math.max(1, Math.floor(CSV_PREVIEW_ROW_COUNT / visible.length))
+
+  const lines: string[] = []
+  let shown = 0
+  for (const group of visible) {
+    const take = Math.min(perGroup, group.rows)
+    const seen = followers.map(() => new Set<string>())
+    for (let row = 0; row < take; row++) {
+      lines.push(rowFields(group.text, followers, row, seen).fields.join(sep))
+      shown++
+    }
+    if (group.rows > take) lines.push(labels.skippedRows(group.rows - take))
+  }
+  if (groups.length > visible.length) lines.push(labels.moreGroups(groups.length - visible.length))
+
+  return { text: lines.join('\n'), shown, total: groups.reduce((sum, g) => sum + g.rows, 0) }
 }
 
 export interface CsvChunk {
@@ -206,29 +408,23 @@ export async function* streamCodesCsv(
   separator: string,
   rowsPerChunk = 2000,
 ): AsyncGenerator<CsvChunk> {
-  const sep = separator || ' '
-  // Per-column used-value Sets persist across every yield (generator local
-  // state), so uniqueness holds over the whole CSV, not just within a chunk.
-  const seen = columns.map(() => new Set<string>())
+  // `iterateRows` is a generator, so its used-value Sets are generator-local and
+  // survive every yield — uniqueness holds over the whole CSV (per leader block
+  // when there is a leader), not just within a chunk.
   let duplicates = 0
+  let rowsDone = 0
   let lines: string[] = []
-  for (let row = 0; row < rowCount; row++) {
-    lines.push(
-      columns
-        .map((column, c) => {
-          const { code, duplicate } = codeForRow(column, row, seen[c])
-          if (duplicate) duplicates++
-          return code
-        })
-        .join(sep),
-    )
+  for (const row of iterateRows(rowCount, columns, separator || ' ')) {
+    lines.push(row.text)
+    duplicates += row.duplicates
+    rowsDone++
     if (lines.length >= rowsPerChunk) {
-      yield { text: lines.join('\n') + '\n', rowsDone: row + 1, duplicates }
+      yield { text: lines.join('\n') + '\n', rowsDone, duplicates }
       lines = []
       await new Promise((resolve) => setTimeout(resolve, 0))
     }
   }
   if (lines.length > 0) {
-    yield { text: lines.join('\n') + '\n', rowsDone: rowCount, duplicates }
+    yield { text: lines.join('\n') + '\n', rowsDone, duplicates }
   }
 }
