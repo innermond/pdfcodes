@@ -50,11 +50,20 @@ is gone). §7.3.2 and §7.3.4 of **both** manuals updated, including the „Deca
 bullet, which used to describe the gutter *as* the distance between cuts — it is
 only part of it now, the rest being the room the contour leaves inside its card.
 
-**`manual-assets/s4-page-layout.png` is stale**: it predates the two new fields and
-still ends at „Diametru cerc (mm)”. `shoot.mjs`'s bottom anchor for that shot has
-been moved to „Bleed fundal (mm)” so a re-run picks them up, but the script was not
-re-run here — it has no per-shot filter, so it would re-take ~20 images for one
-change. Fold it into the next screenshot re-sync.
+`manual-assets/s4-page-layout.png` re-taken (1018×532 → 1018×682) and the caption in
+both manuals updated. Note that `shoot.mjs`'s bottom anchor for that shot had to move
+from „Diametru cerc (mm)” to „Bleed fundal (mm)” — the new fields render below the
+circle diameter, so the union bounding box would have cropped them out even after a
+re-run. No other asset was touched.
+
+Method, since `shoot.mjs` still has no per-shot filter and re-running it would
+re-take ~20 images: a throwaway `shoot-one.mjs` reusing its `unionShot`/`goToStep`
+helpers and the same step-1→5 setup (Simplu background, Dreptunghi contour, „Generează
+CSV”, then „Print + Contur” to reveal „Aspect pagină”), deleted afterwards — the same
+approach as the Jul 15 hand shots above. A real `--only` filter is not as easy as it
+looks: several `step()` calls are navigation rather than screenshots, so skipping by
+name breaks everything downstream of them. Worth doing properly by splitting setup
+from shots, if single-shot re-takes keep coming up.
 
 ## Deferred: localized screenshots (continue here)
 

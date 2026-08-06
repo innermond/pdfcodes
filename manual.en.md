@@ -817,7 +817,7 @@ Defines the sheet on which the cards are laid out ("imposed"). The section
 disappears when you tick **"No cutting"** (see 7.3.3) — there is no imposition
 then.
 
-!["Page layout": page width/height, offsets and circle diameter](manual-assets/s4-page-layout.png)
+!["Page layout": page width/height, offsets, circle diameter and the cutting tolerances](manual-assets/s4-page-layout.png)
 
 - **Page width (mm)** / **Page height (mm)** — the sheet's size.
 - **Offset X (mm)** / **Offset Y (mm)** — the space between neighbouring cards,

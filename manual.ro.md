@@ -789,7 +789,7 @@ nicio parolă, treci direct la 7.3.
 Definește coala pe care se așază (se „impun”) cardurile. Secțiunea dispare când
 bifezi **„Non-decupare”** (vezi 7.3.3) — atunci nu mai există impunere.
 
-![„Aspect pagină”: lățime/înălțime pagină, decalaje și diametru cerc](manual-assets/s4-page-layout.png)
+![„Aspect pagină”: lățime/înălțime pagină, decalaje, diametru cerc și toleranțele de tăiere](manual-assets/s4-page-layout.png)
 
 - **Lățime pagină (mm)** / **Înălțime pagină (mm)** — dimensiunea colii.
 - **Decalaj X (mm)** / **Decalaj Y (mm)** — spațiul dintre cardurile vecine, pe
