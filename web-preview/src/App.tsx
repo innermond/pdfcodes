@@ -20,6 +20,7 @@ import { fetchHostPreset, readHostPreset, type HostPreset } from './lib/hostPres
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
+import { axisClearance, backgroundCoversCut } from './lib/cutClearance'
 import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
@@ -145,6 +146,8 @@ interface Preset {
   minFontSizePt?: number
   overflowCorrectionMode?: 'per-code' | 'column'
   contourInsetMm?: number
+  minCutDistanceMm?: number
+  bleedMm?: number
   backgroundPaddingMm: number
   contourOpacity: number
   contourBlendMode: BlendMode
@@ -624,6 +627,18 @@ interface StyleConfig {
   // Safety inset (mm) from the cut: codes are checked against the contour eroded
   // by this much, so the fit/correction never parks a code on the cut line.
   contourInsetMm: number
+  // Cutting tolerances. Both live here rather than in `pageOptions` so they ride the
+  // preset like every other production setting; neither reaches the generator, since
+  // both only drive warnings.
+  //
+  // Smallest acceptable distance between the cut lines of two *neighbouring* cards on
+  // the imposed sheet. Zero stays legal when the outlines genuinely coincide (a plain
+  // rectangle sharing one straight cut); it is the near-misses in between that tear
+  // the stock. See lib/cutClearance.ts.
+  minCutDistanceMm: number
+  // How far the printed background must reach *past* the cut line, so the cutter's
+  // registration error never exposes bare stock.
+  bleedMm: number
   // "Corectare depășire": auto-shrink overflowing codes to fit, down to
   // `minFontSizePt`. `overflowCorrectionMode` picks per-card vs. per-column shrink.
   correctOverflow: boolean
@@ -637,6 +652,10 @@ const defaultStyleConfig: StyleConfig = {
   safeMarginMm: 0,
   backgroundPaddingMm: 0,
   contourInsetMm: 0,
+  // 1 mm each: the threshold the gutter warning used to hardcode, so the defaults
+  // reproduce the behaviour this replaced.
+  minCutDistanceMm: 1,
+  bleedMm: 1,
   correctOverflow: false,
   minFontSizePt: 6,
   overflowCorrectionMode: 'per-code',
@@ -851,7 +870,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   // clusters. The per-word arrays (words/fonts/…) stay as separate useState.
   const [styleConfig, setStyleConfig] = useState<StyleConfig>(defaultStyleConfig)
   const {
-    safeMarginMm, backgroundPaddingMm, contourInsetMm,
+    safeMarginMm, backgroundPaddingMm, contourInsetMm, minCutDistanceMm, bleedMm,
     correctOverflow, minFontSizePt, overflowCorrectionMode, autoTextColor,
   } = styleConfig
   function setStyleField<K extends keyof StyleConfig>(
@@ -2007,6 +2026,8 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       minFontSizePt,
       overflowCorrectionMode,
       contourInsetMm,
+      minCutDistanceMm,
+      bleedMm,
       backgroundPaddingMm,
       contourOpacity,
       contourBlendMode,
@@ -2228,6 +2249,10 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         if (preset.overflowCorrectionMode === 'per-code' || preset.overflowCorrectionMode === 'column')
           setStyleField('overflowCorrectionMode', preset.overflowCorrectionMode)
         if (typeof preset.contourInsetMm === 'number') setStyleField('contourInsetMm', preset.contourInsetMm)
+        // Absent in presets written before the cut-safety checks existed; the guard
+        // leaves the 1 mm defaults in place rather than writing undefined into state.
+        if (typeof preset.minCutDistanceMm === 'number') setStyleField('minCutDistanceMm', preset.minCutDistanceMm)
+        if (typeof preset.bleedMm === 'number') setStyleField('bleedMm', preset.bleedMm)
         if (typeof preset.backgroundPaddingMm === 'number') setStyleField('backgroundPaddingMm', preset.backgroundPaddingMm)
         if (typeof preset.contourOpacity === 'number') setContourField('contourOpacity', preset.contourOpacity)
         if (preset.contourBlendMode) setContourField('contourBlendMode', preset.contourBlendMode)
@@ -3293,21 +3318,70 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       contourFitWidthMm > cuttableWidthMm + 1e-6 ||
       contourFitHeightMm > cuttableHeightMm + 1e-6)
 
-  // A plain rectangle contour tiles edge-to-edge: neighbouring cards share a single
-  // cut line, so a zero "Decalaj X/Y" (tiling gutter) is fine. Every other contour —
-  // rounded/beveled/heart/circle shapes, or an uploaded contour of unknown shape —
-  // needs a real gap between cards; below ~1 mm the individual cut outlines touch or
-  // overlap, so the cutter double-cuts the same material and can tear the stock.
+  // How close do the cut lines of two neighbouring cards actually come?
+  //
+  // This used to ask only whether the "Decalaj X/Y" gutter cleared 1 mm, exempting any
+  // plain rectangle. That measured the wrong thing in both directions: a contour inset
+  // well away from the card edges was flagged despite its neighbours being far apart,
+  // while a contour touching both edges passed as long as the gutter cleared 1 mm —
+  // even though the cuts were then only that gutter apart. And keying the exemption to
+  // the shape *kind* let a rectangle inset a fraction of a millimetre through, which is
+  // the sliver case exactly.
+  //
+  // The real distance is gutter + both cards' clearances, and zero is only safe when
+  // the outlines genuinely coincide along a straight edge — the plain unspun rectangle
+  // whose single cut serves both cards, which `Options::contour_as_grid` then draws as
+  // spanning lines. See lib/cutClearance.ts for the dead band.
+  //
   // Keyed to the configured contour (its shape/source), not the print/contour/both
   // `mode`: the double-cut risk exists whenever that contour is cut, and `mode`
   // defaults to 'print', which would otherwise hide the warning in the common case.
   // `contourBackground` is non-null once a shape or an uploaded contour is available.
-  const contourIsPlainRectangle = contourSource === 'shape' && shapeKind === 'rectangle'
-  const cutGapTooSmall =
+  const contourCanShareEdge =
+    contourSource === 'shape' && shapeKind === 'rectangle' && cappedContourSpinDeg === 0
+  const cutClearanceX = axisClearance({
+    cardMm: effectiveCardWidthMm,
+    footprintStartMm: clampedContourOffsetXMm + footprintLeft0Mm,
+    footprintSizeMm: footprintWidthMm,
+    gutterMm: pageOptions.offsetXMm,
+    minDistanceMm: minCutDistanceMm,
+    canShareEdge: contourCanShareEdge,
+  })
+  const cutClearanceY = axisClearance({
+    cardMm: effectiveCardHeightMm,
+    footprintStartMm: clampedContourOffsetYMm + footprintBottom0Mm,
+    footprintSizeMm: footprintHeightMm,
+    gutterMm: pageOptions.offsetYMm,
+    minDistanceMm: minCutDistanceMm,
+    canShareEdge: contourCanShareEdge,
+  })
+  const cutsTooClose =
     contourBackground != null &&
     !pageOptions.noCut &&
-    !contourIsPlainRectangle &&
-    (pageOptions.offsetXMm < 1 || pageOptions.offsetYMm < 1)
+    (cutClearanceX.unsafe || cutClearanceY.unsafe)
+  // The axis to name in the warning: the tighter of the two offenders.
+  const tightestCut = cutClearanceX.cutToCutMm <= cutClearanceY.cutToCutMm ? cutClearanceX : cutClearanceY
+
+  // A cut landing where nothing was printed exposes bare stock, and registration is
+  // never perfect, so the background has to overshoot the cut rather than merely meet
+  // it. Only reachable once the background is panned or spun without a free-zone color
+  // filling what that vacates.
+  const backgroundMissesBleed =
+    contourBackground != null &&
+    background != null &&
+    !backgroundCoversCut({
+      cardWidthMm: effectiveCardWidthMm,
+      cardHeightMm: effectiveCardHeightMm,
+      bgOffsetXMm,
+      bgOffsetYMm,
+      bgSpinDeg,
+      hasBackdropColor: bgBackdropColor != null,
+      footprintLeftMm: clampedContourOffsetXMm + footprintLeft0Mm,
+      footprintBottomMm: clampedContourOffsetYMm + footprintBottom0Mm,
+      footprintWidthMm,
+      footprintHeightMm,
+      bleedMm,
+    })
 
   // "Decalaj X/Y" is meaningful in decupare mode (the gutter between cards, and — in
   // minimal mode — a bleed that grows each cell). In non-decupare (no-cut) mode there is
@@ -4917,6 +4991,15 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   <NumberField label={m.common_offset_y_mm()} value={pageOptions.offsetYMm} onChange={(v) => setPageOption('offsetYMm', Math.max(0, v))} />
                   <NumberField label={m.generate_circle_diameter()} value={pageOptions.circleDiameterMm} onChange={(v) => setPageOption('circleDiameterMm', v)} />
                 </div>
+                {/* Cutting tolerances. They sit beside the gutter because that is the
+                    other half of the distance they measure, and they drive only the
+                    warnings below — never the generated PDF. */}
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField label={m.generate_min_cut_distance()} value={minCutDistanceMm}
+                    onChange={(v) => setStyleField('minCutDistanceMm', Math.max(0, v))} min={0} step={0.5} />
+                  <NumberField label={m.generate_bleed()} value={bleedMm}
+                    onChange={(v) => setStyleField('bleedMm', Math.max(0, v))} min={0} step={0.5} />
+                </div>
               </>
             )}
 
@@ -5034,9 +5117,18 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
               </p>
             )}
 
-            {cutGapTooSmall && (
+            {cutsTooClose && (
               <p className="text-label text-amber-600 dark:text-amber-400">
-                {m.generate_gap_too_small({ x: pageOptions.offsetXMm.toFixed(1), y: pageOptions.offsetYMm.toFixed(1) })}
+                {m.generate_cuts_too_close({
+                  d: tightestCut.cutToCutMm.toFixed(1),
+                  min: minCutDistanceMm.toFixed(1),
+                })}
+              </p>
+            )}
+
+            {backgroundMissesBleed && (
+              <p className="text-label text-amber-600 dark:text-amber-400">
+                {m.generate_background_no_bleed({ bleed: bleedMm.toFixed(1) })}
               </p>
             )}
 
