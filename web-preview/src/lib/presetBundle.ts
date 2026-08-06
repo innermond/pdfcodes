@@ -140,9 +140,23 @@ export async function loadPresetBundle(file: File): Promise<LoadedPresetBundle> 
   // (`background-setari/settings.json`) or carries macOS `__MACOSX/` junk:
   // locate settings.json by basename, then resolve every manifest resource
   // (which are stored relative to the zip root) against the same prefix.
-  const settingsKey = Object.keys(entries).find(
-    (k) => !k.startsWith('__MACOSX/') && k.split('/').pop() === 'settings.json',
-  )
+  //
+  // The `__MACOSX/` skip is not what handles Finder's junk — Finder writes
+  // `__MACOSX/<folder>/._settings.json`, and that basename is `._settings.json`,
+  // so the test below already excludes it. What the skip catches is a literal
+  // `__MACOSX/settings.json`, which turns up when such an archive has been
+  // unzipped and re-zipped and the junk directory came along flattened.
+  //
+  // Shallowest wins. Taking the first match in *archive order* meant an archive
+  // holding more than one preset — a whole folder of them, re-zipped — resolved
+  // to whichever the zip happened to list first, and a root-level settings.json
+  // could lose to a nested one. Sorting by depth makes the root the answer
+  // whenever there is one; sort is stable, so among equal depths archive order
+  // still decides. That tie is genuinely ambiguous, and quietly picking one
+  // beats refusing archives that load fine today.
+  const settingsKey = Object.keys(entries)
+    .filter((k) => !k.startsWith('__MACOSX/') && k.split('/').pop() === 'settings.json')
+    .sort((a, b) => a.split('/').length - b.split('/').length)[0]
   const settingsBytes = settingsKey ? entries[settingsKey] : undefined
   if (!settingsBytes) {
     throw new Error(m.errors_preset_bundle_invalid())

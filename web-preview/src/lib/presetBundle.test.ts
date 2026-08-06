@@ -59,6 +59,8 @@ describe('loadPresetBundle folder-wrapped archives', () => {
     expect(await loaded.background!.text()).toBe('%PDF')
   })
 
+  // A flattened junk directory: the only shape the `__MACOSX/` skip itself catches,
+  // and the reason it is still there.
   it('ignores __MACOSX junk when locating settings.json', async () => {
     const wrapped = zipSync({
       '__MACOSX/settings.json': strToU8('garbage'),
@@ -68,5 +70,52 @@ describe('loadPresetBundle folder-wrapped archives', () => {
 
     const loaded = await loadPresetBundle(file)
     expect((loaded.preset as { version?: number }).version).toBe(2)
+  })
+
+  // What Finder actually writes: a mirror tree of `._`-prefixed AppleDouble files.
+  // Handled by the basename test rather than the `__MACOSX/` skip, which is why it
+  // is worth asserting separately from the case above.
+  it('ignores the AppleDouble tree a real macOS zip carries', async () => {
+    const wrapped = zipSync({
+      '__MACOSX/': new Uint8Array(),
+      '__MACOSX/preset/._settings.json': strToU8('AppleDouble junk'),
+      '__MACOSX/preset/._background.pdf': strToU8('AppleDouble junk'),
+      'preset/settings.json': strToU8(JSON.stringify({ version: 3, words: [] })),
+    })
+    const file = new File([wrapped], 'preset.zip', { type: 'application/zip' })
+
+    const loaded = await loadPresetBundle(file)
+    expect((loaded.preset as { version?: number }).version).toBe(3)
+  })
+
+  // The nested entry is listed first on purpose: under the old first-match rule it
+  // won, and the preset the archive is obviously *about* lost.
+  it('prefers a root-level settings.json over a nested one', async () => {
+    const wrapped = zipSync({
+      'backup/settings.json': strToU8(JSON.stringify({ version: 99, words: [] })),
+      'settings.json': strToU8(JSON.stringify({ version: 1, words: [] })),
+    })
+    const file = new File([wrapped], 'preset.zip', { type: 'application/zip' })
+
+    const loaded = await loadPresetBundle(file)
+    expect((loaded.preset as { version?: number }).version).toBe(1)
+  })
+
+  // Two presets at the same depth is genuinely ambiguous; archive order decides, and
+  // the resources resolved must come from the *same* folder as the settings chosen.
+  it('resolves an equal-depth tie by archive order, resources included', async () => {
+    const a = { version: 10, words: [], resources: { csv: 'codes.csv' } }
+    const b = { version: 20, words: [], resources: { csv: 'codes.csv' } }
+    const wrapped = zipSync({
+      'preset-a/settings.json': strToU8(JSON.stringify(a)),
+      'preset-a/codes.csv': strToU8('from,a\n'),
+      'preset-b/settings.json': strToU8(JSON.stringify(b)),
+      'preset-b/codes.csv': strToU8('from,b\n'),
+    })
+    const file = new File([wrapped], 'presets.zip', { type: 'application/zip' })
+
+    const loaded = await loadPresetBundle(file)
+    expect((loaded.preset as { version?: number }).version).toBe(10)
+    expect(await loaded.csv!.text()).toBe('from,a\n')
   })
 })
