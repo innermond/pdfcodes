@@ -792,14 +792,33 @@ bifezi **„Non-decupare”** (vezi 7.3.3) — atunci nu mai există impunere.
 ![„Aspect pagină”: lățime/înălțime pagină, decalaje și diametru cerc](manual-assets/s4-page-layout.png)
 
 - **Lățime pagină (mm)** / **Înălțime pagină (mm)** — dimensiunea colii.
-- **Decalaj X (mm)** / **Decalaj Y (mm)** — spațiul dintre tăieturile a două
-  carduri vecine, pe orizontală / verticală. Doar un contur dreptunghiular simplu
-  poate avea decalaj `0` (cardurile împart aceeași linie de tăiere); pentru
-  celelalte forme folosește cel puțin **1,0 mm**, altfel tăierile vecine se
-  suprapun și materialul se poate deteriora (apare un avertisment galben).
+- **Decalaj X (mm)** / **Decalaj Y (mm)** — spațiul dintre cardurile vecine, pe
+  orizontală / verticală. Atenție: nu este tot una cu distanța dintre tăieturi.
+  Dacă conturul nu atinge marginile cardului, distanța reală dintre tăieturile a
+  două carduri vecine este decalajul **plus** spațiul liber lăsat de contur de
+  fiecare parte. Un contur tras mai spre interior poate deci funcționa în siguranță
+  chiar și cu decalaj `0`.
 - **Diametru cerc (mm)** — diametrul **cercurilor de reglaj** pe care cutter-ul le
   folosește pentru aliniere. Ele rezervă o bandă pe marginile colii: zona în care
   se poate tăia este pagina **minus** un diametru pe fiecare margine.
+- **Distanță minimă între tăieri (mm)** — cât de aproape au voie să ajungă
+  tăieturile a două carduri vecine. Zero rămâne permis într-un singur caz: un
+  contur **dreptunghiular simplu, nerotit, lipit de marginile cardului**, unde
+  cele două carduri împart o singură linie dreaptă de tăiere — exact cazul în care
+  aplicația desenează linii continue pe toată coala, ca să nu taie de două ori
+  aceeași muchie. În rest tăieturile trebuie să fie clar depărtate: dacă ajung
+  aproape una de alta fără să coincidă, cutter-ul taie de două ori aproape în
+  același loc, iar fâșia subțire de material dintre ele se poate rupe. Două
+  cercuri care se ating nu intră la excepție — se ating într-un punct, nu pe o
+  linie, deci rămân două tăieturi separate. Implicit `1,0 mm`.
+- **Bleed fundal (mm)** — cât trebuie să depășească fundalul linia de tăiere.
+  Cutter-ul nu taie niciodată perfect pe linie, așa că fundalul trebuie să treacă
+  puțin dincolo de ea; altfel o abatere mică lasă material netipărit la muchie.
+  Se verifică doar în interiorul cardului — dincolo de marginea lui urmează cardul
+  vecin sau decalajul, care țin de setarea de mai sus. Implicit `1,0 mm`.
+
+> Cele două valori nu schimbă PDF-ul generat — produc doar avertismentele din
+> §7.3.4. Le reglezi după cutter-ul tău și se salvează în presetare.
 
 #### 7.3.3 Opțiuni
 
@@ -844,7 +863,11 @@ Sub opțiuni pot apărea mesaje galbene care semnalează nepotriviri de dimensiu
 - **Conturul a fost redus ca să încapă în fundal** — dimensiunea sau rotația
   cerută a fost limitată automat; micșorează conturul sau rotația ca să folosești
   valoarea dorită.
-- **Decalaj X/Y prea mic** pentru forma de contur aleasă (vezi 7.3.2).
+- **Tăierile a două carduri vecine ajung prea aproape** — mesajul spune distanța
+  măsurată și minimul cerut. Mărește **Decalaj X/Y** sau depărtează conturul de
+  marginile cardului (vezi 7.3.2).
+- **Fundalul nu depășește linia de tăiere** cu bleed-ul cerut — repoziționează sau
+  mărește fundalul, ori alege o culoare pentru zonele libere (vezi 7.3.2).
 
 #### 7.3.5 Timp de tăiere
 

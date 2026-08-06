@@ -293,7 +293,9 @@ await step('s4-page-layout', async () => {
     [
       left.getByText('Aspect pagină', { exact: true }),
       left.locator('label', { hasText: 'Lățime pagină (mm)' }),
-      left.locator('label', { hasText: 'Diametru cerc (mm)' }),
+      // Bottom anchor: the cutting tolerances sit below "Diametru cerc", so
+      // anchoring on that one would crop them out of the shot.
+      left.locator('label', { hasText: 'Bleed fundal (mm)' }),
     ],
     's4-page-layout.png',
   )

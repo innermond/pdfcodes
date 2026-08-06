@@ -820,14 +820,33 @@ then.
 !["Page layout": page width/height, offsets and circle diameter](manual-assets/s4-page-layout.png)
 
 - **Page width (mm)** / **Page height (mm)** — the sheet's size.
-- **Offset X (mm)** / **Offset Y (mm)** — the space between the cuts of two
-  neighbouring cards, horizontally / vertically. Only a plain rectangular contour
-  can have offset `0` (the cards share the same cutting line); for the other
-  shapes use at least **1.0 mm**, otherwise neighbouring cuts overlap and the
-  material can be damaged (a yellow warning appears).
+- **Offset X (mm)** / **Offset Y (mm)** — the space between neighbouring cards,
+  horizontally / vertically. Note that this is not the same as the distance
+  between the cuts. When the contour does not reach the card edges, the real
+  distance between two neighbouring cards' cuts is the offset **plus** the room
+  the contour leaves on either side — so a contour pulled inwards can be perfectly
+  safe even at offset `0`.
 - **Circle diameter (mm)** — the diameter of the **registration circles** the
   cutter uses for alignment. They reserve a band along the sheet's edges: the
   area that can be cut is the page **minus** one diameter on each edge.
+- **Min. distance between cuts (mm)** — how close the cuts of two neighbouring
+  cards may come. Zero stays allowed in exactly one case: a **plain, unrotated
+  rectangular contour flush with the card edges**, where both cards share a single
+  straight cutting line — the case in which the app draws lines spanning the whole
+  sheet rather than cutting each shared edge twice. Otherwise the cuts must be
+  clearly apart: two cuts that come close without coinciding make the cutter cut
+  twice in almost the same place, and the thin sliver of material between them can
+  tear. Two circles touching do not qualify for the exception — they meet at a
+  point, not along a line, so they remain two separate cuts. Default `1.0 mm`.
+- **Background bleed (mm)** — how far the background must extend past the cut
+  line. The cutter never cuts exactly on the line, so the background has to
+  overshoot it slightly; otherwise a small misregistration leaves unprinted
+  material at the edge. Only checked inside the card — past its edge lies the
+  neighbouring card or the offset, which the setting above governs.
+  Default `1.0 mm`.
+
+> Neither value changes the generated PDF — they only drive the warnings in
+> §7.3.4. Tune them to your cutter; they are saved in the preset.
 
 #### 7.3.3 Options
 
@@ -874,7 +893,12 @@ Below the options, yellow messages may appear flagging size mismatches:
 - **The contour was reduced to fit inside the background** — the requested size
   or rotation was limited automatically; reduce the contour or the rotation to
   use the desired value.
-- **Offset X/Y too small** for the chosen contour shape (see 7.3.2).
+- **The cuts of two neighbouring cards come too close** — the message states the
+  measured distance and the required minimum. Increase **Offset X/Y** or move the
+  contour away from the card edges (see 7.3.2).
+- **The background does not extend past the cut line** by the required bleed —
+  reposition or enlarge the background, or set a colour for the free zones
+  (see 7.3.2).
 
 #### 7.3.5 Cutting time
 

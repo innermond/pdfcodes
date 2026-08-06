@@ -40,6 +40,22 @@ exists in step 4's "Text exemplu" (now two global margins) — it moved into the
 per-word "Fundal text" group as `words_bg_padding_label` ("Padding (mm)").
 §6.1/§6.2-background of **both** manuals updated accordingly.
 
+## Cut-safety settings (2026-08-06)
+
+Step 5's „Aspect pagină” gained two fields — „Distanță minimă între tăieri (mm)”
+and „Bleed fundal (mm)” (`generate_min_cut_distance` / `generate_bleed`) — and the
+old „Decalaj X/Y prea mic” warning was replaced by two measured ones
+(`generate_cuts_too_close`, `generate_background_no_bleed`; `generate_gap_too_small`
+is gone). §7.3.2 and §7.3.4 of **both** manuals updated, including the „Decalaj X/Y”
+bullet, which used to describe the gutter *as* the distance between cuts — it is
+only part of it now, the rest being the room the contour leaves inside its card.
+
+**`manual-assets/s4-page-layout.png` is stale**: it predates the two new fields and
+still ends at „Diametru cerc (mm)”. `shoot.mjs`'s bottom anchor for that shot has
+been moved to „Bleed fundal (mm)” so a re-run picks them up, but the script was not
+re-run here — it has no per-shot filter, so it would re-take ~20 images for one
+change. Fold it into the next screenshot re-sync.
+
 ## Deferred: localized screenshots (continue here)
 
 Goal: an English screenshot set in `manual-assets/en/` (or `manual-assets/{ro,en}/`
