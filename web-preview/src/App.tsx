@@ -16,7 +16,7 @@ import { svgToPdf } from './lib/svgWasm'
 import { useUndoHistory } from './lib/undoHistory'
 import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
-import { fetchHostPreset, readHostPreset } from './lib/hostPreset'
+import { fetchHostPreset, readHostPreset, type HostPreset } from './lib/hostPreset'
 import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
@@ -685,7 +685,7 @@ function downloadOverflowCsv(rows: string[]) {
   URL.revokeObjectURL(url)
 }
 
-export default function App({ lightMode }: { lightMode?: boolean } = {}) {
+export default function App({ lightMode, preset }: { lightMode?: boolean; preset?: HostPreset } = {}) {
   const [theme, toggleTheme] = useTheme(lightMode ?? ENV_LIGHT_MODE)
   const [step, setStep] = useState<WizardStepId>('fundal')
   const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
@@ -2367,10 +2367,16 @@ export default function App({ lightMode }: { lightMode?: boolean } = {}) {
   // as a hand-picked file, so the user lands on step 1 with everything already
   // filled in. The ref guards against StrictMode's double-invoked effect: the
   // second run must not re-download and re-apply on top of the first.
+  //
+  // Two hosts, one seam. Served standalone, the descriptor arrives through the
+  // `pdfcodes:preset` marker in index.html and is read off the window global.
+  // Mounted as a component (pd.ro renders <App preset={…} /> from a Blade data
+  // attribute), there is no index.html to rewrite, so it arrives as a prop —
+  // which wins, because a host that passes one is not also planting a global.
   useEffect(() => {
     if (hostPresetLoadedRef.current) return
     hostPresetLoadedRef.current = true
-    const hosted = readHostPreset()
+    const hosted = preset ?? readHostPreset()
     if (!hosted) return
     fetchHostPreset(hosted)
       .then((file) => handleLoadPresetFile(file, m.presets_gallery_loaded({ name: hosted.name ?? file.name })))
