@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { offsetPolygons, polygonsBBox, polygonsToPathD, segsCross, removeSelfIntersections } from './contourOffset'
-import type { Pt } from './contourKeepRegion'
+import { offsetPolygons, polygonsAreAxisAlignedRect, polygonsBBox, polygonsToPathD, segsCross, removeSelfIntersections } from './contourOffset'
+import { contourLocalPolygons, type Pt } from './contourKeepRegion'
+import type { ContourCutShape } from '../components/CardCanvas'
 
 const square = (r: number): Pt[] => [[-r, -r], [r, -r], [r, r], [-r, r]]
 
@@ -111,5 +112,73 @@ describe('removeSelfIntersections', () => {
     const cleaned = removeSelfIntersections(off)
     for (const sp of cleaned) expect(hasSelfCrossing(sp)).toBe(false)
     expect(cleaned.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('polygonsAreAxisAlignedRect', () => {
+  it('accepts a plain axis-aligned rectangle', () => {
+    expect(polygonsAreAxisAlignedRect([[[0, 0], [10, 0], [10, 4], [0, 4]]])).toBe(true)
+  })
+
+  // The case that decides whether the cut keeps the spanning-grid optimization: an
+  // inward "Redesenează" offset miters the corners, so the outline is still a rectangle
+  // and two touching cards can still share one cut line.
+  it('accepts a shrunk rectangle, whose corners stay mitered', () => {
+    expect(polygonsAreAxisAlignedRect(offsetPolygons([square(5)], -1))).toBe(true)
+  })
+
+  // A grown one comes back with quarter-circle corners; spanning lines would square them
+  // off, so it has to keep tiling real rectangles.
+  it('rejects a grown rectangle, whose corners come back rounded', () => {
+    expect(polygonsAreAxisAlignedRect(offsetPolygons([square(5)], 1))).toBe(false)
+  })
+
+  it('rejects a rotated rectangle and a non-rectangular outline', () => {
+    expect(polygonsAreAxisAlignedRect([[[0, 1], [1, 0], [2, 1], [1, 2]]])).toBe(false)
+    expect(polygonsAreAxisAlignedRect([[[0, 0], [10, 0], [10, 4], [5, 8], [0, 4]]])).toBe(false)
+  })
+
+  // An interior hole leaves two subpaths, which the grid cannot express either.
+  it('rejects an outline with a hole', () => {
+    expect(polygonsAreAxisAlignedRect([square(5), square(2)])).toBe(false)
+  })
+
+  // The generator closes its subpaths explicitly, so a repeated first vertex must not
+  // read as a fifth corner.
+  it('tolerates a closing duplicate vertex', () => {
+    expect(polygonsAreAxisAlignedRect([[[0, 0], [10, 0], [10, 4], [0, 4], [0, 0]]])).toBe(true)
+  })
+
+  // The whole path App's redraw effect walks, on the preset "Dreptunghi" shape: the base
+  // outline comes from contourLocalPolygons, gets offset, and the answer decides whether
+  // the cut keeps its spanning grid lines. A shrink must keep them — that is the case
+  // where two touching cards still share one cut instead of stroking it twice.
+  describe('through the real redraw pipeline', () => {
+    const rectShape = (rotation: number): ContourCutShape => ({
+      kind: 'rectangle',
+      orientation: 'out',
+      rotation,
+      frac: { x: 0, y: 0, w: 1, h: 1 },
+      rxFrac: 0,
+      ryFrac: 0,
+      sides: 4,
+      star: false,
+      starInnerRx: 0,
+      starInnerRy: 0,
+    })
+    const base = (rotation = 0) =>
+      contourLocalPolygons({ width: 90, height: 50, cutShape: rectShape(rotation), interiorMaskPath: null })
+
+    it('keeps a shrunk preset rectangle griddable', () => {
+      expect(polygonsAreAxisAlignedRect(offsetPolygons(base(), -1))).toBe(true)
+    })
+
+    it('keeps it griddable through a 90° reorient', () => {
+      expect(polygonsAreAxisAlignedRect(offsetPolygons(base(90), -1))).toBe(true)
+    })
+
+    it('drops the grid once the same rectangle is grown', () => {
+      expect(polygonsAreAxisAlignedRect(offsetPolygons(base(), 1))).toBe(false)
+    })
   })
 })

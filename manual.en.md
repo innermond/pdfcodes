@@ -821,19 +821,24 @@ then.
 
 - **Page width (mm)** / **Page height (mm)** — the sheet's size.
 - **Offset X (mm)** / **Offset Y (mm)** — the space between neighbouring cards,
-  horizontally / vertically. Note that this is not the same as the distance
-  between the cuts. When the contour does not reach the card edges, the real
-  distance between two neighbouring cards' cuts is the offset **plus** the room
-  the contour leaves on either side — so a contour pulled inwards can be perfectly
-  safe even at offset `0`.
+  horizontally / vertically. This *is* the distance between two neighbouring
+  cards' cuts: the cut sheet is laid out on the contour itself, so each cut fills
+  its own cell and the offset is all that separates it from the next one. Pulling
+  the contour inside the card does not push the cuts apart — it makes the cut
+  cells smaller, and they then advance more slowly across the sheet than the
+  printed cards do.
 - **Circle diameter (mm)** — the diameter of the **registration circles** the
   cutter uses for alignment. They reserve a band along the sheet's edges: the
   area that can be cut is the page **minus** one diameter on each edge.
 - **Min. distance between cuts (mm)** — how close the cuts of two neighbouring
   cards may come. Zero stays allowed in exactly one case: a **plain, unrotated
-  rectangular contour flush with the card edges**, where both cards share a single
-  straight cutting line — the case in which the app draws lines spanning the whole
-  sheet rather than cutting each shared edge twice. Otherwise the cuts must be
+  rectangular contour the app draws as lines spanning the whole sheet**, where both
+  cards share a single straight cutting line instead of the shared edge being cut
+  twice. Anything that turns the cut back into one rectangle stamped per card
+  cancels the exception — ticking **Rectangle contour**, spinning the contour, or
+  *growing* it with **Redraw**, which brings its corners back rounded. (Shrinking
+  it with Redraw keeps the corners square, so the spanning lines stay.) Otherwise
+  the cuts must be
   clearly apart: two cuts that come close without coinciding make the cutter cut
   twice in almost the same place, and the thin sliver of material between them can
   tear. Two circles touching do not qualify for the exception — they meet at a

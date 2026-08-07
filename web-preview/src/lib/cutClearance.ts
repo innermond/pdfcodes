@@ -8,19 +8,24 @@
 // 1. Cut-to-cut distance is a *dead band*, not a minimum
 // ---------------------------------------------------------------------------
 //
-// Cards are tiled at a pitch of card + gutter (`src/geometry.rs`, `cols`/`rows`), and
-// each card's cut outline sits somewhere inside its own card rectangle. The distance
-// between one card's cut and its neighbour's is therefore
+// The distance is the gutter, and only the gutter. That is not obvious, because the cut
+// page has a card of its own: the contour job sends the *contour's* size as the card
+// (`contourWidthOverride` in App.tsx), and `CardLayout::compute` then tiles it at a pitch
+// of `card_w + gutter_x` (src/geometry.rs). So the cut outline always fills its own cut
+// card exactly, and two neighbouring cuts are the gutter apart no matter how much room
+// the contour leaves inside the *print* card. Pulling a contour inwards does not push the
+// cuts apart — it shrinks the cut card, and the cut grid then advances more slowly than
+// the print grid. (`contour_canvas_*_mm` would lay the cut page out on the print card
+// instead, but src/generate/mod.rs honours it only for `no_cut`, where a page holds one
+// card and there is no neighbour to measure against.)
 //
-//     gutter + (this card's trailing clearance) + (the next card's leading clearance)
-//
-// and because every card is identical that is `gutter + trailing + leading`.
-//
-// Zero is not the failure. A plain rectangle at zero inset shares a straight edge with
-// its neighbour along the whole boundary, so one cut serves both cards — which is
-// exactly what `Options::contour_as_grid` optimises, drawing spanning grid lines
-// "instead of tiling individual rectangles — eliminating the double-stroke along shared
-// card edges". That must stay legal.
+// Zero is not the failure. Two neighbouring plain rectangles share a straight edge along
+// the whole boundary, so one cut can serve both — which is exactly what
+// `Options::contour_as_grid` draws, spanning grid lines "instead of tiling individual
+// rectangles — eliminating the double-stroke along shared card edges". That must stay
+// legal, but only when it is what actually gets drawn: with tiled rectangles the cutter
+// really does trace the common edge twice, so `canShareEdge` follows the generator's own
+// grid decision (`contourIsGrid`), not the shape's kind.
 //
 // The failure is *near* zero: two distinct cut lines a fraction of a millimetre apart,
 // leaving a sliver of stock that the cutter tears out. So the safe set is
@@ -29,10 +34,6 @@
 // A curve does not get the zero case. Two tangent circles meet at a single point, not
 // along a line, so there is no shared cut to make — they are a sliver like any other.
 export interface AxisClearance {
-  // Contour footprint's leading edge → card edge (left on X, bottom on Y), mm.
-  leadingMm: number
-  // Card edge → footprint's trailing edge (right on X, top on Y), mm.
-  trailingMm: number
   // Distance between this card's cut and the neighbouring card's, mm.
   cutToCutMm: number
   // Exactly coincident *and* legitimately shareable: one cut serves both cards.
@@ -41,42 +42,26 @@ export interface AxisClearance {
   unsafe: boolean
 }
 
-// Distances come from user-entered millimetre fields and accumulate through additions,
-// so comparisons need a tolerance rather than exact equality.
+// Distances come from user-entered millimetre fields, so comparisons need a tolerance
+// rather than exact equality.
 const EPS = 1e-6
 
 export function axisClearance(params: {
-  // Card extent along this axis, mm.
-  cardMm: number
-  // Footprint's leading edge measured from the card's leading edge, mm. This is the
-  // contour's *bounding box*, which is the right measure: the bbox edge is exactly
-  // where the outline reaches furthest along the axis, i.e. its closest approach to
-  // the neighbouring card.
-  footprintStartMm: number
-  footprintSizeMm: number
   // Tiling gutter between cards along this axis, mm (`Options::offset_x_mm`).
   gutterMm: number
   minDistanceMm: number
-  // May this contour legitimately share a cut with its neighbour? True only for an
-  // unspun plain rectangle, whose edge is a straight line running the whole length of
-  // the shared boundary — the precondition `contour_as_grid` itself requires.
+  // May this contour legitimately share a cut with its neighbour? True only when the cut
+  // is drawn as spanning grid lines, which needs an unspun plain rectangle: its edge is
+  // then a straight line running the whole length of the shared boundary, and one line
+  // is what the generator emits for it.
   canShareEdge: boolean
 }): AxisClearance {
-  const { cardMm, footprintStartMm, footprintSizeMm, gutterMm, minDistanceMm, canShareEdge } = params
+  const { gutterMm, minDistanceMm, canShareEdge } = params
 
-  // Negative clearances would mean the footprint escapes its card; the app clamps the
-  // offset so it cannot, but clamp anyway so a caller passing stale numbers reports a
-  // conservative 0 rather than a distance that looks larger than it is.
-  const leadingMm = Math.max(0, footprintStartMm)
-  const trailingMm = Math.max(0, cardMm - (footprintStartMm + footprintSizeMm))
-  const cutToCutMm = Math.max(0, gutterMm) + leadingMm + trailingMm
-
-  const coincident = cutToCutMm <= EPS
-  const sharedEdge = coincident && canShareEdge
+  const cutToCutMm = Math.max(0, gutterMm)
+  const sharedEdge = cutToCutMm <= EPS && canShareEdge
 
   return {
-    leadingMm,
-    trailingMm,
     cutToCutMm,
     sharedEdge,
     unsafe: !sharedEdge && cutToCutMm < minDistanceMm - EPS,

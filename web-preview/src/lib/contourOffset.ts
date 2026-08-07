@@ -246,6 +246,31 @@ export function polygonsBBox(subpaths: Pt[][]): { minX: number; minY: number; ma
   return isFinite(minX) ? { minX, minY, maxX, maxY } : null
 }
 
+// Is `subpaths` a single closed axis-aligned rectangle? True when there is exactly one
+// subpath, it dedupes to four vertices, and every edge is horizontal or vertical.
+//
+// This is the precondition the optimized grid cut needs: only a plain axis-aligned
+// rectangle can be drawn as lines spanning the whole sheet, so that two neighbouring
+// cards share one cut instead of stroking their common edge twice. A *shrunk* rectangle
+// still qualifies — `offsetPolygons` miters the overlap side of a corner, so an inward
+// offset keeps the corners sharp — while a grown one does not: its corners come back as
+// arcs, which spanning lines would silently square off. An interior hole adds a second
+// subpath and fails here too.
+export function polygonsAreAxisAlignedRect(subpaths: Pt[][], eps = 1e-6): boolean {
+  if (subpaths.length !== 1) return false
+  const poly = dedupe(subpaths[0], eps)
+  if (poly.length !== 4) return false
+  for (let i = 0, j = 3; i < 4; j = i++) {
+    const [xj, yj] = poly[j]
+    const [xi, yi] = poly[i]
+    // Each edge must be axis-parallel: one coordinate held, the other actually moving.
+    const dx = Math.abs(xi - xj)
+    const dy = Math.abs(yi - yj)
+    if (!((dx <= eps && dy > eps) || (dy <= eps && dx > eps))) return false
+  }
+  return true
+}
+
 // Serialize closed subpaths to an SVG path `d` (M/L…Z), the form CardCanvas's
 // interior-mask consumer and `flattenPathD` both accept.
 export function polygonsToPathD(subpaths: Pt[][], f: (v: number) => number = (v) => +v.toFixed(4)): string {

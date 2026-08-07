@@ -793,20 +793,25 @@ bifezi **„Non-decupare”** (vezi 7.3.3) — atunci nu mai există impunere.
 
 - **Lățime pagină (mm)** / **Înălțime pagină (mm)** — dimensiunea colii.
 - **Decalaj X (mm)** / **Decalaj Y (mm)** — spațiul dintre cardurile vecine, pe
-  orizontală / verticală. Atenție: nu este tot una cu distanța dintre tăieturi.
-  Dacă conturul nu atinge marginile cardului, distanța reală dintre tăieturile a
-  două carduri vecine este decalajul **plus** spațiul liber lăsat de contur de
-  fiecare parte. Un contur tras mai spre interior poate deci funcționa în siguranță
-  chiar și cu decalaj `0`.
+  orizontală / verticală. El **este** distanța dintre tăieturile a două carduri
+  vecine: coala de decupare este așezată chiar pe contur, deci fiecare tăietură
+  umple complet celula ei, iar decalajul e tot ce o desparte de următoarea. Un
+  contur tras spre interiorul cardului nu depărtează tăieturile — micșorează
+  celulele de decupare, iar acestea avansează apoi pe coală mai încet decât
+  cardurile tipărite.
 - **Diametru cerc (mm)** — diametrul **cercurilor de reglaj** pe care cutter-ul le
   folosește pentru aliniere. Ele rezervă o bandă pe marginile colii: zona în care
   se poate tăia este pagina **minus** un diametru pe fiecare margine.
 - **Distanță minimă între tăieri (mm)** — cât de aproape au voie să ajungă
   tăieturile a două carduri vecine. Zero rămâne permis într-un singur caz: un
-  contur **dreptunghiular simplu, nerotit, lipit de marginile cardului**, unde
-  cele două carduri împart o singură linie dreaptă de tăiere — exact cazul în care
-  aplicația desenează linii continue pe toată coala, ca să nu taie de două ori
-  aceeași muchie. În rest tăieturile trebuie să fie clar depărtate: dacă ajung
+  contur **dreptunghiular simplu, nerotit, pe care aplicația îl desenează ca linii
+  continue pe toată coala**, unde cele două carduri împart o singură linie dreaptă
+  de tăiere în loc să fie tăiată de două ori aceeași muchie. Orice readuce tăierea
+  la câte un dreptunghi ștanțat per card anulează excepția: bifa **Contur
+  Dreptunghi**, rotirea liberă a conturului sau *mărirea* lui cu **Redesenează**,
+  care îi rotunjește colțurile. (Micșorarea cu Redesenează păstrează colțurile
+  drepte, deci liniile continue rămân.) În rest tăieturile trebuie să fie clar
+  depărtate: dacă ajung
   aproape una de alta fără să coincidă, cutter-ul taie de două ori aproape în
   același loc, iar fâșia subțire de material dintre ele se poate rupe. Două
   cercuri care se ating nu intră la excepție — se ating într-un punct, nu pe o

@@ -21,7 +21,7 @@ import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, 
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { axisClearance, backgroundCoversCut } from './lib/cutClearance'
-import { offsetPolygons, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
+import { offsetPolygons, polygonsAreAxisAlignedRect, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter, isRaggedRowsWarning, keptRows, rowsToLeaderValues, skippedRows } from './lib/csvSerialize'
@@ -805,7 +805,10 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   const [redrawnContour, setRedrawnContour] = useState<PdfBackground | null>(null)
   const [redrawnMaskPath, setRedrawnMaskPath] = useState<string | null>(null)
   const [redrawnFootprint, setRedrawnFootprint] = useState<
-    { widthMm: number; heightMm: number } | null
+    // `isRect`: the offset outline is still a single axis-aligned rectangle, so the cut
+    // can keep the spanning-grid optimization (see `contourIsGrid`). A shrink keeps a
+    // rectangle rectangular (mitered corners); a grow rounds them.
+    { widthMm: number; heightMm: number; isRect: boolean } | null
   >(null)
   const [shapeError, setShapeError] = useState<string | null>(null)
   // Whether the contour is selected for direct manipulation (drag / arrow-key nudge in
@@ -1381,6 +1384,19 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
     return sign * lo
   })()
   const activeContourSpinDeg = cappedContourSpinDeg
+  // A rectangle contour normally draws as optimized spanning grid lines: one cut line
+  // across the whole sheet per distinct card edge, so two neighbouring cards share it
+  // instead of each stroking their common edge (see `Options::contour_as_grid` and
+  // `grid_segments` in src/generate/contour.rs). Everything that makes the outline
+  // something other than a plain axis-aligned rectangle forces real tiled rectangles
+  // back: "Contur Dreptunghi" asks for them outright, a free spin tilts the edges, and
+  // a "Redesenează" offset only keeps the rectangle when it shrank it — grown, its
+  // corners are arcs that spanning lines would square off. Declared here rather than in
+  // `handleGenerate` because the cut-clearance warning needs the same answer: zero
+  // distance between neighbouring cuts is legal exactly when this is what gets drawn.
+  const contourIsGrid =
+    contourSource === 'shape' && shapeKind === 'rectangle' && !rectangleContour &&
+    activeContourSpinDeg === 0 && (!contourRedrawActive || redrawnFootprint!.isRect)
   const activeContourTrimToPath = contourRedrawActive ? false : contourTrimToPath
   // The redrawn cut PDF is single-page, so its page pick is always 1.
   const activeContourPageNumber = contourRedrawActive ? 1 : contourPageNumber
@@ -1658,7 +1674,10 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       lens.push(sp.length)
     }
     const maskD = polygonsToPathD(localZeroed.map((sp) => sp.map(([x, y]): Pt => [x / Wf, y / Hf])))
-    const footprint = { widthMm: Wf, heightMm: Hf }
+    // Judged on the offset outline itself rather than on the base shape's kind: an inward
+    // offset of a rectangle is still a rectangle (the join is mitered on the overlap side),
+    // an outward one is a rounded rectangle, and an interior hole leaves two subpaths.
+    const footprint = { widthMm: Wf, heightMm: Hf, isRect: polygonsAreAxisAlignedRect(offset) }
 
     let cancelled = false
     ensureWasmInit()
@@ -3328,39 +3347,39 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   // the shape *kind* let a rectangle inset a fraction of a millimetre through, which is
   // the sliver case exactly.
   //
-  // The real distance is gutter + both cards' clearances, and zero is only safe when
-  // the outlines genuinely coincide along a straight edge — the plain unspun rectangle
-  // whose single cut serves both cards, which `Options::contour_as_grid` then draws as
-  // spanning lines. See lib/cutClearance.ts for the dead band.
+  // The real distance is the gutter itself: the cut page's card *is* the contour, so
+  // every cut fills its own cell and neighbours are exactly a gutter apart, however much
+  // room the contour leaves inside the print card. Zero is only safe when the cut is
+  // drawn as spanning grid lines — one line serving both cards — so the exemption reads
+  // `contourIsGrid`, the generator's own decision, rather than the shape's kind: with
+  // tiled rectangles the common edge really is stroked twice. See lib/cutClearance.ts.
   //
   // Keyed to the configured contour (its shape/source), not the print/contour/both
   // `mode`: the double-cut risk exists whenever that contour is cut, and `mode`
   // defaults to 'print', which would otherwise hide the warning in the common case.
   // `contourBackground` is non-null once a shape or an uploaded contour is available.
-  const contourCanShareEdge =
-    contourSource === 'shape' && shapeKind === 'rectangle' && cappedContourSpinDeg === 0
   const cutClearanceX = axisClearance({
-    cardMm: effectiveCardWidthMm,
-    footprintStartMm: clampedContourOffsetXMm + footprintLeft0Mm,
-    footprintSizeMm: footprintWidthMm,
     gutterMm: pageOptions.offsetXMm,
     minDistanceMm: minCutDistanceMm,
-    canShareEdge: contourCanShareEdge,
+    canShareEdge: contourIsGrid,
   })
   const cutClearanceY = axisClearance({
-    cardMm: effectiveCardHeightMm,
-    footprintStartMm: clampedContourOffsetYMm + footprintBottom0Mm,
-    footprintSizeMm: footprintHeightMm,
     gutterMm: pageOptions.offsetYMm,
     minDistanceMm: minCutDistanceMm,
-    canShareEdge: contourCanShareEdge,
+    canShareEdge: contourIsGrid,
   })
   const cutsTooClose =
     contourBackground != null &&
     !pageOptions.noCut &&
     (cutClearanceX.unsafe || cutClearanceY.unsafe)
-  // The axis to name in the warning: the tighter of the two offenders.
-  const tightestCut = cutClearanceX.cutToCutMm <= cutClearanceY.cutToCutMm ? cutClearanceX : cutClearanceY
+  // The distance to name in the warning: the tighter of the axes that are actually
+  // offending. Taking the tighter of the two outright quoted a legally shared 0.0 mm
+  // edge in a warning raised by the other axis, which read as the shared-edge exemption
+  // being ignored. Falls back to X only when neither is unsafe, i.e. nothing is shown.
+  const tightestCut =
+    cutClearanceX.unsafe && (!cutClearanceY.unsafe || cutClearanceX.cutToCutMm <= cutClearanceY.cutToCutMm)
+      ? cutClearanceX
+      : cutClearanceY.unsafe ? cutClearanceY : cutClearanceX
 
   // A cut landing where nothing was printed exposes bare stock, and registration is
   // never perfect, so the background has to overshoot the cut rather than merely meet
@@ -3489,11 +3508,6 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       const printOptions = needsPrintInput
         ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, cropOriginXMm, cropOriginYMm, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? footprintWidthMm : undefined, minimal ? footprintHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? activeContourSpinDeg : undefined, combine ? footprintLeft0Mm : undefined, combine ? footprintBottom0Mm : undefined, combine ? footprintWidthMm : undefined, combine ? footprintHeightMm : undefined)
         : null
-      // A rectangle contour normally draws as optimized spanning grid lines; "Contur
-      // Dreptunghi" forces plain tiled rectangles instead. The redrawn (offset) contour
-      // is an arbitrary polygon PDF, never the grid; a spun rectangle can't be spanning
-      // lines either, so any spin also forces real tiled rectangles.
-      const contourIsGrid = contourSource === 'shape' && shapeKind === 'rectangle' && !rectangleContour && !contourRedrawActive && activeContourSpinDeg === 0
       // In minimal mode the cut page is the contour's own footprint at origin (matching
       // the cropped print page), so drop the background canvas and zero the offset.
       const cutOffsetXMm = minimal ? 0 : contourFootprintLeftMm
