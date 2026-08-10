@@ -17,7 +17,8 @@ import { useUndoHistory } from './lib/undoHistory'
 import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
 import { fetchHostPreset, readHostPreset, type HostPreset } from './lib/hostPreset'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, type Align, type BlendMode, type ContourAlignRect, type PageOptions, type VAlign, type WordStyle } from './lib/options'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, qrPayload, QR_CODE_PLACEHOLDER, QR_ECC_LEVELS, QR_MIN_MODULE_MM, type Align, type BlendMode, type CodeKind, type ContourAlignRect, type PageOptions, type QrEcc, type VAlign, type WordStyle } from './lib/options'
+import { qrMatrix, qrModuleSizeMm } from './lib/qrMatrix'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { axisClearance, backgroundCoversCut } from './lib/cutClearance'
@@ -3286,6 +3287,16 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
 
+  // The selected QR's symbol, used only for the two warnings in its panel: how big a
+  // module ends up (below ~0.5mm it stops scanning reliably) and whether the payload
+  // fits a symbol at all. `null` for a text code or an unencodable payload; the
+  // overlay encodes separately, and both go through the same wasm encoder.
+  const qrMatrixForSelected = useMemo(
+    () => (selected?.kind === 'qr' ? qrMatrix(qrPayload(selected), selected.qrEcc) : null),
+    [selected],
+  )
+  const qrModuleMm = selected?.kind === 'qr' ? qrModuleSizeMm(qrMatrixForSelected, selected.qrSizeMm) : null
+
   // The "Fundal" and "Contur" steps each gate the rest of the wizard: the print
   // background must be set before the contour step unlocks, and the contour must
   // be set before the data step unlocks.
@@ -4675,6 +4686,59 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
 
             {selected && selectedIndex !== null && (
               <div className="flex flex-col gap-field border-t border-gray-200 pt-field dark:border-gray-700">
+              {/* Text or QR. Everything below (position, colour, background) applies to
+                  both; only the typography/QR block above the fold swaps out. */}
+              <div className="w-56">
+                <SelectField<CodeKind>
+                  label={m.words_kind_label()}
+                  value={selected.kind}
+                  options={[
+                    { value: 'text', label: m.words_kind_text() },
+                    { value: 'qr', label: m.words_kind_qr() },
+                  ]}
+                  onChange={(v) => updateWord(selectedIndex, { kind: v })}
+                />
+              </div>
+              {selected.kind === 'qr' && (
+              <Section title={m.words_qr_title()} collapsible>
+                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
+                  <NumberField
+                    label={m.words_qr_size_label()}
+                    value={selected.qrSizeMm}
+                    onChange={(v) => updateWord(selectedIndex, { qrSizeMm: v })}
+                    step={0.5}
+                    min={0}
+                  />
+                  <SelectField<QrEcc>
+                    label={m.words_qr_ecc_label()}
+                    value={selected.qrEcc}
+                    options={QR_ECC_LEVELS.map((level) => ({ value: level, label: level }))}
+                    onChange={(v) => updateWord(selectedIndex, { qrEcc: v })}
+                  />
+                </div>
+                <TextField
+                  label={m.words_qr_template_label()}
+                  value={selected.qrTemplate}
+                  placeholder={`https://exemplu.ro/v?c=${QR_CODE_PLACEHOLDER}`}
+                  onChange={(v) => updateWord(selectedIndex, { qrTemplate: v })}
+                />
+                <p className="text-label text-gray-500 dark:text-gray-400">
+                  {m.words_qr_template_help({ placeholder: QR_CODE_PLACEHOLDER })}
+                </p>
+                {qrModuleMm !== null && qrModuleMm < QR_MIN_MODULE_MM && (
+                  <p className="text-label text-amber-600 dark:text-amber-400">
+                    {m.words_qr_module_warning({
+                      module: qrModuleMm.toFixed(2),
+                      min: QR_MIN_MODULE_MM.toFixed(2),
+                    })}
+                  </p>
+                )}
+                {qrMatrixForSelected === null && (
+                  <p className="text-label text-amber-600 dark:text-amber-400">{m.words_qr_too_long()}</p>
+                )}
+              </Section>
+              )}
+              {selected.kind === 'text' && (
               <Section title={m.words_typography_title()} collapsible>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                 <NumberField label={m.words_font_size_label()} value={selected.fontSizePt} onChange={(v) => updateWord(selectedIndex, { fontSizePt: v })} />
@@ -4713,6 +4777,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   </div>
                 </div>
               </Section>
+              )}
               <Section title={m.words_position_title()} collapsible>
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                 <SelectField<Align | 'custom'>
@@ -4866,6 +4931,10 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   </div>
                 )}
               </Section>
+              {/* Glyph outline: text only. Stroking a QR's module edges just fattens
+                  them and costs the symbol its scannability, so the generator ignores
+                  `text_contour_colors` for a QR (see src/generate/cards.rs). */}
+              {selected.kind === 'text' && (
               <Section title={m.words_outline_title()} collapsible defaultCollapsed>
                 <ColorField
                   label={m.words_outline_title()}
@@ -4886,6 +4955,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   </div>
                 )}
               </Section>
+              )}
               </div>
             )}
           </Section>

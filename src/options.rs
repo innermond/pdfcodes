@@ -1,6 +1,7 @@
 use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::TextColor;
+use crate::qr::QrEcc;
 
 #[derive(Clone)]
 pub struct Options {
@@ -232,6 +233,23 @@ pub struct Options {
     // contour instead of the card. `None` falls back to the card frame (0, card width).
     pub contour_align_left_mm: Option<f32>,
     pub contour_align_width_mm: Option<f32>,
+    // Render a code as a QR symbol instead of glyphs: the side (in mm) of the square
+    // the symbol occupies, one per word position (or a single entry for every word).
+    // `0` — like an empty vec — draws that position as text, so this one array carries
+    // both "is this position a QR?" and how big it is. The side *includes* the quiet
+    // zone, so it is the real footprint reserved on the card. See src/generate/qr.rs.
+    pub qr_sizes_mm: Vec<f32>,
+    // Error-correction level for the QR positions above, one per word position (or a
+    // single entry for every word). Empty defaults to `Medium` for every QR.
+    pub qr_ecc: Vec<QrEcc>,
+    // Payload template for the QR positions, one per word position (or a single entry
+    // for every word). `{code}` is replaced with that position's CSV field, so a code
+    // can be wrapped in a URL. An empty template encodes the bare code. Empty vec means
+    // every QR encodes its code bare.
+    pub qr_templates: Vec<String>,
+    // Quiet-zone width in modules, kept clear inside the QR square (scalar, like
+    // `text_background_padding_mm`). Defaults to the standard's 4 modules.
+    pub qr_quiet_modules: u32,
     // Total number of cards (CSV rows) the print job will emit, so the contour branch can
     // tell whether the last printed sheet is partial and, if so, append an extra contour
     // page cutting only the cards that exist on it. `None` ⇒ single full-grid page (legacy).
@@ -320,6 +338,10 @@ impl Default for Options {
             contour_inset_mm: 0.0,
             contour_align_left_mm: None,
             contour_align_width_mm: None,
+            qr_sizes_mm: Vec::new(),
+            qr_ecc: Vec::new(),
+            qr_templates: Vec::new(),
+            qr_quiet_modules: crate::generate::qr::DEFAULT_QUIET_MODULES,
             contour_total_cards: None,
         }
     }

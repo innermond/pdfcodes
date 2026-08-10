@@ -8,6 +8,7 @@ use crate::generate::image_bg::build_image_background_pdf;
 use crate::generate::shapes::{build_polygon_pdf, build_shape_pdf, build_simple_background_pdf, ShapeKind};
 use crate::geometry::CardLayout;
 use crate::options::Options;
+use crate::qr::QrEcc;
 use lopdf::{Document, Object};
 
 // Result of a wasm `generate` call: the PDF bytes plus, for contour
@@ -26,6 +27,8 @@ pub struct WasmGenerateOutput {
     time_cutting_total_s: Option<f32>,
     text_overflow_count: usize,
     text_overflow_samples: Vec<String>,
+    qr_failure_count: usize,
+    qr_failure_samples: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -90,6 +93,18 @@ impl WasmGenerateOutput {
     #[wasm_bindgen(getter)]
     pub fn text_overflow_samples(&self) -> String {
         self.text_overflow_samples.join("\n")
+    }
+
+    // Rows whose QR payload was too long to encode — the symbol was skipped. Counted
+    // and sampled exactly like the text overflows above.
+    #[wasm_bindgen(getter)]
+    pub fn qr_failure_count(&self) -> usize {
+        self.qr_failure_count
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn qr_failure_samples(&self) -> String {
+        self.qr_failure_samples.join("\n")
     }
 }
 
@@ -212,6 +227,11 @@ pub fn generate(
         text_contour_blend_modes,
         // The positional entry point keeps the previous fixed spacing.
         text_char_spacing_pt: Vec::new(),
+        // ...and predates QR codes entirely: every position renders as text.
+        qr_sizes_mm: Vec::new(),
+        qr_ecc: Vec::new(),
+        qr_templates: Vec::new(),
+        qr_quiet_modules: crate::generate::qr::DEFAULT_QUIET_MODULES,
         // The positional entry point always uses the first page.
         background_page_number: 1,
         contour_page_number: 1,
@@ -268,6 +288,8 @@ pub fn generate(
         time_cutting_total_s: out.time_cutting_total_s,
         text_overflow_count: out.text_overflow_count,
         text_overflow_samples: out.text_overflow_samples,
+        qr_failure_count: out.qr_failure_count,
+        qr_failure_samples: out.qr_failure_samples,
     })
 }
 
@@ -373,6 +395,14 @@ struct JsOptions {
     // job can append an extra page cutting only the cards on a partially-filled last
     // sheet. `None` ⇒ single full-grid page (legacy).
     contour_total_cards: Option<u32>,
+    // Per-word QR: the square's side in mm (0 = draw that position as text), the
+    // error-correction level ("L"/"M"/"Q"/"H") and the payload template, in which
+    // `{code}` stands for the position's CSV field. See `qr_*` in src/options.rs.
+    qr_sizes_mm: Vec<f32>,
+    qr_ecc: Vec<String>,
+    qr_templates: Vec<String>,
+    // Quiet-zone width in modules kept inside the square (scalar, all QR positions).
+    qr_quiet_modules: u32,
 }
 
 impl Default for JsOptions {
@@ -453,6 +483,12 @@ impl Default for JsOptions {
             contour_align_left_mm: base.contour_align_left_mm,
             contour_align_width_mm: base.contour_align_width_mm,
             contour_total_cards: None,
+            qr_sizes_mm: base.qr_sizes_mm,
+            // The Rust default is an empty vec (⇒ Medium for every QR); the wire form
+            // is strings, so it starts empty too rather than spelling out a level.
+            qr_ecc: Vec::new(),
+            qr_templates: base.qr_templates,
+            qr_quiet_modules: base.qr_quiet_modules,
         }
     }
 }
@@ -581,6 +617,11 @@ pub fn generate_with_options(
         .collect::<Result<Vec<BlendMode>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let qr_ecc = js_opts.qr_ecc.iter()
+        .map(|s| s.parse::<QrEcc>())
+        .collect::<Result<Vec<QrEcc>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
     let opts = Options {
         host_width_mm: js_opts.host_width_mm,
         host_height_mm: js_opts.host_height_mm,
@@ -659,6 +700,10 @@ pub fn generate_with_options(
         contour_align_left_mm: js_opts.contour_align_left_mm,
         contour_align_width_mm: js_opts.contour_align_width_mm,
         contour_total_cards: js_opts.contour_total_cards.map(|n| n as usize),
+        qr_sizes_mm: js_opts.qr_sizes_mm,
+        qr_ecc,
+        qr_templates: js_opts.qr_templates,
+        qr_quiet_modules: js_opts.qr_quiet_modules,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -677,6 +722,8 @@ pub fn generate_with_options(
         time_cutting_total_s: out.time_cutting_total_s,
         text_overflow_count: out.text_overflow_count,
         text_overflow_samples: out.text_overflow_samples,
+        qr_failure_count: out.qr_failure_count,
+        qr_failure_samples: out.qr_failure_samples,
     })
 }
 
@@ -774,6 +821,25 @@ pub fn generate_simple_background_pdf(
     let card_h = card_height_mm * crate::geometry::MM;
     build_simple_background_pdf(card_w, card_h, fill)
         .map_err(|e| JsError::new(&e.to_string()))
+}
+
+// Encode `text` as a QR matrix for the live preview. Returns the module grid as
+// `[modules_per_side, ...one byte per module]` (1 = dark, row-major from the top,
+// quiet zone excluded — the caller insets it). `ecc` is "L", "M", "Q" or "H".
+//
+// This is the same encoder the generated PDF uses (`qr_matrix_bits`), deliberately:
+// the preview must draw the exact symbol that ends up on the card, and going through
+// wasm avoids a second QR implementation in TypeScript that could drift from it.
+#[wasm_bindgen]
+pub fn qr_matrix(text: &str, ecc: &str) -> Result<Vec<u8>, JsError> {
+    let ecc = ecc.parse::<QrEcc>().map_err(|e| JsError::new(&e))?;
+    let (n, bits) = crate::generate::qr::qr_matrix_bits(text, ecc)
+        .map_err(|e| JsError::new(&format!("QR payload too long to encode: {e}")))?;
+    // 177 is the largest symbol, so the side always fits in the leading byte.
+    let mut out = Vec::with_capacity(1 + bits.len());
+    out.push(n as u8);
+    out.extend_from_slice(&bits);
+    Ok(out)
 }
 
 // Generate a single-page background PDF sized `card_width_mm` x

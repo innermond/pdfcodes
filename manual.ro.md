@@ -637,6 +637,43 @@ câmpurile se aplică **doar cuvântului selectat**.
 
 ![Panoul de proprietăți al unui cuvânt, cu grupurile Tipografie, Poziție, Stil, Fundal text și Contur text](manual-assets/s3-properties.png)
 
+**Desenează codul ca:** fiecare cod se desenează fie ca **Text** (litere, varianta
+implicită), fie ca **Cod QR** — codul QR al codului respectiv, în locul lui.
+Comutarea pe *Cod QR* înlocuiește grupul Tipografie cu grupul **Cod QR** de mai
+jos și ascunde *Contur text* (conturarea marginilor modulelor doar le îngroașă și
+strică lizibilitatea simbolului). Restul — poziția, alinierea, culoarea,
+opacitatea, modul de amestecare, rotația, oglindirea și fundalul textului —
+funcționează exact ca la text.
+
+> Ca să tipărești **și** codul ca text, **și** codul QR, folosește două coduri:
+> rândul din CSV trebuie să conțină valoarea de două ori (două câmpuri), unul
+> setat pe *Text*, celălalt pe *Cod QR*. Un rând cu un singur câmp desenează un
+> singur cod.
+
+**Cod QR** (doar când tipul e *Cod QR*):
+
+- **Dimensiune QR (mm)** — latura pătratului, **cu tot cu zona liberă** din jurul
+  simbolului — adică spațiul total pe care trebuie să-l păstrezi liber pe carton.
+  Spre deosebire de text, **Y (mm)** e **marginea de jos** a pătratului (un cod QR
+  nu are linie de bază).
+- **Corecție erori** — `L` (~7%) / `M` (~15%, implicit) / `Q` (~25%) / `H` (~30%).
+  Un nivel mai mare rezistă la mai multe zgârieturi și la împrăștierea cernelii,
+  dar are nevoie de mai multe module pentru același conținut, deci fiecare modul
+  iese mai mic.
+- **Conținut codificat** — lasă-l **gol** ca să se codifice exact codul. Altfel
+  scrie un șablon în care `{code}` e înlocuit cu codul fiecărui rând — de obicei o
+  adresă web, de exemplu `https://exemplu.ro/v?c={code}`.
+
+![Grupul „Cod QR”: tipul, dimensiunea, corecția de erori și șablonul de conținut](manual-assets/s3-qr.png)
+
+> **Ai grijă la dimensiunea modulului.** Un cod QR e o grilă de pătrățele
+> („module”); dacă unul iese mai mic de **0,5 mm**, aplicația te avertizează,
+> pentru că sub această mărime tipărirea și scanarea devin nesigure. Soluția e ori
+> o *Dimensiune QR* mai mare, ori un conținut mai scurt (o adresă mai scurtă sau
+> un nivel de corecție mai mic). Dacă conținutul nu încape în niciun cod QR,
+> aplicația te anunță, iar codul e lăsat deoparte — generarea reușește oricum, iar
+> panoul de rezultat listează rândurile afectate.
+
 **Tipografie:**
 
 - **Dimensiune font (pt)** — mărimea textului.

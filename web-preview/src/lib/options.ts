@@ -78,12 +78,54 @@ export const BLEND_MODES: BlendMode[] = [
   'luminosity',
 ]
 
+// How a code is drawn: as text (glyphs from the chosen font) or as the QR code of
+// its own value. A QR occupies a square instead of a glyph run, so `qrSizeMm`
+// replaces `fontSizePt` for it; everything else (position, alignment, color,
+// background, rotation) works the same way. See `qr_sizes_mm` in src/options.rs.
+export type CodeKind = 'text' | 'qr'
+
+// QR error-correction level, matching `QrEcc` in src/qr.rs. Higher levels survive
+// more print damage but need more modules for the same payload.
+export type QrEcc = 'L' | 'M' | 'Q' | 'H'
+
+export const QR_ECC_LEVELS: QrEcc[] = ['L', 'M', 'Q', 'H']
+
+// The placeholder replaced with the code's own text when building a QR payload,
+// matching `CODE_PLACEHOLDER` in src/generate/qr.rs.
+export const QR_CODE_PLACEHOLDER = '{code}'
+
+// Quiet-zone width in modules kept inside the QR square, matching
+// `DEFAULT_QUIET_MODULES` in src/generate/qr.rs.
+export const QR_QUIET_MODULES = 4
+
+// Smallest module size (mm) a QR should print at to stay scannable, matching
+// `QR_MIN_MODULE_MM` in src/generate/cards.rs. The UI warns below this.
+export const QR_MIN_MODULE_MM = 0.5
+
+// The payload a QR word encodes: its template with `{code}` substituted, or the
+// bare code when no template is set. Mirrors `qr_payload` in src/generate/qr.rs.
+export function qrPayload(word: WordStyle): string {
+  if (!word.qrTemplate) return word.text
+  return word.qrTemplate.split(QR_CODE_PLACEHOLDER).join(word.text)
+}
+
 // Per-word style, mirroring the per-word arrays in the main app's "Stil
 // text" section (web/src/lib/options.ts). `null` means "not set", i.e. the
 // generator falls back to its default (alignment-based X, auto background
 // width, etc.)
 export interface WordStyle {
   text: string
+  // 'text' draws the glyphs; 'qr' replaces them with the code's QR square. The
+  // `qr*` fields below only apply to 'qr', and `fontSizePt`/`charSpacingPt`/
+  // `contourColor` only to 'text'.
+  kind: CodeKind
+  // Side of the QR square in mm, quiet zone included — the real footprint on the
+  // card. Ignored when `kind` is 'text'.
+  qrSizeMm: number
+  qrEcc: QrEcc
+  // Payload template; `{code}` is replaced with this word's text. Empty encodes
+  // the bare code.
+  qrTemplate: string
   fontSizePt: number
   align: Align
   valign: VAlign
@@ -110,6 +152,13 @@ export interface WordStyle {
 export function defaultWordStyle(index: number): WordStyle {
   return {
     text: '',
+    // Codes are text unless the user switches this word to QR. Presets saved
+    // before QR existed have no `kind`, and App spreads this default under them,
+    // so they keep loading as text.
+    kind: 'text',
+    qrSizeMm: 12,
+    qrEcc: 'M',
+    qrTemplate: '',
     fontSizePt: 9,
     align: 'center',
     // The primary word starts dead-centre on the card: `align: 'center'` +
@@ -155,9 +204,14 @@ export function verticalAlignYMm(
 ): number {
   if (valign === 'custom') return word.yMm
 
-  let ascentMm = (word.fontSizePt * 0.8) / MM
-  let descentMm = (word.fontSizePt * 0.2) / MM
-  const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
+  // A QR sits entirely above its anchor — `yMm` is the square's bottom edge, not a
+  // baseline — so its box is the square itself. Same convention as `qr_box` in
+  // src/generate/cards.rs, which is what keeps a snapped QR where the preview shows it.
+  let ascentMm = word.kind === 'qr' ? word.qrSizeMm : (word.fontSizePt * 0.8) / MM
+  let descentMm = word.kind === 'qr' ? 0 : (word.fontSizePt * 0.2) / MM
+  const ctx = word.kind === 'qr' || typeof document === 'undefined'
+    ? null
+    : document.createElement('canvas').getContext('2d')
   if (ctx) {
     ctx.font = `${word.fontSizePt}px ${fontFamily}`
     const tm = ctx.measureText(word.text || 'X')
@@ -203,8 +257,13 @@ export function horizontalAlignXMm(
   // to the card margin so callers that don't distinguish keep the old behavior.
   contourInsetMm: number = safeMarginMm,
 ): number {
-  let textWidthMm = (word.fontSizePt * 0.6 * Math.max(1, word.text.length)) / MM
-  const ctx = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
+  // A QR is as wide as it is tall, so its square is the box the alignment frames.
+  let textWidthMm = word.kind === 'qr'
+    ? word.qrSizeMm
+    : (word.fontSizePt * 0.6 * Math.max(1, word.text.length)) / MM
+  const ctx = word.kind === 'qr' || typeof document === 'undefined'
+    ? null
+    : document.createElement('canvas').getContext('2d')
   if (ctx) {
     ctx.font = `${word.fontSizePt}px ${fontFamily}`
     const charCount = Math.max(1, word.text.length)
@@ -383,7 +442,10 @@ export function buildJsOptions(
   contourFootprintHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
-  const hasContour = words.some((w) => w.contourColor !== null)
+  // A QR ignores the glyph-outline stroke (it would only fatten the modules), so a
+  // QR word never contributes one.
+  const hasContour = words.some((w) => w.kind === 'text' && w.contourColor !== null)
+  const hasQr = words.some((w) => w.kind === 'qr')
 
   return {
     hostWidthMm: page.hostWidthMm,
@@ -438,13 +500,24 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.backgroundAlpha))
       : new Float32Array(),
     textBackgroundBlendModes: hasBackground ? words.map((w) => w.backgroundBlendMode) : [],
-    textContours: hasContour ? words.map((w) => w.contourColor ?? 'none') : [],
+    textContours: hasContour ? words.map((w) => (w.kind === 'qr' ? 'none' : (w.contourColor ?? 'none'))) : [],
     textContourWidthsMm: hasContour
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
     textCharSpacingsPt: new Float32Array(words.map((w) => w.charSpacingPt)),
     splitChars: separator,
+    // QR positions: a side of 0 means "draw this position as text", so one array
+    // carries both the switch and the size (see `qr_sizes_mm` in src/options.rs).
+    // Sent only when at least one word is a QR, like the background/contour arrays.
+    ...(hasQr
+      ? {
+          qrSizesMm: new Float32Array(words.map((w) => (w.kind === 'qr' ? w.qrSizeMm : 0))),
+          qrEcc: words.map((w) => w.qrEcc),
+          qrTemplates: words.map((w) => (w.kind === 'qr' ? w.qrTemplate : '')),
+          qrQuietModules: QR_QUIET_MODULES,
+        }
+      : {}),
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),

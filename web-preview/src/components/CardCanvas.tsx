@@ -5,6 +5,7 @@ import { colorToCss } from '../lib/cmyk'
 import { contourMaskPathD } from '../lib/contourMask'
 import { flattenPathD, rotate, type Pt } from '../lib/contourKeepRegion'
 import { WordOverlay } from './WordOverlay'
+import { QrOverlay } from './QrOverlay'
 import { ContourOverlay } from './ContourOverlay'
 
 // Describes the cut region for the "dim exterior" overlay. A preset shape carries
@@ -367,21 +368,39 @@ export function CardCanvas({
           onChange={onContourOffsetChange}
         />
       )}
-      {words.map((word, index) => (
-        <WordOverlay
-          key={index}
-          word={word}
-          cardWidthPt={cardWidthPt}
-          cardHeightPt={cardHeightPt}
-          safeMarginMm={safeMarginMm}
-          backgroundPaddingMm={backgroundPaddingMm}
-          fontFamily={fontFamilyForWord(fonts, index)}
-          selected={selectedIndex === index && !contourSelected}
-          svgRef={svgRef}
-          onSelect={() => onSelect(index)}
-          onChange={(next) => onChangeWord(index, next)}
-        />
-      ))}
+      {words.map((word, index) =>
+        // A QR code replaces the glyphs with a module square; everything else about
+        // the code (position, selection, dragging) is the same, so the two overlays
+        // share ./codeInteraction. Mirrors the branch in src/generate/cards.rs.
+        word.kind === 'qr' ? (
+          <QrOverlay
+            key={index}
+            word={word}
+            cardWidthPt={cardWidthPt}
+            cardHeightPt={cardHeightPt}
+            safeMarginMm={safeMarginMm}
+            backgroundPaddingMm={backgroundPaddingMm}
+            selected={selectedIndex === index && !contourSelected}
+            svgRef={svgRef}
+            onSelect={() => onSelect(index)}
+            onChange={(next) => onChangeWord(index, next)}
+          />
+        ) : (
+          <WordOverlay
+            key={index}
+            word={word}
+            cardWidthPt={cardWidthPt}
+            cardHeightPt={cardHeightPt}
+            safeMarginMm={safeMarginMm}
+            backgroundPaddingMm={backgroundPaddingMm}
+            fontFamily={fontFamilyForWord(fonts, index)}
+            selected={selectedIndex === index && !contourSelected}
+            svgRef={svgRef}
+            onSelect={() => onSelect(index)}
+            onChange={(next) => onChangeWord(index, next)}
+          />
+        ),
+      )}
       {bgNudgeMode && onBackgroundOffsetChange && (
         <BackgroundPanOverlay
           svgRef={svgRef}

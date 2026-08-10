@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { MM, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
+import { useArrowNudge, useCodeDrag } from '../lib/codeDrag'
+import { SelectionAnts } from './SelectionAnts'
 
 interface TextMetrics {
   width: number
@@ -97,51 +99,11 @@ export function WordOverlay({
   const yPt = word.yMm * MM
   const ySvg = cardHeightPt - yPt
 
-  // Arrow keys nudge the selected word. The step is 1/100 of the card
-  // dimension along the axis of movement (width for left/right, height for
-  // up/down), matching how the printed card is proportioned. The handler
-  // closes over the current resolved position, so it re-subscribes when the
-  // word moves.
-  const startXMm = word.xMm ?? xPt / MM
-  const startYMm = word.yMm
-  const stepXMm = cardWidthPt / MM / 100
-  const stepYMm = cardHeightPt / MM / 100
-  useEffect(() => {
-    if (!selected) return
-    // Bind to the preview SVG (focusable) rather than `window`, so arrows only
-    // nudge the word while the preview is focused — arrows pressed while a
-    // select/input elsewhere has focus won't move the code.
-    const svg = svgRef.current
-    if (!svg) return
-    function handleKey(e: KeyboardEvent) {
-      // Nudge only the axis pressed, so the other axis keeps its alignment: a
-      // horizontal nudge must not freeze the vertical snap, and a vertical nudge
-      // must not turn a left/center/right word into a custom X position.
-      const next: Partial<WordStyle> = {}
-      switch (e.key) {
-        case 'ArrowLeft':
-          next.xMm = startXMm - stepXMm
-          break
-        case 'ArrowRight':
-          next.xMm = startXMm + stepXMm
-          break
-        case 'ArrowUp':
-          next.yMm = startYMm + stepYMm
-          next.valign = 'custom'
-          break
-        case 'ArrowDown':
-          next.yMm = startYMm - stepYMm
-          next.valign = 'custom'
-          break
-        default:
-          return
-      }
-      e.preventDefault()
-      onChange(next)
-    }
-    svg.addEventListener('keydown', handleKey)
-    return () => svg.removeEventListener('keydown', handleKey)
-  }, [selected, startXMm, startYMm, stepXMm, stepYMm, onChange, svgRef])
+  // Dragging and arrow-key nudging are identical for every kind of code, so they
+  // live in ./codeInteraction and are shared with QrOverlay.
+  const resolvedXMm = word.xMm ?? xPt / MM
+  useArrowNudge({ selected, svgRef, xMm: resolvedXMm, yMm: word.yMm, cardWidthPt, cardHeightPt, onChange })
+  const handlePointerDown = useCodeDrag({ svgRef, xMm: resolvedXMm, yMm: word.yMm, onSelect, onChange })
 
   if (!metrics) {
     return (
@@ -194,64 +156,6 @@ export function WordOverlay({
   const rectYSvg = ySvg - metrics.ascent - padPt
   const rectHPt = metrics.ascent + metrics.descent + 2 * padPt
 
-  function handlePointerDown(e: ReactPointerEvent<SVGGElement>) {
-    e.stopPropagation()
-    onSelect()
-    const svg = svgRef.current
-    if (!svg) return
-    // Focus the preview so arrow keys nudge this word (and not whatever control
-    // last had focus). preventScroll avoids the page jumping to the canvas.
-    svg.focus({ preventScroll: true })
-    const viewBox = svg.viewBox.baseVal
-    const rect = svg.getBoundingClientRect()
-    const scaleX = viewBox.width / rect.width
-    const scaleY = viewBox.height / rect.height
-
-    const startClientX = e.clientX
-    const startClientY = e.clientY
-    const startXMm = word.xMm ?? xPt / MM
-    const startYMm = word.yMm
-    const target = e.currentTarget
-
-    target.setPointerCapture(e.pointerId)
-
-    function handleMove(ev: PointerEvent) {
-      let dxUser = (ev.clientX - startClientX) * scaleX
-      let dyUser = (ev.clientY - startClientY) * scaleY
-      // Holding Shift locks the drag to a straight line along the dominant
-      // axis (horizontal or vertical), zeroing the smaller component.
-      if (ev.shiftKey) {
-        if (Math.abs(dxUser) >= Math.abs(dyUser)) {
-          dyUser = 0
-        } else {
-          dxUser = 0
-        }
-      }
-      // Only write the axis that actually moved, so a single-axis drag leaves
-      // the other axis's alignment intact: a purely horizontal drag keeps the
-      // vertical snap (valign), and a purely vertical drag keeps a
-      // left/center/right word from freezing into a custom X position.
-      const next: Partial<WordStyle> = {}
-      if (dxUser !== 0) next.xMm = startXMm + dxUser / MM
-      if (dyUser !== 0) {
-        next.yMm = startYMm - dyUser / MM
-        // Moving the word vertically overrides any snapped vertical alignment.
-        next.valign = 'custom'
-      }
-      if (next.xMm === undefined && next.yMm === undefined) return
-      onChange(next)
-    }
-
-    function handleUp(ev: PointerEvent) {
-      window.removeEventListener('pointermove', handleMove)
-      window.removeEventListener('pointerup', handleUp)
-      target.releasePointerCapture(ev.pointerId)
-    }
-
-    window.addEventListener('pointermove', handleMove)
-    window.addEventListener('pointerup', handleUp)
-  }
-
   return (
     // The flip/rotate `transform` is applied to each child individually rather
     // than to this wrapping group on purpose: a transformed group forms its own
@@ -260,49 +164,7 @@ export function WordOverlay({
     // is defined in this (untransformed) parent space, so applying it per child
     // is visually identical to transforming the group.
     <g onPointerDown={handlePointerDown} className="cursor-move">
-      {selected && (
-        // "Marching ants" selection: a static white dashed track with dark
-        // dashes filling its gaps, both animated in lockstep so the dashes
-        // appear to crawl. The two colors keep it visible on any background.
-        <g transform={transform} pointerEvents="none">
-          <rect
-            x={selX}
-            y={selY}
-            width={selW}
-            height={selH}
-            fill="none"
-            stroke="#ffffff"
-            strokeWidth={0.75}
-            strokeDasharray="4 4"
-            vectorEffect="non-scaling-stroke"
-          >
-            <animate
-              attributeName="stroke-dashoffset"
-              values="0;8"
-              dur="0.5s"
-              repeatCount="indefinite"
-            />
-          </rect>
-          <rect
-            x={selX}
-            y={selY}
-            width={selW}
-            height={selH}
-            fill="none"
-            stroke="#1e3a8a"
-            strokeWidth={0.75}
-            strokeDasharray="4 4"
-            vectorEffect="non-scaling-stroke"
-          >
-            <animate
-              attributeName="stroke-dashoffset"
-              values="4;12"
-              dur="0.5s"
-              repeatCount="indefinite"
-            />
-          </rect>
-        </g>
-      )}
+      {selected && <SelectionAnts x={selX} y={selY} width={selW} height={selH} transform={transform} />}
       {word.background !== null && (
         <rect
           transform={transform}

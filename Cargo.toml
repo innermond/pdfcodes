@@ -22,6 +22,9 @@ kurbo = "0.13"
 # Only the pure-Rust PNG + JPEG codecs (no C deps, wasm32-friendly). Default
 # features pull in every codec and balloon the wasm binary, so keep it minimal.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# QR encoder for codes rendered as a symbol instead of text. Pure Rust with no
+# dependencies of its own, so it costs the wasm binary only its own ~20 KB.
+qrcodegen = "1.8"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

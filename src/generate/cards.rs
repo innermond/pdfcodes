@@ -6,8 +6,10 @@ use crate::align::TextAlign;
 use crate::blend::BlendMode;
 use crate::color::TextColor;
 use crate::fonts::{EmbeddedFont, encode_text_gids};
+use crate::generate::qr::{qr_matrix_bits, qr_payload, qr_rect_operations};
 use crate::geometry::{apply_matrix, region_contains_outline, word_transform, CardLayout, GlyphOutline, MM};
 use crate::options::Options;
+use crate::qr::QrEcc;
 
 // Default character spacing (PDF `Tc`, in points) when `text_char_spacing_pt`
 // doesn't specify a value for a word. Zero means glyphs use their natural
@@ -28,6 +30,45 @@ const OVERFLOW_EPS_PT: f32 = 0.1;
 pub(crate) struct OverflowReport {
     pub count: usize,
     pub samples: Vec<String>,
+    // Rows holding a QR whose payload is too long to encode at any version/ECC. The
+    // QR is skipped rather than failing the whole job, so these are reported the same
+    // way as overflows: `qr_failure_count` counts the rows, `qr_failures` holds every
+    // distinct one.
+    pub qr_failure_count: usize,
+    pub qr_failures: Vec<String>,
+}
+
+// The rectangle a code occupies relative to its anchor point: `width` across,
+// `ascent` above and `descent` below (negative, like a font's descender). Text
+// fills it from the font's line metrics; a QR is a square sitting entirely above
+// its anchor (`ascent` = the side, `descent` = 0). Placement and the overflow
+// check work off this box alone, so both kinds of code share them.
+#[derive(Clone, Copy)]
+struct WordBox {
+    width: f32,
+    ascent: f32,
+    descent: f32,
+}
+
+// A per-word array entry under the shared broadcast rule: a single entry applies to
+// every word, an empty array means "unset" (the caller's default), anything else is
+// indexed by position. Returns `None` rather than panicking on a short array — the
+// row validation in `build_card_xobjects` reports that mismatch properly.
+fn pick_word<T: Copy>(values: &[T], idx: usize) -> Option<T> {
+    match values.len() {
+        0 => None,
+        1 => Some(values[0]),
+        _ => values.get(idx).copied(),
+    }
+}
+
+// `pick_word` for arrays whose element isn't `Copy`.
+fn pick_word_ref<T>(values: &[T], idx: usize) -> Option<&T> {
+    match values.len() {
+        0 => None,
+        1 => Some(&values[0]),
+        _ => values.get(idx),
+    }
 }
 
 // Does a code's rendered glyph outline lie fully inside the cut contour's keep
@@ -98,14 +139,50 @@ fn code_fits_contour(
     true
 }
 
+// Does a QR's square lie fully inside the cut contour's keep region? A QR is a
+// filled square, so its four corners — put through the same rotation/flip transform
+// the draw path uses (see `word_transform`) — describe its entire footprint, where
+// text needs every glyph outline.
+#[allow(clippy::too_many_arguments)]
+fn qr_fits_contour(
+    size_pt: f32,
+    x: f32,
+    y: f32,
+    rotation_deg: f32,
+    flip_x: bool,
+    flip_y: bool,
+    keep: &[Vec<(f32, f32)>],
+    inset_pt: f32,
+) -> bool {
+    let matrix = word_transform(rotation_deg, flip_x, flip_y, x + size_pt / 2.0, y + size_pt / 2.0);
+    let mut corners = vec![
+        (x, y),
+        (x + size_pt, y),
+        (x + size_pt, y + size_pt),
+        (x, y + size_pt),
+    ];
+    if let Some(m) = &matrix {
+        for p in corners.iter_mut() {
+            *p = apply_matrix(m, *p);
+        }
+    }
+    region_contains_outline(keep, std::slice::from_ref(&corners), inset_pt)
+}
+
 // Step size (points) the overflow corrector lowers the font by when hunting for a
 // size that fits. Small enough to look tight, coarse enough to bound the loop.
 const CORRECT_STEP_PT: f32 = 0.5;
 
+// Smallest module a QR may print at and still scan reliably — the usual print rule
+// of thumb. It floors the overflow corrector in place of `min_font_size_pt`, which
+// is a type size and means nothing for a symbol: shrinking a QR past this point
+// yields something that fits the cut but no scanner can read.
+const QR_MIN_MODULE_MM: f32 = 0.5;
+
 // Per-position layout inputs that don't depend on the font size, resolved once so
 // the correction pre-pass and the render loop agree (each field falls back to a
 // single shared entry, matching the per-word `len == 1 ? 0 : idx` rule elsewhere).
-struct WordFit {
+struct WordFit<'a> {
     align: TextAlign,
     char_spacing: f32,
     rotation_deg: f32,
@@ -114,11 +191,19 @@ struct WordFit {
     y: f32,
     configured_fs: f32,
     text_x_mm: Option<f32>,
+    // > 0 turns this position into a QR of that side (mm) instead of a glyph run;
+    // the two fields below then describe the symbol. See src/generate/qr.rs.
+    qr_size_mm: f32,
+    qr_ecc: QrEcc,
+    qr_template: &'a str,
 }
 
-fn resolve_word_fit(opts: &Options, y_positions: &[f32], idx: usize) -> WordFit {
+fn resolve_word_fit<'a>(opts: &'a Options, y_positions: &[f32], idx: usize) -> WordFit<'a> {
     let pick = |len: usize| if len == 1 { 0 } else { idx };
     WordFit {
+        qr_size_mm: pick_word(&opts.qr_sizes_mm, idx).unwrap_or(0.0),
+        qr_ecc: pick_word(&opts.qr_ecc, idx).unwrap_or_default(),
+        qr_template: pick_word_ref(&opts.qr_templates, idx).map(String::as_str).unwrap_or(""),
         align: opts.align[pick(opts.align.len())],
         char_spacing: if opts.text_char_spacing_pt.is_empty() {
             DEFAULT_CHAR_SPACING_PT
@@ -194,6 +279,16 @@ fn contour_frame(opts: &Options, card_w: f32) -> (f32, f32) {
     (left, width)
 }
 
+// The legacy card-confinement check, used when no cut contour was supplied: does the
+// code's box stay within the card's safe margin? Horizontal only, as it always has
+// been — the vertical position is the user's to place. Shared by text and QR.
+fn box_overflows_card(x: f32, b: WordBox, card_w: f32, safe_margin: f32) -> bool {
+    let available_w = card_w - 2.0 * safe_margin;
+    b.width > available_w + OVERFLOW_EPS_PT
+        || x < safe_margin - OVERFLOW_EPS_PT
+        || x + b.width > card_w - safe_margin + OVERFLOW_EPS_PT
+}
+
 // Would this code overflow at font size `fs`? Same predicate as the render loop:
 // contour containment when a cut is supplied, else the card/safe-margin extent.
 #[allow(clippy::too_many_arguments)]
@@ -201,7 +296,7 @@ fn word_overflows(
     ef: &EmbeddedFont,
     fs: f32,
     advance_per_pt: f32,
-    wf: &WordFit,
+    wf: &WordFit<'_>,
     num_chars: f32,
     text: &str,
     card_w: f32,
@@ -220,11 +315,54 @@ fn word_overflows(
             x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep, inset_pt,
         )
     } else {
-        let available_w = card_w - 2.0 * safe_margin;
-        text_width > available_w + OVERFLOW_EPS_PT
-            || x < safe_margin - OVERFLOW_EPS_PT
-            || x + text_width > card_w - safe_margin + OVERFLOW_EPS_PT
+        box_overflows_card(x, WordBox { width: text_width, ascent: 0.0, descent: 0.0 }, card_w, safe_margin)
     }
+}
+
+// `word_overflows` for a QR: the same two branches, measured against the square.
+fn qr_overflows(
+    size_pt: f32,
+    wf: &WordFit<'_>,
+    card_w: f32,
+    safe_margin: f32,
+    keep: &[Vec<(f32, f32)>],
+    inset_pt: f32,
+    contour: (f32, f32),
+) -> bool {
+    let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, size_pt, contour, inset_pt);
+    if !keep.is_empty() {
+        !qr_fits_contour(size_pt, x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, keep, inset_pt)
+    } else {
+        box_overflows_card(x, qr_box(size_pt), card_w, safe_margin)
+    }
+}
+
+// The square a QR of side `size_pt` occupies: it sits entirely above its anchor, so
+// the anchor `y` is the symbol's bottom edge rather than a text baseline.
+fn qr_box(size_pt: f32) -> WordBox {
+    WordBox { width: size_pt, ascent: size_pt, descent: 0.0 }
+}
+
+// Largest square side in points (stepping down by CORRECT_STEP_PT) at which the QR
+// fits. `modules_total` is the symbol's module count including the quiet zone, which
+// sets the floor: never shrink a module below `QR_MIN_MODULE_MM`.
+#[allow(clippy::too_many_arguments)]
+fn max_fitting_qr_pt(
+    configured_pt: f32,
+    modules_total: usize,
+    wf: &WordFit<'_>,
+    card_w: f32,
+    safe_margin: f32,
+    keep: &[Vec<(f32, f32)>],
+    inset_pt: f32,
+    contour: (f32, f32),
+) -> f32 {
+    let floor = (QR_MIN_MODULE_MM * MM * modules_total as f32).min(configured_pt);
+    let mut size = configured_pt;
+    while size > floor && qr_overflows(size, wf, card_w, safe_margin, keep, inset_pt, contour) {
+        size = (size - CORRECT_STEP_PT).max(floor);
+    }
+    size
 }
 
 // Largest font size in [min_fs, configured] (stepping down by CORRECT_STEP_PT)
@@ -235,7 +373,7 @@ fn max_fitting_fs(
     configured: f32,
     min_fs: f32,
     advance_per_pt: f32,
-    wf: &WordFit,
+    wf: &WordFit<'_>,
     num_chars: f32,
     text: &str,
     card_w: f32,
@@ -256,6 +394,9 @@ fn max_fitting_fs(
 // code in that position fits (clamped to [min, configured]). Codes that can't fit
 // even at the minimum pull the column no lower than the minimum (they stay flagged
 // at render). Positions beyond a record's word count are skipped.
+//
+// The returned size is in points either way: a font size for a text position, the
+// square's side for a QR position (which has no font size to speak of).
 fn compute_uniform_fs(
     records: &[csv::StringRecord],
     opts: &Options,
@@ -267,27 +408,117 @@ fn compute_uniform_fs(
     let n_pos = opts.font_sizes.len();
     let min_fs = opts.min_font_size_pt;
     let inset_pt = opts.contour_inset_mm * MM;
-    let mut uniform = opts.font_sizes.clone();
+    let quiet = opts.qr_quiet_modules as usize;
+    let mut uniform: Vec<f32> = (0..n_pos)
+        .map(|idx| {
+            let wf = resolve_word_fit(opts, y_positions, idx);
+            if wf.qr_size_mm > 0.0 { wf.qr_size_mm * MM } else { wf.configured_fs }
+        })
+        .collect();
     for record in records {
         for (idx, text) in record.iter().enumerate() {
             if idx >= n_pos || text.is_empty() {
                 continue;
             }
             let wf = resolve_word_fit(opts, y_positions, idx);
-            let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx.min(embedded_fonts.len() - 1) };
-            let ef = &embedded_fonts[font_idx];
-            let advance_per_pt = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
-            let num_chars = text.chars().count() as f32;
-            let fit = max_fitting_fs(
-                ef, wf.configured_fs, min_fs, advance_per_pt, &wf, num_chars, text,
-                card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
-            );
+            let fit = if wf.qr_size_mm > 0.0 {
+                // A payload too long to encode is reported at render time; it must
+                // not drag the whole column's size down here.
+                let Ok((n, _)) = qr_matrix_bits(&qr_payload(wf.qr_template, text), wf.qr_ecc) else {
+                    continue;
+                };
+                max_fitting_qr_pt(
+                    wf.qr_size_mm * MM, n + 2 * quiet, &wf,
+                    card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
+                )
+            } else {
+                let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx.min(embedded_fonts.len() - 1) };
+                let ef = &embedded_fonts[font_idx];
+                let advance_per_pt = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
+                let num_chars = text.chars().count() as f32;
+                max_fitting_fs(
+                    ef, wf.configured_fs, min_fs, advance_per_pt, &wf, num_chars, text,
+                    card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
+                )
+            };
             if fit < uniform[idx] {
                 uniform[idx] = fit;
             }
         }
     }
     uniform
+}
+
+// Push the per-word rotate/flip transform about the box's center, if the word has
+// one. Uses the same `word_transform` matrix the contour fit-check applies, so what
+// is drawn and what is tested against the cut can never diverge.
+fn push_word_transform(ops: &mut Vec<Operation>, rotation_deg: f32, flip_x: bool, flip_y: bool, cx: f32, cy: f32) {
+    if let Some([a, b, c, d, e, f]) = word_transform(rotation_deg, flip_x, flip_y, cx, cy) {
+        ops.push(Operation::new("cm", vec![
+            Object::Real(a), Object::Real(b), Object::Real(c),
+            Object::Real(d), Object::Real(e), Object::Real(f),
+        ]));
+    }
+}
+
+// Push the filled rectangle drawn behind a code, sized to its box (plus padding) or
+// to an explicit width centered on it. Shared by text and QR: for a QR the box is
+// the module square, so the rectangle frames the symbol and its quiet zone — which
+// is what makes a QR readable over artwork.
+#[allow(clippy::too_many_arguments)]
+fn push_code_background(
+    ops: &mut Vec<Operation>,
+    ext_gstates: &mut Vec<(String, Option<f32>, Option<BlendMode>)>,
+    color: TextColor,
+    alpha: f32,
+    blend: BlendMode,
+    x: f32,
+    y: f32,
+    b: WordBox,
+    explicit_width: Option<f32>,
+    pad: f32,
+) {
+    ops.push(Operation::new("q", vec![])); // save
+    let alpha = if alpha < 1.0 { Some(alpha) } else { None };
+    let blend = if blend != BlendMode::Normal { Some(blend) } else { None };
+    if let Some(gs_name) = ext_gstate_name(ext_gstates, alpha, blend) {
+        ops.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
+    }
+    push_fill_color(ops, color);
+    let (rect_x, rect_w) = match explicit_width {
+        Some(w) => (x + b.width / 2.0 - w / 2.0, w),
+        None => (x - pad, b.width + 2.0 * pad),
+    };
+    ops.push(Operation::new("re", vec![
+        Object::Real(rect_x), Object::Real(y + b.descent - pad),
+        Object::Real(rect_w), Object::Real((b.ascent - b.descent) + 2.0 * pad),
+    ]));
+    ops.push(Operation::new("f", vec![]));
+    ops.push(Operation::new("Q", vec![])); // restore
+}
+
+// Set the non-stroking color, in the color space the value was given in.
+fn push_fill_color(ops: &mut Vec<Operation>, color: TextColor) {
+    match color {
+        TextColor::Rgb(r, g, b) => {
+            ops.push(Operation::new("rg", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));
+        }
+        TextColor::Cmyk(c, m, y, k) => {
+            ops.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
+        }
+    }
+}
+
+// Outline a code's box in red for `--debug`.
+fn push_debug_box(ops: &mut Vec<Operation>, x: f32, y: f32, b: WordBox) {
+    ops.push(Operation::new("q", vec![])); // save
+    ops.push(Operation::new("RG", vec![Object::Real(1.0), Object::Real(0.0), Object::Real(0.0)])); // red stroke
+    ops.push(Operation::new("re", vec![
+        Object::Real(x), Object::Real(y + b.descent),
+        Object::Real(b.width), Object::Real(b.ascent - b.descent),
+    ]));
+    ops.push(Operation::new("S", vec![]));
+    ops.push(Operation::new("Q", vec![])); // restore
 }
 
 // Build a Form XObject (background + label text) for each CSV row, returning
@@ -304,6 +535,7 @@ pub(crate) fn build_card_xobjects(
     let card_box = layout.card_box.clone();
     let mut overflow = OverflowReport::default();
     let mut seen = std::collections::HashSet::new();
+    let mut qr_seen = std::collections::HashSet::new();
 
     // Rows are \n-separated; fields within a row are separated by split_chars
     // (any character, not necessarily the CSV standard comma).
@@ -440,6 +672,24 @@ pub(crate) fn build_card_xobjects(
                 txt, texts.len(), opts.text_contour_blend_modes.len()
             ).into());
         }
+        if opts.qr_sizes_mm.len() > 1 && texts.len() > opts.qr_sizes_mm.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} QR size(s) configured",
+                txt, texts.len(), opts.qr_sizes_mm.len()
+            ).into());
+        }
+        if opts.qr_ecc.len() > 1 && texts.len() > opts.qr_ecc.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} QR error-correction level(s) configured",
+                txt, texts.len(), opts.qr_ecc.len()
+            ).into());
+        }
+        if opts.qr_templates.len() > 1 && texts.len() > opts.qr_templates.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} QR payload template(s) configured",
+                txt, texts.len(), opts.qr_templates.len()
+            ).into());
+        }
 
         let mut operations = Vec::new();
         let mut ext_gstates: Vec<(String, Option<f32>, Option<BlendMode>)> = Vec::new();
@@ -451,11 +701,12 @@ pub(crate) fn build_card_xobjects(
         // (not the offending field) so the user can find it in their source data —
         // a field may be a merge/unmerge that doesn't appear verbatim there.
         let mut row_overflows = false;
+        // Likewise for a QR whose payload is too long to encode: the symbol is left
+        // out and the row reported, so one bad row can't sink the whole job.
+        let mut row_qr_failed = false;
 
         for (idx, text) in texts.iter().enumerate() {
             let wf = resolve_word_fit(opts, &y_positions, idx);
-            let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx };
-            let ef = &embedded_fonts[font_idx];
             let align = wf.align;
             let char_spacing = wf.char_spacing;
             let rotation_deg = wf.rotation_deg;
@@ -463,27 +714,10 @@ pub(crate) fn build_card_xobjects(
             let flip_y = wf.flip_y;
             let y = wf.y;
 
-            // Glyph-run width per point, so the size can be re-evaluated cheaply.
-            let advance_per_pt = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
-            let num_chars = text.chars().count() as f32;
-
-            // "Corectare depășire": render at a uniform per-column size (Pe
-            // coloană), an individually shrunk size (Pe cod), or the configured
-            // size when correction is off.
-            let font_size = if let Some(uf) = &uniform_fs {
-                uf[idx]
-            } else if opts.correct_overflow {
-                max_fitting_fs(
-                    ef, wf.configured_fs, opts.min_font_size_pt, advance_per_pt, &wf,
-                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
-                )
-            } else {
-                wf.configured_fs
-            };
-
-            let text_width = word_text_width(advance_per_pt, char_spacing, num_chars, font_size);
-            let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width, contour_frame(opts, card_w), inset_pt);
-
+            // Styling that depends on the word's position alone, resolved before the
+            // text/QR split below because both composite identically: a QR takes its
+            // module color, opacity, blend mode and background rectangle from exactly
+            // the fields the text it replaces would have used.
             let color = if opts.text_colors.is_empty() {
                 TextColor::Rgb(0.0, 0.0, 0.0)
             } else {
@@ -491,15 +725,6 @@ pub(crate) fn build_card_xobjects(
                 opts.text_colors[color_idx]
             };
 
-            let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * font_size;
-            let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * font_size;
-
-            // Note if this field still doesn't fit at the (possibly corrected) size —
-            // the cut contour when supplied, else the card/safe-margin extent. The row
-            // is recorded once, after the loop.
-            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
-                row_overflows = true;
-            }
             let background = if opts.text_backgrounds.is_empty() {
                 None
             } else {
@@ -555,53 +780,114 @@ pub(crate) fn build_card_xobjects(
                 opts.text_contour_blend_modes[blend_idx]
             };
 
-            operations.push(Operation::new("q", vec![])); // save
-            if rotation_deg != 0.0 || flip_x || flip_y {
-                let cx = x + text_width / 2.0;
-                let cy = y + (ascent + descent) / 2.0;
-                let theta = rotation_deg.to_radians();
-                let (sin, cos) = theta.sin_cos();
-                let sx = if flip_x { -1.0 } else { 1.0 };
-                let sy = if flip_y { -1.0 } else { 1.0 };
-                // Combined matrix: translate to center, rotate, flip, translate back.
-                let a = cos * sx;
-                let b = sin * sx;
-                let c = -sin * sy;
-                let d = cos * sy;
-                let e = cx - (a * cx + c * cy);
-                let f = cy - (b * cx + d * cy);
-                operations.push(Operation::new("cm", vec![
-                    Object::Real(a), Object::Real(b), Object::Real(c), Object::Real(d),
-                    Object::Real(e), Object::Real(f),
-                ]));
-            }
 
-            if let Some(bg_color) = background {
-                let pad = opts.text_background_padding_mm * MM;
+            // A QR position replaces the glyph run with a square of modules. It reuses
+            // every placement input above but needs no font, so it branches before the
+            // font lookup — a QR-only position never forces a font upload.
+            if wf.qr_size_mm > 0.0 {
+                let payload = qr_payload(wf.qr_template, text);
+                let Ok((modules, bits)) = qr_matrix_bits(&payload, wf.qr_ecc) else {
+                    // Too long to encode at any version: skip the symbol and report the
+                    // row, rather than failing a job that is otherwise fine.
+                    row_qr_failed = true;
+                    continue;
+                };
+                let total_modules = modules + 2 * opts.qr_quiet_modules as usize;
+
+                // The same three-way size choice as the text path: uniform per column
+                // (Pe coloană), shrunk per code (Pe cod), or exactly as configured.
+                let size = if let Some(uf) = &uniform_fs {
+                    uf[idx]
+                } else if opts.correct_overflow {
+                    max_fitting_qr_pt(
+                        wf.qr_size_mm * MM, total_modules, &wf, card_w, safe_margin,
+                        &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
+                    )
+                } else {
+                    wf.qr_size_mm * MM
+                };
+
+                let b = qr_box(size);
+                let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, b.width, contour_frame(opts, card_w), inset_pt);
+                if qr_overflows(size, &wf, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
+                    row_overflows = true;
+                }
+
                 operations.push(Operation::new("q", vec![])); // save
-                let alpha = if background_alpha < 1.0 { Some(background_alpha) } else { None };
-                let blend = if background_blend_mode != BlendMode::Normal { Some(background_blend_mode) } else { None };
+                // `y` is the square's bottom edge (a QR has no baseline), so the
+                // rotate/flip pivot is the middle of the box either way.
+                push_word_transform(&mut operations, rotation_deg, flip_x, flip_y, x + b.width / 2.0, y + (b.ascent + b.descent) / 2.0);
+
+                if let Some(bg_color) = background {
+                    push_code_background(
+                        &mut operations, &mut ext_gstates, bg_color, background_alpha,
+                        background_blend_mode, x, y, b, background_width, opts.text_background_padding_mm * MM,
+                    );
+                }
+
+                operations.push(Operation::new("q", vec![])); // save
+                let alpha = if text_alpha < 1.0 { Some(text_alpha) } else { None };
+                let blend = if text_blend_mode != BlendMode::Normal { Some(text_blend_mode) } else { None };
                 if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, alpha, blend) {
                     operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
                 }
-                match bg_color {
-                    TextColor::Rgb(r, g, b) => {
-                        operations.push(Operation::new("rg", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));
-                    }
-                    TextColor::Cmyk(c, m, y, k) => {
-                        operations.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
-                    }
-                }
-                let (rect_x, rect_w) = match background_width {
-                    Some(w) => (x + text_width / 2.0 - w / 2.0, w),
-                    None => (x - pad, text_width + 2.0 * pad),
-                };
-                operations.push(Operation::new("re", vec![
-                    Object::Real(rect_x), Object::Real(y + descent - pad),
-                    Object::Real(rect_w), Object::Real((ascent - descent) + 2.0 * pad),
-                ]));
-                operations.push(Operation::new("f", vec![]));
+                push_fill_color(&mut operations, color);
+                operations.extend(qr_rect_operations(modules, &bits, x, y, size, opts.qr_quiet_modules));
                 operations.push(Operation::new("Q", vec![])); // restore
+
+                // No glyph-contour pass: stroking the module edges only fattens them
+                // and costs the symbol its scannability, so `text_contour_colors` is
+                // deliberately ignored for a QR.
+                if opts.debug {
+                    push_debug_box(&mut operations, x, y, b);
+                }
+                operations.push(Operation::new("Q", vec![])); // restore (rotation)
+                continue;
+            }
+
+            let font_idx = if embedded_fonts.len() == 1 { 0 } else { idx };
+            let ef = &embedded_fonts[font_idx];
+
+            // Glyph-run width per point, so the size can be re-evaluated cheaply.
+            let advance_per_pt = advance_sum_per_pt(&ef.face, ef.units_per_em, text);
+            let num_chars = text.chars().count() as f32;
+
+            // "Corectare depășire": render at a uniform per-column size (Pe
+            // coloană), an individually shrunk size (Pe cod), or the configured
+            // size when correction is off.
+            let font_size = if let Some(uf) = &uniform_fs {
+                uf[idx]
+            } else if opts.correct_overflow {
+                max_fitting_fs(
+                    ef, wf.configured_fs, opts.min_font_size_pt, advance_per_pt, &wf,
+                    num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
+                )
+            } else {
+                wf.configured_fs
+            };
+
+            let text_width = word_text_width(advance_per_pt, char_spacing, num_chars, font_size);
+            let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width, contour_frame(opts, card_w), inset_pt);
+
+            let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * font_size;
+            let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * font_size;
+            let text_box = WordBox { width: text_width, ascent, descent };
+
+            // Note if this field still doesn't fit at the (possibly corrected) size —
+            // the cut contour when supplied, else the card/safe-margin extent. The row
+            // is recorded once, after the loop.
+            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
+                row_overflows = true;
+            }
+
+            operations.push(Operation::new("q", vec![])); // save
+            push_word_transform(&mut operations, rotation_deg, flip_x, flip_y, x + text_width / 2.0, y + (ascent + descent) / 2.0);
+
+            if let Some(bg_color) = background {
+                push_code_background(
+                    &mut operations, &mut ext_gstates, bg_color, background_alpha,
+                    background_blend_mode, x, y, text_box, background_width, opts.text_background_padding_mm * MM,
+                );
             }
 
             operations.push(Operation::new("q", vec![])); // save
@@ -610,14 +896,7 @@ pub(crate) fn build_card_xobjects(
             if let Some(gs_name) = ext_gstate_name(&mut ext_gstates, alpha, blend) {
                 operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
             }
-            match color {
-                TextColor::Rgb(r, g, b) => {
-                    operations.push(Operation::new("rg", vec![Object::Real(r), Object::Real(g), Object::Real(b)]));
-                }
-                TextColor::Cmyk(c, m, y, k) => {
-                    operations.push(Operation::new("k", vec![Object::Real(c), Object::Real(m), Object::Real(y), Object::Real(k)]));
-                }
-            }
+            push_fill_color(&mut operations, color);
             // The Type0 font uses Identity-H, so text is written as 2-byte glyph
             // IDs (not UTF-8 bytes) — this is what makes diacritics render right.
             let gid_text = encode_text_gids(&ef.face, &text);
@@ -660,14 +939,7 @@ pub(crate) fn build_card_xobjects(
             }
 
             if opts.debug {
-                operations.push(Operation::new("q", vec![])); // save
-                operations.push(Operation::new("RG", vec![Object::Real(1.0), Object::Real(0.0), Object::Real(0.0)])); // red stroke
-                operations.push(Operation::new("re", vec![
-                    Object::Real(x), Object::Real(y + descent),
-                    Object::Real(text_width), Object::Real(ascent - descent),
-                ]));
-                operations.push(Operation::new("S", vec![]));
-                operations.push(Operation::new("Q", vec![])); // restore
+                push_debug_box(&mut operations, x, y, text_box);
             }
 
             operations.push(Operation::new("Q", vec![])); // restore (rotation)
@@ -679,6 +951,14 @@ pub(crate) fn build_card_xobjects(
             overflow.count += 1;
             if seen.insert(txt.clone()) {
                 overflow.samples.push(txt.clone());
+            }
+        }
+        // Unencodable QR payloads are deduped on their own, so a row can be listed
+        // both as overflowing and as failing to encode without one hiding the other.
+        if row_qr_failed {
+            overflow.qr_failure_count += 1;
+            if qr_seen.insert(txt.clone()) {
+                overflow.qr_failures.push(txt.clone());
             }
         }
 
@@ -770,7 +1050,7 @@ mod tests {
         EmbeddedFont { face, units_per_em, font_id: (1, 0), resource_name: b"F1".to_vec() }
     }
 
-    fn centered_fit(configured_fs: f32) -> WordFit {
+    fn centered_fit(configured_fs: f32) -> WordFit<'static> {
         WordFit {
             align: TextAlign::Center,
             char_spacing: 0.0,
@@ -780,7 +1060,15 @@ mod tests {
             y: 5.0,
             configured_fs,
             text_x_mm: None,
+            qr_size_mm: 0.0,
+            qr_ecc: QrEcc::Medium,
+            qr_template: "",
         }
+    }
+
+    // The same position, but rendered as a QR square of `size_mm` a side.
+    fn centered_qr_fit(size_mm: f32) -> WordFit<'static> {
+        WordFit { qr_size_mm: size_mm, ..centered_fit(9.0) }
     }
 
     #[test]
@@ -875,5 +1163,146 @@ mod tests {
                 "uniform size must fit {text}",
             );
         }
+    }
+
+    // A card whose keep region is the whole 40x40mm card, so only the QR's own size
+    // and placement decide whether it clears the cut.
+    fn full_card_keep(card_w: f32, card_h: f32) -> Vec<Vec<(f32, f32)>> {
+        vec![vec![(0.0, 0.0), (card_w, 0.0), (card_w, card_h), (0.0, card_h)]]
+    }
+
+    #[test]
+    fn qr_box_sits_entirely_above_its_anchor() {
+        // Unlike text, a QR has no baseline: `y` is the square's bottom edge, so the
+        // whole symbol is "ascent" and nothing hangs below.
+        let b = qr_box(30.0);
+        assert_eq!((b.width, b.ascent, b.descent), (30.0, 30.0, 0.0));
+    }
+
+    #[test]
+    fn qr_centers_on_the_card_like_text_does() {
+        // `resolve_x` is shared with the text path — the square's side is just the
+        // box width, so a centered QR lands the same way a centered code would.
+        let card_w = 40.0 * MM;
+        let size = 12.0 * MM;
+        let x = resolve_x(TextAlign::Center, None, card_w, 0.0, size, (0.0, card_w), 0.0);
+        assert!((x - (card_w - size) / 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn qr_fit_check_uses_the_square_corners() {
+        let card = 40.0 * MM;
+        let keep = full_card_keep(card, card);
+        // A 10mm square at (5mm, 5mm) is comfortably inside the card.
+        assert!(qr_fits_contour(10.0 * MM, 5.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
+        // Slide it so its right edge crosses the cut and it must fail.
+        assert!(!qr_fits_contour(10.0 * MM, 35.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
+        // A rotation that swings the corners past the edge is caught too: a 30mm
+        // square centred on the card fits square-on but not at 45 degrees.
+        let centered = (card - 30.0 * MM) / 2.0;
+        assert!(qr_fits_contour(30.0 * MM, centered, centered, 0.0, false, false, &keep, 0.0));
+        assert!(!qr_fits_contour(30.0 * MM, centered, centered, 45.0, false, false, &keep, 0.0));
+    }
+
+    #[test]
+    fn qr_overflow_correction_shrinks_to_fit() {
+        // 36mm of QR on a 40mm card with a 4mm margin each side (32mm available).
+        let card_w = 40.0 * MM;
+        let margin = 4.0 * MM;
+        let configured = 36.0 * MM;
+        let wf = centered_qr_fit(36.0);
+        assert!(qr_overflows(configured, &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
+
+        // A 21-module symbol plus two 4-module quiet zones = 29 modules, whose floor
+        // (29 x 0.5mm = 14.5mm) leaves plenty of room to shrink into.
+        let total = 21 + 2 * 4;
+        let fitted = max_fitting_qr_pt(configured, total, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
+        assert!(fitted < configured, "should shrink, got {fitted}");
+        assert!(!qr_overflows(fitted, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "shrunk size must fit");
+    }
+
+    #[test]
+    fn qr_overflow_correction_stops_at_the_module_floor() {
+        // Only 12mm of room, but 29 modules can't print below 29 x 0.5mm = 14.5mm.
+        // The corrector stops there and leaves the code flagged, rather than emitting
+        // a symbol that fits the card but no scanner can read.
+        let card_w = 20.0 * MM;
+        let margin = 4.0 * MM;
+        let total = 21 + 2 * 4;
+        let wf = centered_qr_fit(18.0);
+        let floor = QR_MIN_MODULE_MM * MM * total as f32;
+
+        let fitted = max_fitting_qr_pt(18.0 * MM, total, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
+        assert!((fitted - floor).abs() < 1e-3, "expected the floor {floor}, got {fitted}");
+        assert!(qr_overflows(fitted, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "still flagged");
+    }
+
+    #[test]
+    fn qr_column_correction_picks_a_size_every_code_fits() {
+        let ef = vec![font()];
+        // A short and a long payload: they need different module counts, but the
+        // square they occupy is the same, so the column lands on one size for both.
+        let records = vec![
+            csv::StringRecord::from(vec!["A1"]),
+            csv::StringRecord::from(vec!["A-MUCH-LONGER-CODE-000001"]),
+        ];
+        let opts = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![5.0],
+            align: vec![TextAlign::Center],
+            qr_sizes_mm: vec![36.0],
+            correct_overflow: true,
+            overflow_correction_by_column: true,
+            ..Options::default()
+        };
+        let y_positions = vec![5.0 * MM];
+        let card_w = 40.0 * MM;
+        let margin = 4.0 * MM;
+
+        let uniform = compute_uniform_fs(&records, &opts, &ef, &y_positions, card_w, margin);
+        // The column is seeded from the QR side in points, not from the font size,
+        // and shrunk from there.
+        assert!(uniform[0] < 36.0 * MM, "column should shrink, got {}", uniform[0]);
+        let wf = resolve_word_fit(&opts, &y_positions, 0);
+        assert!(!qr_overflows(uniform[0], &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
+    }
+
+    #[test]
+    fn resolve_word_fit_broadcasts_a_single_qr_entry_to_every_position() {
+        let opts = Options {
+            font_sizes: vec![9.0, 9.0, 9.0],
+            text_y_mm: vec![5.0, 5.0, 5.0],
+            align: vec![TextAlign::Center],
+            qr_sizes_mm: vec![14.0],
+            qr_ecc: vec![QrEcc::High],
+            qr_templates: vec!["https://s.ro/{code}".to_string()],
+            ..Options::default()
+        };
+        let y_positions = vec![5.0 * MM; 3];
+        for idx in 0..3 {
+            let wf = resolve_word_fit(&opts, &y_positions, idx);
+            assert_eq!(wf.qr_size_mm, 14.0);
+            assert!(matches!(wf.qr_ecc, QrEcc::High));
+            assert_eq!(wf.qr_template, "https://s.ro/{code}");
+        }
+    }
+
+    #[test]
+    fn resolve_word_fit_defaults_a_position_without_qr_config_to_text() {
+        let opts = Options {
+            font_sizes: vec![9.0, 9.0],
+            text_y_mm: vec![5.0, 5.0],
+            align: vec![TextAlign::Center],
+            // Only the second position is a QR.
+            qr_sizes_mm: vec![0.0, 14.0],
+            ..Options::default()
+        };
+        let y_positions = vec![5.0 * MM; 2];
+        assert_eq!(resolve_word_fit(&opts, &y_positions, 0).qr_size_mm, 0.0);
+        assert_eq!(resolve_word_fit(&opts, &y_positions, 1).qr_size_mm, 14.0);
+        // An unconfigured level/template falls back to the documented defaults.
+        let wf = resolve_word_fit(&opts, &y_positions, 1);
+        assert!(matches!(wf.qr_ecc, QrEcc::Medium));
+        assert_eq!(wf.qr_template, "");
     }
 }

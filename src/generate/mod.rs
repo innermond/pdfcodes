@@ -3,6 +3,7 @@ mod contour;
 pub mod image_bg;
 mod ocg;
 mod overlay;
+pub(crate) mod qr;
 pub mod shapes;
 
 use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}};
@@ -50,6 +51,10 @@ pub struct GenerateOutput {
     // a few distinct offending codes — for warning that some codes won't fit.
     pub text_overflow_count: usize,
     pub text_overflow_samples: Vec<String>,
+    // Same, for QR codes whose payload was too long to encode: the symbol is left off
+    // the card and the row reported, rather than failing the job.
+    pub qr_failure_count: usize,
+    pub qr_failure_samples: Vec<String>,
 }
 
 // Path-length/node/sharp-turn/cutting-time measurements derived from a
@@ -513,6 +518,8 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             // Contour PDFs contain no text, so nothing can overflow.
             text_overflow_count: 0,
             text_overflow_samples: Vec::new(),
+            qr_failure_count: 0,
+            qr_failure_samples: Vec::new(),
         });
     }
 
@@ -703,6 +710,8 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         time_cutting_total_s: None,
         text_overflow_count: text_overflow.count,
         text_overflow_samples: text_overflow.samples,
+        qr_failure_count: text_overflow.qr_failure_count,
+        qr_failure_samples: text_overflow.qr_failures,
     })
 }
 
@@ -2135,28 +2144,10 @@ mod tests {
         let without = generate_pdf(Some(csv), BACKGROUND_PDF, None, &Options { skip_codes: true, ..base.clone() })
             .expect("skip_codes run");
 
-        // All card Form XObjects (the ones whose resources hold the BG cell).
-        let card_ops = |pdf: &[u8]| -> Vec<Vec<Operation>> {
-            let doc = Document::load_mem(pdf).expect("pdf should parse");
-            let mut all = Vec::new();
-            for object in doc.objects.values() {
-                if let Object::Stream(stream) = object {
-                    if stream.dict.get(b"Subtype").and_then(Object::as_name_str).ok() != Some("Form") {
-                        continue;
-                    }
-                    let Ok(resources) = stream.dict.get(b"Resources").and_then(Object::as_dict) else { continue };
-                    let Ok(xobjects) = resources.get(b"XObject").and_then(Object::as_dict) else { continue };
-                    if xobjects.has(b"BG") {
-                        all.push(stream.decode_content().expect("content should decode").operations);
-                    }
-                }
-            }
-            all
-        };
         let pages = |pdf: &[u8]| Document::load_mem(pdf).unwrap().get_pages().len();
 
-        let cards_with = card_ops(&with.pdf);
-        let cards_without = card_ops(&without.pdf);
+        let cards_with = card_operations(&with.pdf);
+        let cards_without = card_operations(&without.pdf);
         assert_eq!(cards_without.len(), cards_with.len(), "same card count");
         assert_eq!(pages(&without.pdf), pages(&with.pdf), "same page count");
 
@@ -2178,6 +2169,129 @@ mod tests {
         assert!(generate_pdf(Some("a b c\n"), BACKGROUND_PDF, None, &ragged).is_err());
         let ok = generate_pdf(Some("a b c\n"), BACKGROUND_PDF, None, &Options { skip_codes: true, ..ragged });
         assert!(ok.is_ok(), "skip_codes ignores per-word config mismatches");
+    }
+
+    // All card Form XObjects in a generated PDF (identified by the BG cell in their
+    // resources), decoded to their operation lists.
+    fn card_operations(pdf: &[u8]) -> Vec<Vec<Operation>> {
+        let doc = Document::load_mem(pdf).expect("pdf should parse");
+        let mut all = Vec::new();
+        for object in doc.objects.values() {
+            if let Object::Stream(stream) = object {
+                if stream.dict.get(b"Subtype").and_then(Object::as_name_str).ok() != Some("Form") {
+                    continue;
+                }
+                let Ok(resources) = stream.dict.get(b"Resources").and_then(Object::as_dict) else { continue };
+                let Ok(xobjects) = resources.get(b"XObject").and_then(Object::as_dict) else { continue };
+                if xobjects.has(b"BG") {
+                    all.push(stream.decode_content().expect("content should decode").operations);
+                }
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn qr_position_draws_modules_instead_of_glyphs() {
+        // Two positions on the card: the first stays text, the second becomes a QR.
+        let opts = Options {
+            font_sizes: vec![9.0, 9.0],
+            text_y_mm: vec![10.0, 2.0],
+            qr_sizes_mm: vec![0.0, 8.0],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("AB12 AB12\n"), BACKGROUND_PDF, None, &opts).expect("print gen should succeed");
+        let cards = card_operations(&out.pdf);
+        assert_eq!(cards.len(), 1);
+        let ops = &cards[0];
+
+        // The text position still emits a glyph run...
+        assert_eq!(ops.iter().filter(|op| op.operator == "Tj").count(), 1, "one text code");
+        // ...and the QR position emits many filled rectangles and no second run.
+        let rects = ops.iter().filter(|op| op.operator == "re").count();
+        assert!(rects > 20, "expected a module grid, got {rects} rectangles");
+        assert!(ops.iter().any(|op| op.operator == "f"), "modules are filled");
+        assert_eq!(out.qr_failure_count, 0);
+
+        // The graphics state must come back balanced: an unmatched `q` in the QR
+        // branch would leak its colour and transform onto whatever is drawn next.
+        let mut depth = 0i32;
+        for op in ops {
+            match op.operator.as_str() {
+                "q" => depth += 1,
+                "Q" => depth -= 1,
+                _ => {}
+            }
+            assert!(depth >= 0, "more Q than q");
+        }
+        assert_eq!(depth, 0, "unbalanced q/Q on the card");
+    }
+
+    #[test]
+    fn qr_payload_template_wraps_the_code() {
+        // The symbol for a templated payload differs from the bare code's, which is
+        // what proves the template reached the encoder (the module count grows with
+        // the longer URL).
+        let base = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![5.0],
+            qr_sizes_mm: vec![12.0],
+            ..Options::default()
+        };
+        let bare = generate_pdf(Some("AB12\n"), BACKGROUND_PDF, None, &base).unwrap();
+        let templated = generate_pdf(
+            Some("AB12\n"),
+            BACKGROUND_PDF,
+            None,
+            &Options { qr_templates: vec!["https://example.ro/verify?c={code}".to_string()], ..base.clone() },
+        )
+        .unwrap();
+
+        let count = |pdf: &[u8]| card_operations(pdf)[0].iter().filter(|op| op.operator == "re").count();
+        assert_ne!(count(&bare.pdf), count(&templated.pdf), "the template must change the symbol");
+    }
+
+    #[test]
+    fn qr_with_an_unencodable_payload_is_reported_not_fatal() {
+        // Far past the largest symbol's capacity: the job still succeeds, the row is
+        // reported, and that card simply has no QR on it.
+        let opts = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![5.0],
+            qr_sizes_mm: vec![12.0],
+            qr_templates: vec![format!("{}{{code}}", "x".repeat(3000))],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("AB12\n"), BACKGROUND_PDF, None, &opts).expect("job should still succeed");
+        assert_eq!(out.qr_failure_count, 1);
+        assert_eq!(out.qr_failure_samples, vec!["AB12".to_string()]);
+        let ops = &card_operations(&out.pdf)[0];
+        assert!(ops.iter().all(|op| op.operator != "Tj"), "the QR replaced the text, so no glyphs either");
+        assert!(ops.iter().filter(|op| op.operator == "re").count() < 5, "no module grid drawn");
+    }
+
+    #[test]
+    fn qr_needs_no_font_and_honors_its_background() {
+        // A QR-only card must not require a font, and must paint the background
+        // rectangle behind the symbol (the quiet zone that makes it scannable).
+        let opts = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![5.0],
+            qr_sizes_mm: vec![10.0],
+            text_backgrounds: vec![Some(TextColor::Rgb(1.0, 1.0, 1.0))],
+            text_background_padding_mm: 0.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("AB12\n"), BACKGROUND_PDF, None, &opts).expect("print gen should succeed");
+        let ops = &card_operations(&out.pdf)[0];
+
+        // A white background rect exactly the size of the square, drawn before the
+        // modules (the first `rg` on the card is the background's).
+        let first_rect = ops.iter().find(|op| op.operator == "re").expect("a rectangle is drawn");
+        let side = 10.0 * crate::geometry::MM;
+        let w = match &first_rect.operands[2] { Object::Real(v) => *v, o => panic!("unexpected {o:?}") };
+        let h = match &first_rect.operands[3] { Object::Real(v) => *v, o => panic!("unexpected {o:?}") };
+        assert!((w - side).abs() < 1e-3 && (h - side).abs() < 1e-3, "background frames the square: {w}x{h}");
     }
 
     #[test]

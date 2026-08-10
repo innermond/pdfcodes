@@ -658,6 +658,38 @@ the fields apply **only to the selected word**.
 
 ![A word's properties panel, with the Typography, Position, Style, Text background and Text outline groups](manual-assets/s3-properties.png)
 
+**Draw the code as:** each code is drawn either as **Text** (letters, the default) or as
+a **QR code** — the QR of that very code, in its place. Switching to *QR code*
+replaces the Typography group with the **QR code** group below, and hides *Text
+outline* (stroking the modules' edges only thickens them and costs the symbol its
+readability). Everything else — position, alignment, colour, opacity, blend mode,
+rotation, mirroring and the text background — works exactly as it does for text.
+
+> To print **both** the code as text and its QR, use two codes: the CSV row must
+> hold the value twice (two fields), one set to *Text* and the other to *QR code*.
+> A row with a single field draws a single code.
+
+**QR code** (only when the type is *QR code*):
+
+- **QR size (mm)** — the side of the square, **quiet zone included** — that is,
+  the whole footprint you must keep free on the card. Unlike text, the code's
+  **Y (mm)** is the square's **bottom edge** (a QR has no baseline).
+- **Error correction** — `L` (~7%) / `M` (~15%, the default) / `Q` (~25%) /
+  `H` (~30%). A higher level survives more scratches and ink spread, but needs
+  more modules for the same content, so each module comes out smaller.
+- **Encoded content** — leave it **empty** to encode exactly the code. Otherwise
+  write a template in which `{code}` is replaced with each row's code — usually a
+  web address, e.g. `https://example.com/v?c={code}`.
+
+![The QR code group: type, size, error correction and the encoded-content template](manual-assets/s3-qr.png)
+
+> **Watch the module size.** A QR is a grid of squares ("modules"); if one comes
+> out smaller than **0.5 mm** the app warns you, because below that size printing
+> and scanning become unreliable. The fix is either a larger *QR size* or shorter
+> content (a shorter address, or a lower error-correction level). If the content
+> does not fit any QR symbol at all, the app says so and the code is left off the
+> card — generation still succeeds, and the result panel lists the affected rows.
+
 **Typography:**
 
 - **Font size (pt)** — the size of the text.
