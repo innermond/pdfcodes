@@ -3,10 +3,13 @@ use csv::ReaderBuilder;
 use ttf_parser::GlyphId;
 
 use crate::align::TextAlign;
+use crate::barcode::Symbology;
 use crate::blend::BlendMode;
+use crate::code_kind::CodeKind;
 use crate::color::TextColor;
 use crate::fonts::{EmbeddedFont, encode_text_gids};
-use crate::generate::qr::{qr_matrix_bits, qr_payload, qr_rect_operations};
+use crate::generate::barcode::{barcode_bits, barcode_rect_operations, MIN_NARROW_BAR_MM};
+use crate::generate::qr::{code_payload, qr_matrix_bits, qr_rect_operations};
 use crate::geometry::{apply_matrix, region_contains_outline, word_transform, CardLayout, GlyphOutline, MM};
 use crate::options::Options;
 use crate::qr::QrEcc;
@@ -30,12 +33,13 @@ const OVERFLOW_EPS_PT: f32 = 0.1;
 pub(crate) struct OverflowReport {
     pub count: usize,
     pub samples: Vec<String>,
-    // Rows holding a QR whose payload is too long to encode at any version/ECC. The
-    // QR is skipped rather than failing the whole job, so these are reported the same
-    // way as overflows: `qr_failure_count` counts the rows, `qr_failures` holds every
-    // distinct one.
-    pub qr_failure_count: usize,
-    pub qr_failures: Vec<String>,
+    // Rows holding a symbol whose payload the symbology can't encode — too long for a
+    // QR, the wrong charset or length for a barcode. The symbol is skipped rather than
+    // failing the whole job, so these are reported the same way as overflows:
+    // `symbol_failure_count` counts the rows, `symbol_failures` holds every distinct
+    // one paired with the reason, so the user can see *why* without guessing.
+    pub symbol_failure_count: usize,
+    pub symbol_failures: Vec<(String, String)>,
 }
 
 // The rectangle a code occupies relative to its anchor point: `width` across,
@@ -139,13 +143,14 @@ fn code_fits_contour(
     true
 }
 
-// Does a QR's square lie fully inside the cut contour's keep region? A QR is a
-// filled square, so its four corners — put through the same rotation/flip transform
-// the draw path uses (see `word_transform`) — describe its entire footprint, where
-// text needs every glyph outline.
+// Does a symbol's rectangle lie fully inside the cut contour's keep region? Every
+// machine-readable code is a filled rectangle, so its four corners — put through the
+// same rotation/flip transform the draw path uses (see `word_transform`) — describe
+// its entire footprint, where text needs every glyph outline.
 #[allow(clippy::too_many_arguments)]
-fn qr_fits_contour(
-    size_pt: f32,
+fn rect_fits_contour(
+    w_pt: f32,
+    h_pt: f32,
     x: f32,
     y: f32,
     rotation_deg: f32,
@@ -154,12 +159,12 @@ fn qr_fits_contour(
     keep: &[Vec<(f32, f32)>],
     inset_pt: f32,
 ) -> bool {
-    let matrix = word_transform(rotation_deg, flip_x, flip_y, x + size_pt / 2.0, y + size_pt / 2.0);
+    let matrix = word_transform(rotation_deg, flip_x, flip_y, x + w_pt / 2.0, y + h_pt / 2.0);
     let mut corners = vec![
         (x, y),
-        (x + size_pt, y),
-        (x + size_pt, y + size_pt),
-        (x, y + size_pt),
+        (x + w_pt, y),
+        (x + w_pt, y + h_pt),
+        (x, y + h_pt),
     ];
     if let Some(m) = &matrix {
         for p in corners.iter_mut() {
@@ -175,8 +180,9 @@ const CORRECT_STEP_PT: f32 = 0.5;
 
 // Smallest module a QR may print at and still scan reliably — the usual print rule
 // of thumb. It floors the overflow corrector in place of `min_font_size_pt`, which
-// is a type size and means nothing for a symbol: shrinking a QR past this point
-// yields something that fits the cut but no scanner can read.
+// is a type size and means nothing for a symbol: shrinking a symbol past this point
+// yields something that fits the cut but no scanner can read. The 1D equivalent is
+// `barcode::MIN_NARROW_BAR_MM`.
 const QR_MIN_MODULE_MM: f32 = 0.5;
 
 // Per-position layout inputs that don't depend on the font size, resolved once so
@@ -191,19 +197,27 @@ struct WordFit<'a> {
     y: f32,
     configured_fs: f32,
     text_x_mm: Option<f32>,
-    // > 0 turns this position into a QR of that side (mm) instead of a glyph run;
-    // the two fields below then describe the symbol. See src/generate/qr.rs.
+    // What this position draws. The fields below apply to one kind each; the payload
+    // template applies to both symbol kinds.
+    kind: CodeKind,
     qr_size_mm: f32,
     qr_ecc: QrEcc,
-    qr_template: &'a str,
+    symbology: Symbology,
+    barcode_width_mm: f32,
+    barcode_height_mm: f32,
+    payload_template: &'a str,
 }
 
 fn resolve_word_fit<'a>(opts: &'a Options, y_positions: &[f32], idx: usize) -> WordFit<'a> {
     let pick = |len: usize| if len == 1 { 0 } else { idx };
     WordFit {
+        kind: pick_word(&opts.code_kinds, idx).unwrap_or_default(),
         qr_size_mm: pick_word(&opts.qr_sizes_mm, idx).unwrap_or(0.0),
         qr_ecc: pick_word(&opts.qr_ecc, idx).unwrap_or_default(),
-        qr_template: pick_word_ref(&opts.qr_templates, idx).map(String::as_str).unwrap_or(""),
+        symbology: pick_word(&opts.barcode_symbologies, idx).unwrap_or_default(),
+        barcode_width_mm: pick_word(&opts.barcode_widths_mm, idx).unwrap_or(0.0),
+        barcode_height_mm: pick_word(&opts.barcode_heights_mm, idx).unwrap_or(0.0),
+        payload_template: pick_word_ref(&opts.payload_templates, idx).map(String::as_str).unwrap_or(""),
         align: opts.align[pick(opts.align.len())],
         char_spacing: if opts.text_char_spacing_pt.is_empty() {
             DEFAULT_CHAR_SPACING_PT
@@ -319,9 +333,12 @@ fn word_overflows(
     }
 }
 
-// `word_overflows` for a QR: the same two branches, measured against the square.
-fn qr_overflows(
-    size_pt: f32,
+// `word_overflows` for a symbol: the same two branches, measured against its
+// rectangle. A QR passes `w == h`.
+#[allow(clippy::too_many_arguments)]
+fn symbol_overflows(
+    w_pt: f32,
+    h_pt: f32,
     wf: &WordFit<'_>,
     card_w: f32,
     safe_margin: f32,
@@ -329,27 +346,32 @@ fn qr_overflows(
     inset_pt: f32,
     contour: (f32, f32),
 ) -> bool {
-    let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, size_pt, contour, inset_pt);
+    let x = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, w_pt, contour, inset_pt);
     if !keep.is_empty() {
-        !qr_fits_contour(size_pt, x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, keep, inset_pt)
+        !rect_fits_contour(w_pt, h_pt, x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, keep, inset_pt)
     } else {
-        box_overflows_card(x, qr_box(size_pt), card_w, safe_margin)
+        box_overflows_card(x, symbol_box(w_pt, h_pt), card_w, safe_margin)
     }
 }
 
-// The square a QR of side `size_pt` occupies: it sits entirely above its anchor, so
-// the anchor `y` is the symbol's bottom edge rather than a text baseline.
-fn qr_box(size_pt: f32) -> WordBox {
-    WordBox { width: size_pt, ascent: size_pt, descent: 0.0 }
+// The rectangle a symbol occupies: it sits entirely above its anchor, so the anchor
+// `y` is the symbol's bottom edge rather than a text baseline.
+fn symbol_box(w_pt: f32, h_pt: f32) -> WordBox {
+    WordBox { width: w_pt, ascent: h_pt, descent: 0.0 }
 }
 
-// Largest square side in points (stepping down by CORRECT_STEP_PT) at which the QR
-// fits. `modules_total` is the symbol's module count including the quiet zone, which
-// sets the floor: never shrink a module below `QR_MIN_MODULE_MM`.
+// Largest width in points (stepping down by CORRECT_STEP_PT) at which the symbol
+// fits, with the height scaled by the same ratio so the shape is preserved — for a
+// QR that keeps it square. `modules_across` is the module count spanning the width
+// including the quiet zone, and `min_module_mm` the narrowest those modules may get:
+// together they set the floor, so the corrector never trades a cut overflow for an
+// unscannable symbol.
 #[allow(clippy::too_many_arguments)]
-fn max_fitting_qr_pt(
-    configured_pt: f32,
-    modules_total: usize,
+fn max_fitting_symbol_pt(
+    configured_w_pt: f32,
+    configured_h_pt: f32,
+    modules_across: usize,
+    min_module_mm: f32,
     wf: &WordFit<'_>,
     card_w: f32,
     safe_margin: f32,
@@ -357,12 +379,13 @@ fn max_fitting_qr_pt(
     inset_pt: f32,
     contour: (f32, f32),
 ) -> f32 {
-    let floor = (QR_MIN_MODULE_MM * MM * modules_total as f32).min(configured_pt);
-    let mut size = configured_pt;
-    while size > floor && qr_overflows(size, wf, card_w, safe_margin, keep, inset_pt, contour) {
-        size = (size - CORRECT_STEP_PT).max(floor);
+    let floor = (min_module_mm * MM * modules_across as f32).min(configured_w_pt);
+    let aspect = if configured_w_pt > 0.0 { configured_h_pt / configured_w_pt } else { 1.0 };
+    let mut w = configured_w_pt;
+    while w > floor && symbol_overflows(w, w * aspect, wf, card_w, safe_margin, keep, inset_pt, contour) {
+        w = (w - CORRECT_STEP_PT).max(floor);
     }
-    size
+    w
 }
 
 // Largest font size in [min_fs, configured] (stepping down by CORRECT_STEP_PT)
@@ -390,13 +413,78 @@ fn max_fitting_fs(
     fs
 }
 
+// A symbol position's encoded modules, plus what the layout needs to size them. Both
+// kinds are a grid of modules drawn into a rectangle; they differ only in the shape
+// of that grid and how narrow a module may safely get.
+#[cfg_attr(test, derive(Debug))]
+enum EncodedSymbol {
+    Qr { n: usize, bits: Vec<u8> },
+    Barcode { bits: Vec<u8>, quiet: usize },
+}
+
+impl EncodedSymbol {
+    // Modules spanning the symbol's width, quiet zone included — the module width
+    // (a QR module, a barcode's narrow bar) is the drawn width divided by this.
+    fn modules_across(&self, qr_quiet: usize) -> usize {
+        match self {
+            EncodedSymbol::Qr { n, .. } => n + 2 * qr_quiet,
+            EncodedSymbol::Barcode { bits, quiet } => bits.len() + 2 * quiet,
+        }
+    }
+
+    // The narrowest a module may print and still scan reliably; floors the corrector.
+    fn min_module_mm(&self) -> f32 {
+        match self {
+            EncodedSymbol::Qr { .. } => QR_MIN_MODULE_MM,
+            EncodedSymbol::Barcode { .. } => MIN_NARROW_BAR_MM,
+        }
+    }
+
+    fn draw(&self, x: f32, y: f32, w_pt: f32, h_pt: f32, qr_quiet: u32) -> Vec<Operation> {
+        match self {
+            // A QR is square, so its height is its side.
+            EncodedSymbol::Qr { n, bits } => qr_rect_operations(*n, bits, x, y, w_pt, qr_quiet),
+            EncodedSymbol::Barcode { bits, quiet } => {
+                barcode_rect_operations(bits, *quiet, x, y, w_pt, h_pt)
+            }
+        }
+    }
+}
+
+// Encode a symbol position's payload. The error is written for the user — it names
+// what the symbology needs — and is reported per failing row rather than aborting
+// the job. `CodeKind::Text` never reaches here.
+fn encode_symbol(wf: &WordFit<'_>, text: &str) -> Result<EncodedSymbol, String> {
+    let payload = code_payload(wf.payload_template, text);
+    match wf.kind {
+        CodeKind::Qr => qr_matrix_bits(&payload, wf.qr_ecc)
+            .map(|(n, bits)| EncodedSymbol::Qr { n, bits })
+            .map_err(|_| format!("the QR content is too long to encode: {payload:?}")),
+        CodeKind::Barcode => barcode_bits(wf.symbology, &payload)
+            .map(|(bits, _)| EncodedSymbol::Barcode { bits, quiet: wf.symbology.quiet_modules() }),
+        CodeKind::Text => Err("not a symbol".to_string()),
+    }
+}
+
+// The configured rectangle (in points) a symbol position occupies, before any
+// overflow correction shrinks it.
+fn symbol_size_pt(wf: &WordFit<'_>) -> (f32, f32) {
+    match wf.kind {
+        CodeKind::Qr => (wf.qr_size_mm * MM, wf.qr_size_mm * MM),
+        CodeKind::Barcode => (wf.barcode_width_mm * MM, wf.barcode_height_mm * MM),
+        CodeKind::Text => (0.0, 0.0),
+    }
+}
+
 // "Pe coloană" pre-pass: for each word position, the largest size at which *every*
 // code in that position fits (clamped to [min, configured]). Codes that can't fit
 // even at the minimum pull the column no lower than the minimum (they stay flagged
 // at render). Positions beyond a record's word count are skipped.
 //
-// The returned size is in points either way: a font size for a text position, the
-// square's side for a QR position (which has no font size to speak of).
+// The returned size is in points, but means whatever that position's kind sizes by:
+// a font size for text, the square's side for a QR, the rectangle's *width* for a
+// barcode (whose height then follows the configured aspect). None of the kinds has
+// anything to say about the others, so one array per position is enough.
 fn compute_uniform_fs(
     records: &[csv::StringRecord],
     opts: &Options,
@@ -408,11 +496,11 @@ fn compute_uniform_fs(
     let n_pos = opts.font_sizes.len();
     let min_fs = opts.min_font_size_pt;
     let inset_pt = opts.contour_inset_mm * MM;
-    let quiet = opts.qr_quiet_modules as usize;
+    let qr_quiet = opts.qr_quiet_modules as usize;
     let mut uniform: Vec<f32> = (0..n_pos)
         .map(|idx| {
             let wf = resolve_word_fit(opts, y_positions, idx);
-            if wf.qr_size_mm > 0.0 { wf.qr_size_mm * MM } else { wf.configured_fs }
+            if wf.kind.is_symbol() { symbol_size_pt(&wf).0 } else { wf.configured_fs }
         })
         .collect();
     for record in records {
@@ -421,14 +509,13 @@ fn compute_uniform_fs(
                 continue;
             }
             let wf = resolve_word_fit(opts, y_positions, idx);
-            let fit = if wf.qr_size_mm > 0.0 {
-                // A payload too long to encode is reported at render time; it must
-                // not drag the whole column's size down here.
-                let Ok((n, _)) = qr_matrix_bits(&qr_payload(wf.qr_template, text), wf.qr_ecc) else {
-                    continue;
-                };
-                max_fitting_qr_pt(
-                    wf.qr_size_mm * MM, n + 2 * quiet, &wf,
+            let fit = if wf.kind.is_symbol() {
+                // A payload that can't be encoded is reported at render time; it
+                // must not drag the whole column's size down here.
+                let Ok(sym) = encode_symbol(&wf, text) else { continue };
+                let (w, h) = symbol_size_pt(&wf);
+                max_fitting_symbol_pt(
+                    w, h, sym.modules_across(qr_quiet), sym.min_module_mm(), &wf,
                     card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
                 )
             } else {
@@ -535,7 +622,7 @@ pub(crate) fn build_card_xobjects(
     let card_box = layout.card_box.clone();
     let mut overflow = OverflowReport::default();
     let mut seen = std::collections::HashSet::new();
-    let mut qr_seen = std::collections::HashSet::new();
+    let mut symbol_seen = std::collections::HashSet::new();
 
     // Rows are \n-separated; fields within a row are separated by split_chars
     // (any character, not necessarily the CSV standard comma).
@@ -684,10 +771,34 @@ pub(crate) fn build_card_xobjects(
                 txt, texts.len(), opts.qr_ecc.len()
             ).into());
         }
-        if opts.qr_templates.len() > 1 && texts.len() > opts.qr_templates.len() {
+        if opts.payload_templates.len() > 1 && texts.len() > opts.payload_templates.len() {
             return Err(format!(
-                "CSV row {:?} has {} word(s), but only {} QR payload template(s) configured",
-                txt, texts.len(), opts.qr_templates.len()
+                "CSV row {:?} has {} word(s), but only {} payload template(s) configured",
+                txt, texts.len(), opts.payload_templates.len()
+            ).into());
+        }
+        if opts.code_kinds.len() > 1 && texts.len() > opts.code_kinds.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} code kind(s) configured",
+                txt, texts.len(), opts.code_kinds.len()
+            ).into());
+        }
+        if opts.barcode_symbologies.len() > 1 && texts.len() > opts.barcode_symbologies.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} barcode symbology(ies) configured",
+                txt, texts.len(), opts.barcode_symbologies.len()
+            ).into());
+        }
+        if opts.barcode_widths_mm.len() > 1 && texts.len() > opts.barcode_widths_mm.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} barcode width(s) configured",
+                txt, texts.len(), opts.barcode_widths_mm.len()
+            ).into());
+        }
+        if opts.barcode_heights_mm.len() > 1 && texts.len() > opts.barcode_heights_mm.len() {
+            return Err(format!(
+                "CSV row {:?} has {} word(s), but only {} barcode height(s) configured",
+                txt, texts.len(), opts.barcode_heights_mm.len()
             ).into());
         }
 
@@ -701,9 +812,9 @@ pub(crate) fn build_card_xobjects(
         // (not the offending field) so the user can find it in their source data —
         // a field may be a merge/unmerge that doesn't appear verbatim there.
         let mut row_overflows = false;
-        // Likewise for a QR whose payload is too long to encode: the symbol is left
-        // out and the row reported, so one bad row can't sink the whole job.
-        let mut row_qr_failed = false;
+        // Likewise for a symbol the symbology can't encode: it is left out and the row
+        // reported (with the reason), so one bad row can't sink the whole job.
+        let mut row_symbol_failure: Option<String> = None;
 
         for (idx, text) in texts.iter().enumerate() {
             let wf = resolve_word_fit(opts, &y_positions, idx);
@@ -781,40 +892,48 @@ pub(crate) fn build_card_xobjects(
             };
 
 
-            // A QR position replaces the glyph run with a square of modules. It reuses
-            // every placement input above but needs no font, so it branches before the
-            // font lookup — a QR-only position never forces a font upload.
-            if wf.qr_size_mm > 0.0 {
-                let payload = qr_payload(wf.qr_template, text);
-                let Ok((modules, bits)) = qr_matrix_bits(&payload, wf.qr_ecc) else {
-                    // Too long to encode at any version: skip the symbol and report the
-                    // row, rather than failing a job that is otherwise fine.
-                    row_qr_failed = true;
-                    continue;
+            // A symbol position (QR or barcode) replaces the glyph run with a grid of
+            // modules. It reuses every placement input above but needs no font, so it
+            // branches before the font lookup — a symbol-only position never forces a
+            // font upload.
+            if wf.kind.is_symbol() {
+                let sym = match encode_symbol(&wf, text) {
+                    Ok(sym) => sym,
+                    Err(reason) => {
+                        // Unencodable for this symbology (too long, wrong charset, bad
+                        // check digit): skip the symbol and report the row, rather than
+                        // failing a job that is otherwise fine.
+                        row_symbol_failure.get_or_insert(reason);
+                        continue;
+                    }
                 };
-                let total_modules = modules + 2 * opts.qr_quiet_modules as usize;
+                let (configured_w, configured_h) = symbol_size_pt(&wf);
 
                 // The same three-way size choice as the text path: uniform per column
-                // (Pe coloană), shrunk per code (Pe cod), or exactly as configured.
-                let size = if let Some(uf) = &uniform_fs {
+                // (Pe coloană), shrunk per code (Pe cod), or exactly as configured. The
+                // value is the *width*; the height follows the configured aspect, which
+                // for a QR keeps it square.
+                let w = if let Some(uf) = &uniform_fs {
                     uf[idx]
                 } else if opts.correct_overflow {
-                    max_fitting_qr_pt(
-                        wf.qr_size_mm * MM, total_modules, &wf, card_w, safe_margin,
+                    max_fitting_symbol_pt(
+                        configured_w, configured_h, sym.modules_across(opts.qr_quiet_modules as usize),
+                        sym.min_module_mm(), &wf, card_w, safe_margin,
                         &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w),
                     )
                 } else {
-                    wf.qr_size_mm * MM
+                    configured_w
                 };
+                let h = if configured_w > 0.0 { configured_h * (w / configured_w) } else { configured_h };
 
-                let b = qr_box(size);
+                let b = symbol_box(w, h);
                 let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, b.width, contour_frame(opts, card_w), inset_pt);
-                if qr_overflows(size, &wf, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
+                if symbol_overflows(w, h, &wf, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
                     row_overflows = true;
                 }
 
                 operations.push(Operation::new("q", vec![])); // save
-                // `y` is the square's bottom edge (a QR has no baseline), so the
+                // `y` is the rectangle's bottom edge (a symbol has no baseline), so the
                 // rotate/flip pivot is the middle of the box either way.
                 push_word_transform(&mut operations, rotation_deg, flip_x, flip_y, x + b.width / 2.0, y + (b.ascent + b.descent) / 2.0);
 
@@ -832,12 +951,12 @@ pub(crate) fn build_card_xobjects(
                     operations.push(Operation::new("gs", vec![Object::Name(gs_name.into_bytes())]));
                 }
                 push_fill_color(&mut operations, color);
-                operations.extend(qr_rect_operations(modules, &bits, x, y, size, opts.qr_quiet_modules));
+                operations.extend(sym.draw(x, y, w, h, opts.qr_quiet_modules));
                 operations.push(Operation::new("Q", vec![])); // restore
 
                 // No glyph-contour pass: stroking the module edges only fattens them
                 // and costs the symbol its scannability, so `text_contour_colors` is
-                // deliberately ignored for a QR.
+                // deliberately ignored for both symbol kinds.
                 if opts.debug {
                     push_debug_box(&mut operations, x, y, b);
                 }
@@ -953,12 +1072,12 @@ pub(crate) fn build_card_xobjects(
                 overflow.samples.push(txt.clone());
             }
         }
-        // Unencodable QR payloads are deduped on their own, so a row can be listed
-        // both as overflowing and as failing to encode without one hiding the other.
-        if row_qr_failed {
-            overflow.qr_failure_count += 1;
-            if qr_seen.insert(txt.clone()) {
-                overflow.qr_failures.push(txt.clone());
+        // Unencodable symbols are deduped on their own, so a row can be listed both as
+        // overflowing and as failing to encode without one hiding the other.
+        if let Some(reason) = row_symbol_failure {
+            overflow.symbol_failure_count += 1;
+            if symbol_seen.insert(txt.clone()) {
+                overflow.symbol_failures.push((txt.clone(), reason));
             }
         }
 
@@ -1060,15 +1179,29 @@ mod tests {
             y: 5.0,
             configured_fs,
             text_x_mm: None,
+            kind: CodeKind::Text,
             qr_size_mm: 0.0,
             qr_ecc: QrEcc::Medium,
-            qr_template: "",
+            symbology: Symbology::Code128,
+            barcode_width_mm: 0.0,
+            barcode_height_mm: 0.0,
+            payload_template: "",
         }
     }
 
     // The same position, but rendered as a QR square of `size_mm` a side.
     fn centered_qr_fit(size_mm: f32) -> WordFit<'static> {
-        WordFit { qr_size_mm: size_mm, ..centered_fit(9.0) }
+        WordFit { kind: CodeKind::Qr, qr_size_mm: size_mm, ..centered_fit(9.0) }
+    }
+
+    // ...or as a barcode rectangle.
+    fn centered_barcode_fit(w_mm: f32, h_mm: f32) -> WordFit<'static> {
+        WordFit {
+            kind: CodeKind::Barcode,
+            barcode_width_mm: w_mm,
+            barcode_height_mm: h_mm,
+            ..centered_fit(9.0)
+        }
     }
 
     #[test]
@@ -1175,7 +1308,7 @@ mod tests {
     fn qr_box_sits_entirely_above_its_anchor() {
         // Unlike text, a QR has no baseline: `y` is the square's bottom edge, so the
         // whole symbol is "ascent" and nothing hangs below.
-        let b = qr_box(30.0);
+        let b = symbol_box(30.0, 30.0);
         assert_eq!((b.width, b.ascent, b.descent), (30.0, 30.0, 0.0));
     }
 
@@ -1194,14 +1327,14 @@ mod tests {
         let card = 40.0 * MM;
         let keep = full_card_keep(card, card);
         // A 10mm square at (5mm, 5mm) is comfortably inside the card.
-        assert!(qr_fits_contour(10.0 * MM, 5.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
+        assert!(rect_fits_contour(10.0 * MM, 10.0 * MM, 5.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
         // Slide it so its right edge crosses the cut and it must fail.
-        assert!(!qr_fits_contour(10.0 * MM, 35.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
+        assert!(!rect_fits_contour(10.0 * MM, 10.0 * MM, 35.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
         // A rotation that swings the corners past the edge is caught too: a 30mm
         // square centred on the card fits square-on but not at 45 degrees.
         let centered = (card - 30.0 * MM) / 2.0;
-        assert!(qr_fits_contour(30.0 * MM, centered, centered, 0.0, false, false, &keep, 0.0));
-        assert!(!qr_fits_contour(30.0 * MM, centered, centered, 45.0, false, false, &keep, 0.0));
+        assert!(rect_fits_contour(30.0 * MM, 30.0 * MM, centered, centered, 0.0, false, false, &keep, 0.0));
+        assert!(!rect_fits_contour(30.0 * MM, 30.0 * MM, centered, centered, 45.0, false, false, &keep, 0.0));
     }
 
     #[test]
@@ -1211,14 +1344,14 @@ mod tests {
         let margin = 4.0 * MM;
         let configured = 36.0 * MM;
         let wf = centered_qr_fit(36.0);
-        assert!(qr_overflows(configured, &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
+        assert!(symbol_overflows(configured, configured, &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
 
         // A 21-module symbol plus two 4-module quiet zones = 29 modules, whose floor
         // (29 x 0.5mm = 14.5mm) leaves plenty of room to shrink into.
         let total = 21 + 2 * 4;
-        let fitted = max_fitting_qr_pt(configured, total, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
+        let fitted = max_fitting_symbol_pt(configured, configured, total, QR_MIN_MODULE_MM, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
         assert!(fitted < configured, "should shrink, got {fitted}");
-        assert!(!qr_overflows(fitted, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "shrunk size must fit");
+        assert!(!symbol_overflows(fitted, fitted, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "shrunk size must fit");
     }
 
     #[test]
@@ -1232,9 +1365,9 @@ mod tests {
         let wf = centered_qr_fit(18.0);
         let floor = QR_MIN_MODULE_MM * MM * total as f32;
 
-        let fitted = max_fitting_qr_pt(18.0 * MM, total, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
+        let fitted = max_fitting_symbol_pt(18.0 * MM, 18.0 * MM, total, QR_MIN_MODULE_MM, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
         assert!((fitted - floor).abs() < 1e-3, "expected the floor {floor}, got {fitted}");
-        assert!(qr_overflows(fitted, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "still flagged");
+        assert!(symbol_overflows(fitted, fitted, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "still flagged");
     }
 
     #[test]
@@ -1250,6 +1383,7 @@ mod tests {
             font_sizes: vec![9.0],
             text_y_mm: vec![5.0],
             align: vec![TextAlign::Center],
+            code_kinds: vec![CodeKind::Qr],
             qr_sizes_mm: vec![36.0],
             correct_overflow: true,
             overflow_correction_by_column: true,
@@ -1264,7 +1398,7 @@ mod tests {
         // and shrunk from there.
         assert!(uniform[0] < 36.0 * MM, "column should shrink, got {}", uniform[0]);
         let wf = resolve_word_fit(&opts, &y_positions, 0);
-        assert!(!qr_overflows(uniform[0], &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
+        assert!(!symbol_overflows(uniform[0], uniform[0], &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
     }
 
     #[test]
@@ -1273,9 +1407,10 @@ mod tests {
             font_sizes: vec![9.0, 9.0, 9.0],
             text_y_mm: vec![5.0, 5.0, 5.0],
             align: vec![TextAlign::Center],
+            code_kinds: vec![CodeKind::Qr],
             qr_sizes_mm: vec![14.0],
             qr_ecc: vec![QrEcc::High],
-            qr_templates: vec!["https://s.ro/{code}".to_string()],
+            payload_templates: vec!["https://s.ro/{code}".to_string()],
             ..Options::default()
         };
         let y_positions = vec![5.0 * MM; 3];
@@ -1283,7 +1418,7 @@ mod tests {
             let wf = resolve_word_fit(&opts, &y_positions, idx);
             assert_eq!(wf.qr_size_mm, 14.0);
             assert!(matches!(wf.qr_ecc, QrEcc::High));
-            assert_eq!(wf.qr_template, "https://s.ro/{code}");
+            assert_eq!(wf.payload_template, "https://s.ro/{code}");
         }
     }
 
@@ -1303,6 +1438,114 @@ mod tests {
         // An unconfigured level/template falls back to the documented defaults.
         let wf = resolve_word_fit(&opts, &y_positions, 1);
         assert!(matches!(wf.qr_ecc, QrEcc::Medium));
-        assert_eq!(wf.qr_template, "");
+        assert_eq!(wf.payload_template, "");
+    }
+
+    #[test]
+    fn symbol_box_is_a_rectangle_sitting_above_its_anchor() {
+        // Unlike text, a symbol has no baseline: `y` is the bottom edge, so the whole
+        // rectangle is "ascent" and nothing hangs below — square or not.
+        let b = symbol_box(60.0, 20.0);
+        assert_eq!((b.width, b.ascent, b.descent), (60.0, 20.0, 0.0));
+    }
+
+    #[test]
+    fn a_barcode_centers_by_its_width_not_its_height() {
+        // `resolve_x` is shared with text and QR; a wide, short rectangle must centre
+        // on the width alone.
+        let card_w = 60.0 * MM;
+        let w = 40.0 * MM;
+        let x = resolve_x(TextAlign::Center, None, card_w, 0.0, w, (0.0, card_w), 0.0);
+        assert!((x - (card_w - w) / 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_contour_fit_check_uses_a_non_square_rectangle() {
+        let card = 40.0 * MM;
+        let keep = full_card_keep(card, card);
+        // A 30x8mm barcode near the bottom fits; the same rectangle standing on end
+        // (its width now 30mm tall) would not, which is what proves both dimensions
+        // are actually tested rather than one being reused for the other.
+        assert!(rect_fits_contour(30.0 * MM, 8.0 * MM, 5.0 * MM, 5.0 * MM, 0.0, false, false, &keep, 0.0));
+        assert!(!rect_fits_contour(30.0 * MM, 8.0 * MM, 5.0 * MM, 35.0 * MM, 0.0, false, false, &keep, 0.0));
+        // Rotating the wide rectangle 90 degrees about its centre pushes it off the
+        // top and bottom of the card.
+        assert!(!rect_fits_contour(30.0 * MM, 8.0 * MM, 5.0 * MM, 2.0 * MM, 90.0, false, false, &keep, 0.0));
+    }
+
+    #[test]
+    fn shrinking_a_barcode_keeps_its_aspect_ratio() {
+        // 50mm wide on a 40mm card doesn't fit; the corrector shrinks the width and
+        // must take the height with it, or a squashed barcode comes out.
+        let card_w = 40.0 * MM;
+        let margin = 2.0 * MM;
+        let (cw, ch) = (50.0 * MM, 10.0 * MM);
+        let wf = centered_barcode_fit(50.0, 10.0);
+        assert!(symbol_overflows(cw, ch, &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
+
+        let modules = 100;
+        let w = max_fitting_symbol_pt(cw, ch, modules, MIN_NARROW_BAR_MM, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
+        assert!(w < cw, "should shrink, got {w}");
+        let h = ch * (w / cw);
+        assert!(!symbol_overflows(w, h, &wf, card_w, margin, &[], 0.0, (0.0, card_w)));
+        assert!(((h / w) - (ch / cw)).abs() < 1e-4, "aspect preserved: {} vs {}", h / w, ch / cw);
+    }
+
+    #[test]
+    fn a_barcode_stops_shrinking_at_the_narrow_bar_floor() {
+        // The 1D floor is 0.25mm per module, half the QR module floor — a bar can
+        // print finer than a QR module and still scan.
+        let card_w = 20.0 * MM;
+        let margin = 4.0 * MM;
+        let modules = 100;
+        let wf = centered_barcode_fit(50.0, 10.0);
+        let floor = MIN_NARROW_BAR_MM * MM * modules as f32;
+
+        let w = max_fitting_symbol_pt(50.0 * MM, 10.0 * MM, modules, MIN_NARROW_BAR_MM, &wf, card_w, margin, &[], 0.0, (0.0, card_w));
+        assert!((w - floor).abs() < 1e-3, "expected the floor {floor}, got {w}");
+        assert!(symbol_overflows(w, w * 0.2, &wf, card_w, margin, &[], 0.0, (0.0, card_w)), "still flagged");
+    }
+
+    #[test]
+    fn resolve_word_fit_reads_the_barcode_entries_for_a_barcode_position() {
+        let opts = Options {
+            font_sizes: vec![9.0, 9.0],
+            text_y_mm: vec![5.0, 5.0],
+            align: vec![TextAlign::Center],
+            code_kinds: vec![CodeKind::Text, CodeKind::Barcode],
+            barcode_symbologies: vec![Symbology::Ean13],
+            barcode_widths_mm: vec![40.0],
+            barcode_heights_mm: vec![12.0],
+            ..Options::default()
+        };
+        let y_positions = vec![5.0 * MM; 2];
+        // Position 0 stays text and ignores the (broadcast) barcode entries.
+        let text = resolve_word_fit(&opts, &y_positions, 0);
+        assert!(!text.kind.is_symbol());
+        assert_eq!(symbol_size_pt(&text), (0.0, 0.0));
+        // Position 1 picks them up, single entries broadcasting as everywhere else.
+        let bar = resolve_word_fit(&opts, &y_positions, 1);
+        assert!(matches!(bar.kind, CodeKind::Barcode));
+        assert!(matches!(bar.symbology, Symbology::Ean13));
+        assert_eq!(symbol_size_pt(&bar), (40.0 * MM, 12.0 * MM));
+    }
+
+    #[test]
+    fn encode_symbol_reports_why_a_barcode_was_refused() {
+        let wf = WordFit { symbology: Symbology::Ean13, ..centered_barcode_fit(40.0, 12.0) };
+        let err = encode_symbol(&wf, "AB1234").unwrap_err();
+        assert!(err.contains("EAN-13"), "{err}");
+        assert!(err.contains("12 digits"), "{err}");
+        // A code the symbology accepts goes through.
+        assert!(encode_symbol(&wf, "750103131130").is_ok());
+    }
+
+    #[test]
+    fn the_payload_template_applies_to_barcodes_too() {
+        let wf = WordFit { payload_template: "X{code}", ..centered_barcode_fit(40.0, 12.0) };
+        let plain = encode_symbol(&centered_barcode_fit(40.0, 12.0), "AB12").unwrap();
+        let templated = encode_symbol(&wf, "AB12").unwrap();
+        let modules = |s: &EncodedSymbol| s.modules_across(4);
+        assert!(modules(&templated) > modules(&plain), "the extra character widens the symbol");
     }
 }

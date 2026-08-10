@@ -7,6 +7,8 @@ use crate::generate::generate_pdf;
 use crate::generate::image_bg::build_image_background_pdf;
 use crate::generate::shapes::{build_polygon_pdf, build_shape_pdf, build_simple_background_pdf, ShapeKind};
 use crate::geometry::CardLayout;
+use crate::barcode::Symbology;
+use crate::code_kind::CodeKind;
 use crate::options::Options;
 use crate::qr::QrEcc;
 use lopdf::{Document, Object};
@@ -27,8 +29,8 @@ pub struct WasmGenerateOutput {
     time_cutting_total_s: Option<f32>,
     text_overflow_count: usize,
     text_overflow_samples: Vec<String>,
-    qr_failure_count: usize,
-    qr_failure_samples: Vec<String>,
+    symbol_failure_count: usize,
+    symbol_failure_samples: Vec<(String, String)>,
 }
 
 #[wasm_bindgen]
@@ -95,16 +97,23 @@ impl WasmGenerateOutput {
         self.text_overflow_samples.join("\n")
     }
 
-    // Rows whose QR payload was too long to encode — the symbol was skipped. Counted
-    // and sampled exactly like the text overflows above.
+    // Rows whose symbol the symbology couldn't encode — the symbol was skipped.
+    // Counted and sampled exactly like the text overflows above.
     #[wasm_bindgen(getter)]
-    pub fn qr_failure_count(&self) -> usize {
-        self.qr_failure_count
+    pub fn symbol_failure_count(&self) -> usize {
+        self.symbol_failure_count
     }
 
+    // The offending rows, one per line, each as `row<TAB>reason` — the row so it can
+    // be found in the source data, the reason so the fix is obvious. Tab-separated
+    // because a code may contain anything else.
     #[wasm_bindgen(getter)]
-    pub fn qr_failure_samples(&self) -> String {
-        self.qr_failure_samples.join("\n")
+    pub fn symbol_failure_samples(&self) -> String {
+        self.symbol_failure_samples
+            .iter()
+            .map(|(row, reason)| format!("{row}\t{reason}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -227,11 +236,15 @@ pub fn generate(
         text_contour_blend_modes,
         // The positional entry point keeps the previous fixed spacing.
         text_char_spacing_pt: Vec::new(),
-        // ...and predates QR codes entirely: every position renders as text.
+        // ...and predates the symbol kinds entirely: every position renders as text.
+        code_kinds: Vec::new(),
         qr_sizes_mm: Vec::new(),
         qr_ecc: Vec::new(),
-        qr_templates: Vec::new(),
         qr_quiet_modules: crate::generate::qr::DEFAULT_QUIET_MODULES,
+        barcode_symbologies: Vec::new(),
+        barcode_widths_mm: Vec::new(),
+        barcode_heights_mm: Vec::new(),
+        payload_templates: Vec::new(),
         // The positional entry point always uses the first page.
         background_page_number: 1,
         contour_page_number: 1,
@@ -288,8 +301,8 @@ pub fn generate(
         time_cutting_total_s: out.time_cutting_total_s,
         text_overflow_count: out.text_overflow_count,
         text_overflow_samples: out.text_overflow_samples,
-        qr_failure_count: out.qr_failure_count,
-        qr_failure_samples: out.qr_failure_samples,
+        symbol_failure_count: out.symbol_failure_count,
+        symbol_failure_samples: out.symbol_failure_samples,
     })
 }
 
@@ -395,14 +408,22 @@ struct JsOptions {
     // job can append an extra page cutting only the cards on a partially-filled last
     // sheet. `None` ⇒ single full-grid page (legacy).
     contour_total_cards: Option<u32>,
-    // Per-word QR: the square's side in mm (0 = draw that position as text), the
-    // error-correction level ("L"/"M"/"Q"/"H") and the payload template, in which
-    // `{code}` stands for the position's CSV field. See `qr_*` in src/options.rs.
+    // What each position draws: "text", "qr" or "barcode". Empty = all text.
+    code_kinds: Vec<String>,
+    // Per-word QR: the square's side in mm and the error-correction level
+    // ("L"/"M"/"Q"/"H"). See `qr_*` in src/options.rs.
     qr_sizes_mm: Vec<f32>,
     qr_ecc: Vec<String>,
-    qr_templates: Vec<String>,
     // Quiet-zone width in modules kept inside the square (scalar, all QR positions).
     qr_quiet_modules: u32,
+    // Per-word barcode: the symbology ("code128"/"code39"/"ean13"/"ean8") and the
+    // rectangle it occupies in mm (width includes the quiet zone on both sides).
+    barcode_symbologies: Vec<String>,
+    barcode_widths_mm: Vec<f32>,
+    barcode_heights_mm: Vec<f32>,
+    // Payload template for either symbol kind; `{code}` stands for the position's
+    // CSV field. Empty encodes the bare code.
+    payload_templates: Vec<String>,
 }
 
 impl Default for JsOptions {
@@ -483,12 +504,17 @@ impl Default for JsOptions {
             contour_align_left_mm: base.contour_align_left_mm,
             contour_align_width_mm: base.contour_align_width_mm,
             contour_total_cards: None,
+            // The Rust defaults are empty vecs (⇒ text / Medium / Code 128 for every
+            // position); the wire form is strings, so these start empty too rather
+            // than spelling out a value.
+            code_kinds: Vec::new(),
             qr_sizes_mm: base.qr_sizes_mm,
-            // The Rust default is an empty vec (⇒ Medium for every QR); the wire form
-            // is strings, so it starts empty too rather than spelling out a level.
             qr_ecc: Vec::new(),
-            qr_templates: base.qr_templates,
             qr_quiet_modules: base.qr_quiet_modules,
+            barcode_symbologies: Vec::new(),
+            barcode_widths_mm: base.barcode_widths_mm,
+            barcode_heights_mm: base.barcode_heights_mm,
+            payload_templates: base.payload_templates,
         }
     }
 }
@@ -622,6 +648,16 @@ pub fn generate_with_options(
         .collect::<Result<Vec<QrEcc>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let code_kinds = js_opts.code_kinds.iter()
+        .map(|s| s.parse::<CodeKind>())
+        .collect::<Result<Vec<CodeKind>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
+    let barcode_symbologies = js_opts.barcode_symbologies.iter()
+        .map(|s| s.parse::<Symbology>())
+        .collect::<Result<Vec<Symbology>, String>>()
+        .map_err(|e| JsError::new(&e))?;
+
     let opts = Options {
         host_width_mm: js_opts.host_width_mm,
         host_height_mm: js_opts.host_height_mm,
@@ -700,10 +736,14 @@ pub fn generate_with_options(
         contour_align_left_mm: js_opts.contour_align_left_mm,
         contour_align_width_mm: js_opts.contour_align_width_mm,
         contour_total_cards: js_opts.contour_total_cards.map(|n| n as usize),
+        code_kinds,
         qr_sizes_mm: js_opts.qr_sizes_mm,
         qr_ecc,
-        qr_templates: js_opts.qr_templates,
         qr_quiet_modules: js_opts.qr_quiet_modules,
+        barcode_symbologies,
+        barcode_widths_mm: js_opts.barcode_widths_mm,
+        barcode_heights_mm: js_opts.barcode_heights_mm,
+        payload_templates: js_opts.payload_templates,
     };
 
     let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
@@ -722,8 +762,8 @@ pub fn generate_with_options(
         time_cutting_total_s: out.time_cutting_total_s,
         text_overflow_count: out.text_overflow_count,
         text_overflow_samples: out.text_overflow_samples,
-        qr_failure_count: out.qr_failure_count,
-        qr_failure_samples: out.qr_failure_samples,
+        symbol_failure_count: out.symbol_failure_count,
+        symbol_failure_samples: out.symbol_failure_samples,
     })
 }
 
@@ -840,6 +880,32 @@ pub fn qr_matrix(text: &str, ecc: &str) -> Result<Vec<u8>, JsError> {
     out.push(n as u8);
     out.extend_from_slice(&bits);
     Ok(out)
+}
+
+// Encode `text` as a 1D barcode's module row for the live preview: one byte per
+// module (1 = bar), quiet zone excluded — the caller insets it. `symbology` is
+// "code128", "code39", "ean13" or "ean8".
+//
+// Like `qr_matrix` above, this is the same encoder the generated PDF uses, so the
+// preview can't drift from the printed symbol. An `Err` carries the reason the
+// symbology refused the payload, which the UI shows verbatim.
+#[wasm_bindgen]
+pub fn barcode_bits(text: &str, symbology: &str) -> Result<Vec<u8>, JsError> {
+    let sym = symbology.parse::<Symbology>().map_err(|e| JsError::new(&e))?;
+    crate::generate::barcode::barcode_bits(sym, text)
+        .map(|(bits, _)| bits)
+        .map_err(|e| JsError::new(&e))
+}
+
+// The quiet zone, in modules, `barcode_bits`' symbology keeps on each side. The
+// preview needs it to lay the bars out inside the stated width exactly as the
+// generator does.
+#[wasm_bindgen]
+pub fn barcode_quiet_modules(symbology: &str) -> Result<usize, JsError> {
+    symbology
+        .parse::<Symbology>()
+        .map(|s| s.quiet_modules())
+        .map_err(|e| JsError::new(&e))
 }
 
 // Generate a single-page background PDF sized `card_width_mm` x

@@ -2,8 +2,9 @@
 // whose side the caller supplies in points; the quiet zone is drawn *inside*
 // that square, so the stated size is the real footprint the user must reserve
 // on the card (see `qr_sizes_mm` in src/options.rs).
-use lopdf::{Object, content::Operation};
+use lopdf::content::Operation;
 
+use crate::generate::symbol::module_rects;
 use crate::qr::QrEcc;
 
 // Quiet-zone width in modules mandated by the QR standard. `Options::qr_quiet_modules`
@@ -16,8 +17,8 @@ pub(crate) const CODE_PLACEHOLDER: &str = "{code}";
 
 // Substitute the code into the payload template. An empty template encodes the
 // bare code, which is also what a template without the placeholder yields for
-// callers that want a constant payload.
-pub(crate) fn qr_payload(template: &str, code: &str) -> String {
+// callers that want a constant payload. Shared by both symbol kinds.
+pub(crate) fn code_payload(template: &str, code: &str) -> String {
     if template.is_empty() {
         code.to_string()
     } else {
@@ -55,67 +56,24 @@ pub(crate) fn qr_rect_operations(
     size_pt: f32,
     quiet: u32,
 ) -> Vec<Operation> {
-    let total = n + 2 * quiet as usize;
-    let module = size_pt / total as f32;
-
-    // One `re` per *horizontal run* of dark modules rather than per module: a
-    // 33x33 symbol drops from ~550 rectangles to ~150, and this content stream
-    // is rebuilt for every card in the job.
-    let mut ops = Vec::new();
-    for row in 0..n {
-        // The matrix runs top-down, the page bottom-up: row 0 is the top row of
-        // modules, which sits one quiet zone below the square's top edge.
-        let py = y + size_pt - (quiet as usize + row + 1) as f32 * module;
-        let mut col = 0;
-        while col < n {
-            if bits[row * n + col] == 0 {
-                col += 1;
-                continue;
-            }
-            let start = col;
-            while col < n && bits[row * n + col] == 1 {
-                col += 1;
-            }
-            let px = x + (quiet as usize + start) as f32 * module;
-            ops.push(Operation::new("re", vec![
-                Object::Real(px),
-                Object::Real(py),
-                Object::Real((col - start) as f32 * module),
-                Object::Real(module),
-            ]));
-        }
-    }
-    // A single `f` fills every subpath accumulated above — one operator for the
-    // whole symbol instead of one per rectangle.
-    if !ops.is_empty() {
-        ops.push(Operation::new("f", vec![]));
-    }
-    ops
+    // The quiet zone is drawn inside the stated square, so the modules occupy the
+    // side minus one zone at each edge.
+    let module = size_pt / (n + 2 * quiet as usize) as f32;
+    let inset = quiet as f32 * module;
+    module_rects(n, n, bits, x + inset, y + size_pt - inset, module, module)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Pull the (x, y, w, h) operands out of the emitted `re` operations.
-    fn rects(ops: &[Operation]) -> Vec<(f32, f32, f32, f32)> {
-        let num = |o: &Object| match o {
-            Object::Real(v) => *v,
-            Object::Integer(v) => *v as f32,
-            _ => panic!("non-numeric operand"),
-        };
-        ops.iter()
-            .filter(|op| op.operator == "re")
-            .map(|op| (num(&op.operands[0]), num(&op.operands[1]), num(&op.operands[2]), num(&op.operands[3])))
-            .collect()
-    }
+    use crate::generate::symbol::test_support::rects;
 
     #[test]
-    fn qr_payload_substitutes_or_passes_through() {
-        assert_eq!(qr_payload("", "AB1234"), "AB1234");
-        assert_eq!(qr_payload("https://site.ro/v?c={code}", "AB1234"), "https://site.ro/v?c=AB1234");
+    fn code_payload_substitutes_or_passes_through() {
+        assert_eq!(code_payload("", "AB1234"), "AB1234");
+        assert_eq!(code_payload("https://site.ro/v?c={code}", "AB1234"), "https://site.ro/v?c=AB1234");
         // Repeated placeholders all get the code.
-        assert_eq!(qr_payload("{code}-{code}", "X"), "X-X");
+        assert_eq!(code_payload("{code}-{code}", "X"), "X-X");
     }
 
     #[test]

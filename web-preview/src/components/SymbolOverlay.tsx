@@ -1,15 +1,16 @@
-// The preview counterpart of the QR branch in src/generate/cards.rs: a code whose
-// `kind` is 'qr' is drawn as a square of modules instead of glyphs. Placement,
+// The preview counterpart of the symbol branch in src/generate/cards.rs: a code whose
+// `kind` isn't 'text' is drawn as a grid of modules instead of glyphs. Placement,
 // dragging, selection and the background rectangle behave exactly as they do for
-// text — only what fills the box differs.
+// text — only what fills the box differs, and both symbol kinds fill it the same way
+// (one run-merged path), so one component serves both.
 import { useEffect, useState } from 'react'
-import { MM, qrPayload, type WordStyle } from '../lib/options'
+import { MM, symbolSizeMm, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
-import { qrMatrixAsync, qrPathData, type QrMatrix } from '../lib/qrMatrix'
+import { encodeSymbolAsync, modulePathData, type ModuleGrid } from '../lib/symbolBits'
 import { useArrowNudge, useCodeDrag } from '../lib/codeDrag'
 import { SelectionAnts } from './SelectionAnts'
 
-export function QrOverlay({
+export function SymbolOverlay({
   word,
   cardWidthPt,
   cardHeightPt,
@@ -30,23 +31,28 @@ export function QrOverlay({
   onSelect: () => void
   onChange: (next: Partial<WordStyle>) => void
 }) {
-  const [matrix, setMatrix] = useState<QrMatrix | null>(null)
-  const payload = qrPayload(word)
+  const [grid, setGrid] = useState<ModuleGrid | null>(null)
 
+  // Re-encode whenever anything the payload or the symbol shape depends on changes.
+  // Not the size — that only scales the same grid.
+  const { text, kind, qrEcc, symbology, payloadTemplate } = word
   useEffect(() => {
     let cancelled = false
     // The encoder lives in wasm, which may still be loading on the first render.
-    qrMatrixAsync(payload, word.qrEcc).then((m) => {
-      if (!cancelled) setMatrix(m)
+    encodeSymbolAsync(word).then((result) => {
+      if (!cancelled) setGrid('grid' in result ? result.grid : null)
     })
     return () => {
       cancelled = true
     }
-  }, [payload, word.qrEcc])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, kind, qrEcc, symbology, payloadTemplate])
 
-  // A QR is square, so its box needs no measuring — unlike text, the size is known
-  // before the symbol is even encoded.
-  const sidePt = word.qrSizeMm * MM
+  // A symbol's rectangle is known before the symbol is even encoded — unlike text,
+  // nothing needs measuring.
+  const { widthMm, heightMm } = symbolSizeMm(word)
+  const widthPt = widthMm * MM
+  const heightPt = heightMm * MM
   const safeMarginPt = safeMarginMm * MM
 
   const xPt =
@@ -55,20 +61,21 @@ export function QrOverlay({
       : word.align === 'left'
         ? safeMarginPt
         : word.align === 'right'
-          ? cardWidthPt - sidePt - safeMarginPt
-          : (cardWidthPt - sidePt) / 2
+          ? cardWidthPt - widthPt - safeMarginPt
+          : (cardWidthPt - widthPt) / 2
 
-  // `yMm` is the square's *bottom* edge (a QR has no baseline), so in SVG's y-down
-  // space the box starts a full side higher. Matches `qr_box` in cards.rs.
-  const yTopSvg = cardHeightPt - word.yMm * MM - sidePt
+  // `yMm` is the rectangle's *bottom* edge (a symbol has no baseline), so in SVG's
+  // y-down space the box starts its full height higher. Matches `symbol_box` in
+  // cards.rs.
+  const yTopSvg = cardHeightPt - word.yMm * MM - heightPt
 
   const resolvedXMm = word.xMm ?? xPt / MM
   useArrowNudge({ selected, svgRef, xMm: resolvedXMm, yMm: word.yMm, cardWidthPt, cardHeightPt, onChange })
   const handlePointerDown = useCodeDrag({ svgRef, xMm: resolvedXMm, yMm: word.yMm, onSelect, onChange })
 
-  // Flip/rotate about the square's centre, the same pivot the generator uses.
-  const cxSvg = xPt + sidePt / 2
-  const cySvg = yTopSvg + sidePt / 2
+  // Flip/rotate about the rectangle's centre, the same pivot the generator uses.
+  const cxSvg = xPt + widthPt / 2
+  const cySvg = yTopSvg + heightPt / 2
   const transformParts: string[] = []
   if (word.flipX || word.flipY) {
     transformParts.push(
@@ -83,7 +90,7 @@ export function QrOverlay({
   const transform = transformParts.length > 0 ? transformParts.join(' ') : undefined
 
   const padPt = backgroundPaddingMm * MM
-  const rectWPt = word.backgroundWidthMm !== null ? word.backgroundWidthMm * MM : sidePt + 2 * padPt
+  const rectWPt = word.backgroundWidthMm !== null ? word.backgroundWidthMm * MM : widthPt + 2 * padPt
   const rectXPt = word.backgroundWidthMm !== null ? cxSvg - rectWPt / 2 : xPt - padPt
 
   return (
@@ -95,8 +102,8 @@ export function QrOverlay({
         <SelectionAnts
           x={xPt - 2}
           y={yTopSvg - 2}
-          width={sidePt + 4}
-          height={sidePt + 4}
+          width={widthPt + 4}
+          height={heightPt + 4}
           transform={transform}
         />
       )}
@@ -106,32 +113,33 @@ export function QrOverlay({
           x={rectXPt}
           y={yTopSvg - padPt}
           width={rectWPt}
-          height={sidePt + 2 * padPt}
+          height={heightPt + 2 * padPt}
           fill={colorToCss(word.background)}
           fillOpacity={word.backgroundAlpha}
           style={{ mixBlendMode: word.backgroundBlendMode }}
         />
       )}
-      {matrix ? (
+      {grid ? (
         // One path for the whole symbol: every dark run is a subpath, so the browser
         // handles a few hundred modules as a single node.
         <path
           transform={transform}
-          d={qrPathData(matrix, xPt, yTopSvg, sidePt)}
+          d={modulePathData(grid, xPt, yTopSvg, widthPt, heightPt)}
           fill={colorToCss(word.color)}
           fillOpacity={word.opacity ?? 1}
           style={{ mixBlendMode: word.blendMode }}
         />
       ) : (
-        // Payload too long to encode (or wasm not ready yet): outline the reserved
-        // square so the code is still selectable and draggable. The generator
-        // likewise leaves the symbol off and reports the row.
+        // The symbology refused the payload (or wasm isn't ready yet): outline the
+        // reserved rectangle so the code stays selectable and draggable. The
+        // generator likewise leaves the symbol off and reports the row — the panel
+        // shows the reason.
         <rect
           transform={transform}
           x={xPt}
           y={yTopSvg}
-          width={sidePt}
-          height={sidePt}
+          width={widthPt}
+          height={heightPt}
           fill="none"
           stroke={colorToCss(word.color)}
           strokeOpacity={0.4}

@@ -1,11 +1,11 @@
 import { useId, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
-import { MM, type BlendMode, type WordStyle } from '../lib/options'
+import { MM, isSymbolKind, type BlendMode, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
 import { contourMaskPathD } from '../lib/contourMask'
 import { flattenPathD, rotate, type Pt } from '../lib/contourKeepRegion'
 import { WordOverlay } from './WordOverlay'
-import { QrOverlay } from './QrOverlay'
+import { SymbolOverlay } from './SymbolOverlay'
 import { ContourOverlay } from './ContourOverlay'
 
 // Describes the cut region for the "dim exterior" overlay. A preset shape carries
@@ -369,11 +369,11 @@ export function CardCanvas({
         />
       )}
       {words.map((word, index) =>
-        // A QR code replaces the glyphs with a module square; everything else about
-        // the code (position, selection, dragging) is the same, so the two overlays
-        // share ./codeInteraction. Mirrors the branch in src/generate/cards.rs.
-        word.kind === 'qr' ? (
-          <QrOverlay
+        // A symbol (QR or barcode) replaces the glyphs with a module grid; everything
+        // else about the code (position, selection, dragging) is the same, so the two
+        // overlays share ../lib/codeDrag. Mirrors the branch in src/generate/cards.rs.
+        isSymbolKind(word.kind) ? (
+          <SymbolOverlay
             key={index}
             word={word}
             cardWidthPt={cardWidthPt}

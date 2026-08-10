@@ -19,6 +19,11 @@ export interface PrintArtifact {
   overflowCount: number
   /** Every distinct offending row (whole row, first-seen order), for the warning + CSV. */
   overflowSamples: string[]
+  /** How many rows have a QR/barcode the symbology couldn't encode (the symbol is
+   *  left off the card; the rest of the row still prints). */
+  symbolFailureCount: number
+  /** Every distinct such row as `row<TAB>reason`, first-seen order. */
+  symbolFailureSamples: string[]
 }
 
 export interface BatchResult {

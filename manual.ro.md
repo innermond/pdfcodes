@@ -638,17 +638,18 @@ câmpurile se aplică **doar cuvântului selectat**.
 ![Panoul de proprietăți al unui cuvânt, cu grupurile Tipografie, Poziție, Stil, Fundal text și Contur text](manual-assets/s3-properties.png)
 
 **Desenează codul ca:** fiecare cod se desenează fie ca **Text** (litere, varianta
-implicită), fie ca **Cod QR** — codul QR al codului respectiv, în locul lui.
-Comutarea pe *Cod QR* înlocuiește grupul Tipografie cu grupul **Cod QR** de mai
-jos și ascunde *Contur text* (conturarea marginilor modulelor doar le îngroașă și
-strică lizibilitatea simbolului). Restul — poziția, alinierea, culoarea,
-opacitatea, modul de amestecare, rotația, oglindirea și fundalul textului —
-funcționează exact ca la text.
+implicită), fie ca **Cod QR**, fie ca **Bare de cod** — adică simbolul citibil de
+scaner al codului respectiv, în locul lui. Comutarea pe un simbol înlocuiește grupul
+Tipografie cu grupul corespunzător de mai jos și ascunde *Contur text* (conturarea
+marginilor modulelor doar le îngroașă și strică lizibilitatea simbolului). Restul —
+poziția, alinierea, culoarea, opacitatea, modul de amestecare, rotația, oglindirea și
+fundalul textului — funcționează exact ca la text.
 
-> Ca să tipărești **și** codul ca text, **și** codul QR, folosește două coduri:
+> Ca să tipărești **și** codul ca text, **și** simbolul, folosește două coduri:
 > rândul din CSV trebuie să conțină valoarea de două ori (două câmpuri), unul
-> setat pe *Text*, celălalt pe *Cod QR*. Un rând cu un singur câmp desenează un
-> singur cod.
+> setat pe *Text*, celălalt pe *Cod QR* / *Bare de cod*. Un rând cu un singur câmp
+> desenează un singur cod. Barele de cod nu tipăresc cifrele dedesubt — dacă le vrei,
+> al doilea cod (Text) e chiar acela.
 
 **Cod QR** (doar când tipul e *Cod QR*):
 
@@ -665,6 +666,43 @@ funcționează exact ca la text.
   adresă web, de exemplu `https://exemplu.ro/v?c={code}`.
 
 ![Grupul „Cod QR”: tipul, dimensiunea, corecția de erori și șablonul de conținut](manual-assets/s3-qr.png)
+
+**Bare de cod** (doar când tipul e *Bare de cod*):
+
+- **Simbologie** — ce fel de cod de bare se desenează. Fiecare acceptă altceva:
+  - **Code 128** — orice caractere, cel mai compact. E singura care codifică
+    întocmai codurile alfanumerice generate de aplicație, deci e varianta implicită.
+    Pentru coduri formate doar din cifre (număr par de cifre) trece automat pe
+    codificarea dublă, care înjumătățește lățimea.
+  - **Code 39** — doar MAJUSCULE, cifre și `- . spațiu $ / + %`. Iese cam de 2,5 ori
+    mai lat decât Code 128, dar e ce cer scanerele industriale mai vechi.
+  - **EAN-13** — exact 12 cifre (sau 13, dacă incluzi tu cifra de control, care e
+    verificată). E codul de articol din comerț.
+  - **EAN-8** — exact 7 cifre (sau 8 cu cifra de control), pentru ambalaje mici.
+- **Lățime (mm)** și **Înălțime (mm)** — dreptunghiul ocupat. Lățimea include
+  **zona liberă** de o parte și de alta a simbolului, deci e spațiul total pe care
+  trebuie să-l păstrezi liber pe carton. Ca și la codul QR, **Y (mm)** e **marginea
+  de jos** a dreptunghiului.
+- **Conținut codificat** — la fel ca la codul QR: gol = se codifică exact codul,
+  altfel `{code}` e înlocuit cu codul fiecărui rând.
+
+> **EAN cere coduri numerice.** Dacă alegi EAN-13 sau EAN-8 iar codurile de la pasul
+> „Date” sunt alfanumerice sau de altă lungime, **toate rândurile eșuează** —
+> aplicația te avertizează imediat, chiar sub simbologie. Fie schimbi simbologia, fie
+> setezi sursa de coduri pe „Numeric” cu lungimea potrivită.
+
+> **Ai grijă la bara îngustă.** Lățimea celei mai subțiri bare iese din lățimea totală
+> împărțită la numărul de module; dacă scade sub **0,25 mm**, aplicația te avertizează,
+> pentru că sub această mărime tipărirea și scanarea devin nesigure. Un cod mai lung în
+> aceeași lățime înseamnă bare mai subțiri, deci soluția e ori o *Lățime* mai mare, ori
+> un cod mai scurt.
+
+Dacă un cod nu poate fi codificat deloc (conținut prea lung pentru QR, caractere sau
+lungime greșite pentru simbologia aleasă), simbolul e **lăsat deoparte** de pe cardul
+respectiv, iar restul cardului se tipărește normal. Generarea reușește, iar panoul de
+rezultat listează câte rânduri au pățit-o și de ce, cu un CSV descărcabil.
+
+![Grupul „Bare de cod”: simbologia, lățimea, înălțimea și șablonul de conținut](manual-assets/s3-barcode.png)
 
 > **Ai grijă la dimensiunea modulului.** Un cod QR e o grilă de pătrățele
 > („module”); dacă unul iese mai mic de **0,5 mm**, aplicația te avertizează,

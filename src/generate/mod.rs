@@ -1,3 +1,4 @@
+pub(crate) mod barcode;
 mod cards;
 mod contour;
 pub mod image_bg;
@@ -5,6 +6,7 @@ mod ocg;
 mod overlay;
 pub(crate) mod qr;
 pub mod shapes;
+pub(crate) mod symbol;
 
 use lopdf::{Document, Object, Stream, Dictionary, content::{Operation, Content}};
 
@@ -51,10 +53,11 @@ pub struct GenerateOutput {
     // a few distinct offending codes — for warning that some codes won't fit.
     pub text_overflow_count: usize,
     pub text_overflow_samples: Vec<String>,
-    // Same, for QR codes whose payload was too long to encode: the symbol is left off
-    // the card and the row reported, rather than failing the job.
-    pub qr_failure_count: usize,
-    pub qr_failure_samples: Vec<String>,
+    // Same, for symbols (QR or barcode) whose payload the symbology couldn't encode:
+    // the symbol is left off the card and the row reported, rather than failing the
+    // job. Each sample is the offending row paired with the reason it was refused.
+    pub symbol_failure_count: usize,
+    pub symbol_failure_samples: Vec<(String, String)>,
 }
 
 // Path-length/node/sharp-turn/cutting-time measurements derived from a
@@ -518,8 +521,8 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
             // Contour PDFs contain no text, so nothing can overflow.
             text_overflow_count: 0,
             text_overflow_samples: Vec::new(),
-            qr_failure_count: 0,
-            qr_failure_samples: Vec::new(),
+            symbol_failure_count: 0,
+            symbol_failure_samples: Vec::new(),
         });
     }
 
@@ -710,8 +713,8 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         time_cutting_total_s: None,
         text_overflow_count: text_overflow.count,
         text_overflow_samples: text_overflow.samples,
-        qr_failure_count: text_overflow.qr_failure_count,
-        qr_failure_samples: text_overflow.qr_failures,
+        symbol_failure_count: text_overflow.symbol_failure_count,
+        symbol_failure_samples: text_overflow.symbol_failures,
     })
 }
 
@@ -720,6 +723,8 @@ mod tests {
     use super::*;
     use crate::align::TextAlign;
     use crate::blend::BlendMode;
+    use crate::barcode::Symbology;
+    use crate::code_kind::CodeKind;
     use crate::color::{parse_color, parse_color_or_none};
 
     static BACKGROUND_PDF: &[u8] = include_bytes!("../../15x15.pdf");
@@ -2197,6 +2202,7 @@ mod tests {
         let opts = Options {
             font_sizes: vec![9.0, 9.0],
             text_y_mm: vec![10.0, 2.0],
+            code_kinds: vec![CodeKind::Text, CodeKind::Qr],
             qr_sizes_mm: vec![0.0, 8.0],
             ..Options::default()
         };
@@ -2211,7 +2217,7 @@ mod tests {
         let rects = ops.iter().filter(|op| op.operator == "re").count();
         assert!(rects > 20, "expected a module grid, got {rects} rectangles");
         assert!(ops.iter().any(|op| op.operator == "f"), "modules are filled");
-        assert_eq!(out.qr_failure_count, 0);
+        assert_eq!(out.symbol_failure_count, 0);
 
         // The graphics state must come back balanced: an unmatched `q` in the QR
         // branch would leak its colour and transform onto whatever is drawn next.
@@ -2235,6 +2241,7 @@ mod tests {
         let base = Options {
             font_sizes: vec![9.0],
             text_y_mm: vec![5.0],
+            code_kinds: vec![CodeKind::Qr],
             qr_sizes_mm: vec![12.0],
             ..Options::default()
         };
@@ -2243,7 +2250,7 @@ mod tests {
             Some("AB12\n"),
             BACKGROUND_PDF,
             None,
-            &Options { qr_templates: vec!["https://example.ro/verify?c={code}".to_string()], ..base.clone() },
+            &Options { payload_templates: vec!["https://example.ro/verify?c={code}".to_string()], ..base.clone() },
         )
         .unwrap();
 
@@ -2258,16 +2265,103 @@ mod tests {
         let opts = Options {
             font_sizes: vec![9.0],
             text_y_mm: vec![5.0],
+            code_kinds: vec![CodeKind::Qr],
             qr_sizes_mm: vec![12.0],
-            qr_templates: vec![format!("{}{{code}}", "x".repeat(3000))],
+            payload_templates: vec![format!("{}{{code}}", "x".repeat(3000))],
             ..Options::default()
         };
         let out = generate_pdf(Some("AB12\n"), BACKGROUND_PDF, None, &opts).expect("job should still succeed");
-        assert_eq!(out.qr_failure_count, 1);
-        assert_eq!(out.qr_failure_samples, vec!["AB12".to_string()]);
+        assert_eq!(out.symbol_failure_count, 1);
+        let (row, reason) = &out.symbol_failure_samples[0];
+        assert_eq!(row, "AB12");
+        assert!(reason.contains("too long"), "the reason reaches the caller: {reason}");
         let ops = &card_operations(&out.pdf)[0];
         assert!(ops.iter().all(|op| op.operator != "Tj"), "the QR replaced the text, so no glyphs either");
         assert!(ops.iter().filter(|op| op.operator == "re").count() < 5, "no module grid drawn");
+    }
+
+    #[test]
+    fn barcode_position_draws_bars_instead_of_glyphs() {
+        // Two positions: the first stays text, the second becomes a Code 128 barcode.
+        let opts = Options {
+            font_sizes: vec![9.0, 9.0],
+            text_y_mm: vec![10.0, 2.0],
+            code_kinds: vec![CodeKind::Text, CodeKind::Barcode],
+            barcode_symbologies: vec![Symbology::Code128],
+            barcode_widths_mm: vec![12.0],
+            barcode_heights_mm: vec![4.0],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("AB12 AB12\n"), BACKGROUND_PDF, None, &opts).expect("print gen should succeed");
+        let cards = card_operations(&out.pdf);
+        assert_eq!(cards.len(), 1);
+        let ops = &cards[0];
+
+        assert_eq!(ops.iter().filter(|op| op.operator == "Tj").count(), 1, "one text code");
+        let bars: Vec<_> = ops.iter().filter(|op| op.operator == "re").collect();
+        assert!(bars.len() > 10, "expected a bar pattern, got {} rectangles", bars.len());
+        assert_eq!(out.symbol_failure_count, 0);
+
+        // Every bar is the same height (the rectangle's), which is what makes it a 1D
+        // symbol rather than a grid.
+        let height = |op: &&Operation| match &op.operands[3] {
+            Object::Real(v) => *v,
+            o => panic!("unexpected {o:?}"),
+        };
+        let h0 = height(&bars[0]);
+        assert!(bars.iter().all(|op| (height(op) - h0).abs() < 1e-3), "all bars share one height");
+        assert!((h0 - 4.0 * crate::geometry::MM).abs() < 1e-3, "bars span the configured height, got {h0}");
+
+        let mut depth = 0i32;
+        for op in ops {
+            match op.operator.as_str() {
+                "q" => depth += 1,
+                "Q" => depth -= 1,
+                _ => {}
+            }
+            assert!(depth >= 0, "more Q than q");
+        }
+        assert_eq!(depth, 0, "unbalanced q/Q on the card");
+    }
+
+    #[test]
+    fn a_barcode_the_symbology_cannot_encode_is_reported_with_its_reason() {
+        // EAN-13 against alphanumeric codes: every row fails, and the job must still
+        // produce a file that says why rather than dying or going silently blank.
+        let opts = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![5.0],
+            code_kinds: vec![CodeKind::Barcode],
+            barcode_symbologies: vec![Symbology::Ean13],
+            barcode_widths_mm: vec![12.0],
+            barcode_heights_mm: vec![4.0],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("AB12QT\nCD34RS\n"), BACKGROUND_PDF, None, &opts).expect("job should still succeed");
+        assert_eq!(out.symbol_failure_count, 2, "both rows failed");
+        assert_eq!(out.symbol_failure_samples.len(), 2, "both are distinct");
+        let (row, reason) = &out.symbol_failure_samples[0];
+        assert_eq!(row, "AB12QT");
+        assert!(reason.contains("EAN-13") && reason.contains("not all digits"), "{reason}");
+        // ...and nothing was drawn for them.
+        assert!(card_operations(&out.pdf)[0].iter().filter(|op| op.operator == "re").count() < 5);
+    }
+
+    #[test]
+    fn a_numeric_code_source_makes_ean13_work_end_to_end() {
+        // The configuration EAN-13 actually needs: 12 numeric digits per row.
+        let opts = Options {
+            font_sizes: vec![9.0],
+            text_y_mm: vec![5.0],
+            code_kinds: vec![CodeKind::Barcode],
+            barcode_symbologies: vec![Symbology::Ean13],
+            barcode_widths_mm: vec![13.0],
+            barcode_heights_mm: vec![5.0],
+            ..Options::default()
+        };
+        let out = generate_pdf(Some("750103131130\n"), BACKGROUND_PDF, None, &opts).expect("print gen should succeed");
+        assert_eq!(out.symbol_failure_count, 0);
+        assert!(card_operations(&out.pdf)[0].iter().filter(|op| op.operator == "re").count() > 10);
     }
 
     #[test]
@@ -2277,6 +2371,7 @@ mod tests {
         let opts = Options {
             font_sizes: vec![9.0],
             text_y_mm: vec![5.0],
+            code_kinds: vec![CodeKind::Qr],
             qr_sizes_mm: vec![10.0],
             text_backgrounds: vec![Some(TextColor::Rgb(1.0, 1.0, 1.0))],
             text_background_padding_mm: 0.0,

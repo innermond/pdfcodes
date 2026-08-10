@@ -78,11 +78,30 @@ export const BLEND_MODES: BlendMode[] = [
   'luminosity',
 ]
 
-// How a code is drawn: as text (glyphs from the chosen font) or as the QR code of
-// its own value. A QR occupies a square instead of a glyph run, so `qrSizeMm`
-// replaces `fontSizePt` for it; everything else (position, alignment, color,
-// background, rotation) works the same way. See `qr_sizes_mm` in src/options.rs.
-export type CodeKind = 'text' | 'qr'
+// How a code is drawn: as text (glyphs from the chosen font), or as one of the
+// machine-readable symbols that take its place. A symbol occupies a rectangle
+// instead of a glyph run, so its own size fields replace `fontSizePt`; everything
+// else (position, alignment, color, background, rotation) works the same way.
+// See `code_kinds` in src/options.rs.
+export type CodeKind = 'text' | 'qr' | 'barcode'
+
+// True for the kinds drawn as a grid of modules rather than glyphs — they share the
+// whole placement path but need no font and get no glyph outline. Mirrors
+// `CodeKind::is_symbol` in src/code_kind.rs.
+export function isSymbolKind(kind: CodeKind): boolean {
+  return kind !== 'text'
+}
+
+// The 1D barcode symbologies, matching `Symbology` in src/barcode.rs. Only Code 128
+// encodes an arbitrary alphanumeric code; the rest constrain the charset or length,
+// which is what `symbologyFitsColumn` warns about.
+export type Symbology = 'code128' | 'code39' | 'ean13' | 'ean8'
+
+export const SYMBOLOGIES: Symbology[] = ['code128', 'code39', 'ean13', 'ean8']
+
+// Smallest narrow-bar width (mm) a barcode should print at to stay scannable,
+// matching `MIN_NARROW_BAR_MM` in src/generate/barcode.rs. The UI warns below this.
+export const MIN_NARROW_BAR_MM = 0.25
 
 // QR error-correction level, matching `QrEcc` in src/qr.rs. Higher levels survive
 // more print damage but need more modules for the same payload.
@@ -90,7 +109,7 @@ export type QrEcc = 'L' | 'M' | 'Q' | 'H'
 
 export const QR_ECC_LEVELS: QrEcc[] = ['L', 'M', 'Q', 'H']
 
-// The placeholder replaced with the code's own text when building a QR payload,
+// The placeholder replaced with the code's own text when building a symbol payload,
 // matching `CODE_PLACEHOLDER` in src/generate/qr.rs.
 export const QR_CODE_PLACEHOLDER = '{code}'
 
@@ -102,11 +121,11 @@ export const QR_QUIET_MODULES = 4
 // `QR_MIN_MODULE_MM` in src/generate/cards.rs. The UI warns below this.
 export const QR_MIN_MODULE_MM = 0.5
 
-// The payload a QR word encodes: its template with `{code}` substituted, or the
-// bare code when no template is set. Mirrors `qr_payload` in src/generate/qr.rs.
-export function qrPayload(word: WordStyle): string {
-  if (!word.qrTemplate) return word.text
-  return word.qrTemplate.split(QR_CODE_PLACEHOLDER).join(word.text)
+// The payload a symbol word encodes: its template with `{code}` substituted, or the
+// bare code when no template is set. Mirrors `code_payload` in src/generate/qr.rs.
+export function codePayload(word: WordStyle): string {
+  if (!word.payloadTemplate) return word.text
+  return word.payloadTemplate.split(QR_CODE_PLACEHOLDER).join(word.text)
 }
 
 // Per-word style, mirroring the per-word arrays in the main app's "Stil
@@ -115,17 +134,22 @@ export function qrPayload(word: WordStyle): string {
 // width, etc.)
 export interface WordStyle {
   text: string
-  // 'text' draws the glyphs; 'qr' replaces them with the code's QR square. The
-  // `qr*` fields below only apply to 'qr', and `fontSizePt`/`charSpacingPt`/
-  // `contourColor` only to 'text'.
+  // 'text' draws the glyphs; the symbol kinds replace them. The `qr*` fields apply
+  // to 'qr', the `barcode*` fields to 'barcode', `payloadTemplate` to both, and
+  // `fontSizePt`/`charSpacingPt`/`contourColor` only to 'text'.
   kind: CodeKind
   // Side of the QR square in mm, quiet zone included — the real footprint on the
-  // card. Ignored when `kind` is 'text'.
+  // card.
   qrSizeMm: number
   qrEcc: QrEcc
+  symbology: Symbology
+  // The barcode rectangle in mm. The width includes the symbology's quiet zone on
+  // both sides, so the narrow-bar width follows from it.
+  barcodeWidthMm: number
+  barcodeHeightMm: number
   // Payload template; `{code}` is replaced with this word's text. Empty encodes
-  // the bare code.
-  qrTemplate: string
+  // the bare code. Applies to either symbol kind.
+  payloadTemplate: string
   fontSizePt: number
   align: Align
   valign: VAlign
@@ -152,13 +176,17 @@ export interface WordStyle {
 export function defaultWordStyle(index: number): WordStyle {
   return {
     text: '',
-    // Codes are text unless the user switches this word to QR. Presets saved
-    // before QR existed have no `kind`, and App spreads this default under them,
-    // so they keep loading as text.
+    // Codes are text unless the user switches this word to a symbol. Presets saved
+    // before the symbol kinds existed have no `kind`, and App spreads this default
+    // under them, so they keep loading as text.
     kind: 'text',
     qrSizeMm: 12,
     qrEcc: 'M',
-    qrTemplate: '',
+    symbology: 'code128',
+    // Wide and short: the shape a 1D barcode actually wants.
+    barcodeWidthMm: 30,
+    barcodeHeightMm: 10,
+    payloadTemplate: '',
     fontSizePt: 9,
     align: 'center',
     // The primary word starts dead-centre on the card: `align: 'center'` +
@@ -186,6 +214,26 @@ export function defaultWordStyle(index: number): WordStyle {
   }
 }
 
+// Bring a word loaded from a saved preset up to the current shape. Only needed for
+// renames — missing fields already fall back to `defaultWordStyle`. Presets written
+// between the QR and barcode releases carry `qrTemplate`, which is now
+// `payloadTemplate` because both symbol kinds use it.
+export function migrateWord(word: WordStyle): WordStyle {
+  const legacy = (word as WordStyle & { qrTemplate?: string }).qrTemplate
+  if (typeof legacy === 'string' && !word.payloadTemplate) {
+    return { ...word, payloadTemplate: legacy }
+  }
+  return word
+}
+
+// The rectangle (mm) a symbol word occupies: the QR square, or the barcode's
+// width x height. Mirrors `symbol_size_pt` in src/generate/cards.rs.
+export function symbolSizeMm(word: WordStyle): { widthMm: number; heightMm: number } {
+  return word.kind === 'qr'
+    ? { widthMm: word.qrSizeMm, heightMm: word.qrSizeMm }
+    : { widthMm: word.barcodeWidthMm, heightMm: word.barcodeHeightMm }
+}
+
 // Resolve a vertical alignment into a baseline `yMm` (distance from the
 // bottom of the card, matching `WordStyle.yMm`). Font ascent/descent come
 // from the same canvas measurement `WordOverlay` uses, so the snapped
@@ -204,12 +252,14 @@ export function verticalAlignYMm(
 ): number {
   if (valign === 'custom') return word.yMm
 
-  // A QR sits entirely above its anchor — `yMm` is the square's bottom edge, not a
-  // baseline — so its box is the square itself. Same convention as `qr_box` in
-  // src/generate/cards.rs, which is what keeps a snapped QR where the preview shows it.
-  let ascentMm = word.kind === 'qr' ? word.qrSizeMm : (word.fontSizePt * 0.8) / MM
-  let descentMm = word.kind === 'qr' ? 0 : (word.fontSizePt * 0.2) / MM
-  const ctx = word.kind === 'qr' || typeof document === 'undefined'
+  // A symbol sits entirely above its anchor — `yMm` is the rectangle's bottom edge,
+  // not a baseline — so its box is the rectangle itself. Same convention as
+  // `symbol_box` in src/generate/cards.rs, which is what keeps a snapped symbol where
+  // the preview shows it.
+  const symbol = isSymbolKind(word.kind)
+  let ascentMm = symbol ? symbolSizeMm(word).heightMm : (word.fontSizePt * 0.8) / MM
+  let descentMm = symbol ? 0 : (word.fontSizePt * 0.2) / MM
+  const ctx = symbol || typeof document === 'undefined'
     ? null
     : document.createElement('canvas').getContext('2d')
   if (ctx) {
@@ -257,11 +307,13 @@ export function horizontalAlignXMm(
   // to the card margin so callers that don't distinguish keep the old behavior.
   contourInsetMm: number = safeMarginMm,
 ): number {
-  // A QR is as wide as it is tall, so its square is the box the alignment frames.
-  let textWidthMm = word.kind === 'qr'
-    ? word.qrSizeMm
+  // A symbol's rectangle is the box the alignment frames — its width alone, so a
+  // wide, short barcode centres the same way a square QR does.
+  const symbol = isSymbolKind(word.kind)
+  let textWidthMm = symbol
+    ? symbolSizeMm(word).widthMm
     : (word.fontSizePt * 0.6 * Math.max(1, word.text.length)) / MM
-  const ctx = word.kind === 'qr' || typeof document === 'undefined'
+  const ctx = symbol || typeof document === 'undefined'
     ? null
     : document.createElement('canvas').getContext('2d')
   if (ctx) {
@@ -442,10 +494,11 @@ export function buildJsOptions(
   contourFootprintHeightMm?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
-  // A QR ignores the glyph-outline stroke (it would only fatten the modules), so a
-  // QR word never contributes one.
+  // A symbol ignores the glyph-outline stroke (it would only fatten the modules), so
+  // a symbol word never contributes one.
   const hasContour = words.some((w) => w.kind === 'text' && w.contourColor !== null)
-  const hasQr = words.some((w) => w.kind === 'qr')
+  const hasSymbol = words.some((w) => isSymbolKind(w.kind))
+  const hasBarcode = words.some((w) => w.kind === 'barcode')
 
   return {
     hostWidthMm: page.hostWidthMm,
@@ -500,22 +553,31 @@ export function buildJsOptions(
       ? new Float32Array(words.map((w) => w.backgroundAlpha))
       : new Float32Array(),
     textBackgroundBlendModes: hasBackground ? words.map((w) => w.backgroundBlendMode) : [],
-    textContours: hasContour ? words.map((w) => (w.kind === 'qr' ? 'none' : (w.contourColor ?? 'none'))) : [],
+    textContours: hasContour ? words.map((w) => (isSymbolKind(w.kind) ? 'none' : (w.contourColor ?? 'none'))) : [],
     textContourWidthsMm: hasContour
       ? new Float32Array(words.map((w) => w.contourWidthMm))
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
     textCharSpacingsPt: new Float32Array(words.map((w) => w.charSpacingPt)),
     splitChars: separator,
-    // QR positions: a side of 0 means "draw this position as text", so one array
-    // carries both the switch and the size (see `qr_sizes_mm` in src/options.rs).
-    // Sent only when at least one word is a QR, like the background/contour arrays.
-    ...(hasQr
+    // Symbol positions. `codeKinds` is the switch — explicit rather than inferred
+    // from a size, since more than one kind of symbol exists (see `code_kinds` in
+    // src/options.rs). Sent only when at least one word is a symbol, like the
+    // background/contour arrays; the size arrays follow the same rule per kind.
+    ...(hasSymbol
       ? {
+          codeKinds: words.map((w) => w.kind),
           qrSizesMm: new Float32Array(words.map((w) => (w.kind === 'qr' ? w.qrSizeMm : 0))),
           qrEcc: words.map((w) => w.qrEcc),
-          qrTemplates: words.map((w) => (w.kind === 'qr' ? w.qrTemplate : '')),
           qrQuietModules: QR_QUIET_MODULES,
+          payloadTemplates: words.map((w) => (isSymbolKind(w.kind) ? w.payloadTemplate : '')),
+        }
+      : {}),
+    ...(hasBarcode
+      ? {
+          barcodeSymbologies: words.map((w) => w.symbology),
+          barcodeWidthsMm: new Float32Array(words.map((w) => (w.kind === 'barcode' ? w.barcodeWidthMm : 0))),
+          barcodeHeightsMm: new Float32Array(words.map((w) => (w.kind === 'barcode' ? w.barcodeHeightMm : 0))),
         }
       : {}),
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),

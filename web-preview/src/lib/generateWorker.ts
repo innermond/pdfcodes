@@ -95,7 +95,7 @@ async function generatePrint(
   bg: Uint8Array,
   contourBg: Uint8Array | null,
   fonts: Uint8Array[],
-): Promise<{ blob: Blob; isZip: boolean; name: string; sink?: SinkKind; overflowCount: number; overflowSamples: string[] } | null> {
+): Promise<{ blob: Blob; isZip: boolean; name: string; sink?: SinkKind; overflowCount: number; overflowSamples: string[]; symbolFailureCount: number; symbolFailureSamples: string[] } | null> {
   const perPage = Math.max(1, cards_per_page(bg, d.printOptions))
   const batchRows = Math.max(1, d.pagesPerBatch * perPage)
   const combine = d.printOptions!.combine === true
@@ -129,6 +129,11 @@ async function generatePrint(
   let overflowCount = 0
   const overflowSamples: string[] = []
   const overflowSeen = new Set<string>()
+  // The second failure channel: rows whose QR/barcode the symbology couldn't encode.
+  // Deduped the same way; each sample is `row<TAB>reason`.
+  let symbolFailureCount = 0
+  const symbolFailureSamples: string[] = []
+  const symbolFailureSeen = new Set<string>()
 
   const addEntry = (pdf: Uint8Array, index: number) => {
     addNamedEntry(pdf, `cards-${String(index).padStart(4, '0')}.pdf`)
@@ -169,6 +174,15 @@ async function generatePrint(
         }
       }
     }
+    symbolFailureCount += out.symbol_failure_count
+    if (out.symbol_failure_samples) {
+      for (const s of out.symbol_failure_samples.split('\n')) {
+        if (s && !symbolFailureSeen.has(s)) {
+          symbolFailureSeen.add(s)
+          symbolFailureSamples.push(s)
+        }
+      }
+    }
     out.free()
     batch = []
     batchIndex++
@@ -198,12 +212,12 @@ async function generatePrint(
 
     // One batch → hand back a single PDF (today's UX) rather than a 1-entry ZIP.
     if (batchIndex === 1 && first.pdf) {
-      return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf', overflowCount, overflowSamples }
+      return { blob: new Blob([first.pdf], { type: 'application/pdf' }), isZip: false, name: 'cards.pdf', overflowCount, overflowSamples, symbolFailureCount, symbolFailureSamples }
     }
     await ensureZip()
     z.zip!.end()
     const blob = await z.sink!.finish()
-    return { blob, isZip: true, name: 'cards.zip', sink: sinkKind, overflowCount, overflowSamples }
+    return { blob, isZip: true, name: 'cards.zip', sink: sinkKind, overflowCount, overflowSamples, symbolFailureCount, symbolFailureSamples }
   } catch (e) {
     await z.sink?.dispose()
     throw e
@@ -218,7 +232,7 @@ async function run(d: StartData) {
 
   const hasPrintJob = (d.mode === 'print' || d.mode === 'both') && d.printOptions !== null && d.csv !== null
 
-  let print: { blob: Blob; isZip: boolean; name: string; sink?: SinkKind; overflowCount: number; overflowSamples: string[] } | null = null
+  let print: { blob: Blob; isZip: boolean; name: string; sink?: SinkKind; overflowCount: number; overflowSamples: string[]; symbolFailureCount: number; symbolFailureSamples: string[] } | null = null
   if (hasPrintJob) {
     // Clear any leftover OPFS temp ZIPs from previous runs before this one starts
     // (a finished archive's file must outlive its own run, so it can't self-clean).

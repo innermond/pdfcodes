@@ -17,8 +17,9 @@ import { useUndoHistory } from './lib/undoHistory'
 import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
 import { fetchHostPreset, readHostPreset, type HostPreset } from './lib/hostPreset'
-import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, qrPayload, QR_CODE_PLACEHOLDER, QR_ECC_LEVELS, QR_MIN_MODULE_MM, type Align, type BlendMode, type CodeKind, type ContourAlignRect, type PageOptions, type QrEcc, type VAlign, type WordStyle } from './lib/options'
-import { qrMatrix, qrModuleSizeMm } from './lib/qrMatrix'
+import { buildJsOptions, BLEND_MODES, defaultPageOptions, MM, defaultWordStyle, splitWords, horizontalAlignXMm, verticalAlignYMm, baseAlign, isSymbolKind, migrateWord, symbolSizeMm, MIN_NARROW_BAR_MM, QR_CODE_PLACEHOLDER, QR_ECC_LEVELS, QR_MIN_MODULE_MM, SYMBOLOGIES, type Align, type BlendMode, type CodeKind, type ContourAlignRect, type PageOptions, type QrEcc, type Symbology, type VAlign, type WordStyle } from './lib/options'
+import { encodeSymbol, moduleWidthMm } from './lib/symbolBits'
+import { symbologyFitsColumn } from './lib/symbologyFit'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { axisClearance, backgroundCoversCut } from './lib/cutClearance'
@@ -701,6 +702,25 @@ function downloadOverflowCsv(rows: string[]) {
   const a = document.createElement('a')
   a.href = url
   a.download = 'depasiri.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// The rows whose symbol couldn't be encoded, as a two-column CSV: the row as it
+// appears in the source data, and why the symbology refused it. The worker hands
+// them over tab-separated (a code may contain anything else).
+function downloadSymbolFailureCsv(rows: string[]) {
+  const esc = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
+  const body = rows.map((r) => {
+    const tab = r.indexOf('\t')
+    const [row, reason] = tab === -1 ? [r, ''] : [r.slice(0, tab), r.slice(tab + 1)]
+    return `${esc(row)},${esc(reason)}`
+  })
+  const csv = '\ufeff' + [m.result_symbol_failure_csv_header(), ...body].join('\r\n') + '\r\n'
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'coduri-necodificabile.csv'
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -2253,7 +2273,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         setDataField('codeSkipFirst', presetSkipFirst)
         setDataField('codeSkipLast', presetSkipLast)
         const length = preset.words.length
-        setWords(preset.words.map((w, i) => ({ ...defaultWordStyle(i), ...w })))
+        setWords(preset.words.map((w, i) => migrateWord({ ...defaultWordStyle(i), ...w })))
         // The preset carries its own text colors; don't override them with the
         // background-contrast default.
         setStyleField('autoTextColor', false)
@@ -3287,15 +3307,26 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
 
-  // The selected QR's symbol, used only for the two warnings in its panel: how big a
-  // module ends up (below ~0.5mm it stops scanning reliably) and whether the payload
-  // fits a symbol at all. `null` for a text code or an unencodable payload; the
-  // overlay encodes separately, and both go through the same wasm encoder.
-  const qrMatrixForSelected = useMemo(
-    () => (selected?.kind === 'qr' ? qrMatrix(qrPayload(selected), selected.qrEcc) : null),
+  // The selected symbol, used only for the two warnings in its panel: how narrow a
+  // module ends up (below the per-kind floor it stops scanning reliably) and whether
+  // the symbology accepts the payload at all. The overlay encodes separately; both go
+  // through the same wasm encoder, so they agree.
+  const selectedSymbol = useMemo(
+    () => (selected && isSymbolKind(selected.kind) ? encodeSymbol(selected) : null),
     [selected],
   )
-  const qrModuleMm = selected?.kind === 'qr' ? qrModuleSizeMm(qrMatrixForSelected, selected.qrSizeMm) : null
+  const symbolGrid = selectedSymbol && 'grid' in selectedSymbol ? selectedSymbol.grid : null
+  const symbolError = selectedSymbol && 'error' in selectedSymbol ? selectedSymbol.error : null
+  const moduleMm = selected && isSymbolKind(selected.kind)
+    ? moduleWidthMm(symbolGrid, symbolSizeMm(selected).widthMm)
+    : null
+  // The floor differs by kind: a barcode's narrow bar may print finer than a QR module.
+  const minModuleMm = selected?.kind === 'barcode' ? MIN_NARROW_BAR_MM : QR_MIN_MODULE_MM
+  // Whether the code source can satisfy the chosen symbology at all — worth saying up
+  // front, since EAN against alphanumeric codes fails every row.
+  const symbologyMismatch = selected?.kind === 'barcode'
+    ? symbologyFitsColumn(selected.symbology, codeColumns[selectedIndex ?? 0] ?? codeColumns[0])
+    : null
 
   // The "Fundal" and "Contur" steps each gate the rest of the wizard: the print
   // background must be set before the contour step unlocks, and the contour must
@@ -4695,46 +4726,95 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   options={[
                     { value: 'text', label: m.words_kind_text() },
                     { value: 'qr', label: m.words_kind_qr() },
+                    { value: 'barcode', label: m.words_kind_barcode() },
                   ]}
                   onChange={(v) => updateWord(selectedIndex, { kind: v })}
                 />
               </div>
-              {selected.kind === 'qr' && (
-              <Section title={m.words_qr_title()} collapsible>
-                <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
-                  <NumberField
-                    label={m.words_qr_size_label()}
-                    value={selected.qrSizeMm}
-                    onChange={(v) => updateWord(selectedIndex, { qrSizeMm: v })}
-                    step={0.5}
-                    min={0}
-                  />
-                  <SelectField<QrEcc>
-                    label={m.words_qr_ecc_label()}
-                    value={selected.qrEcc}
-                    options={QR_ECC_LEVELS.map((level) => ({ value: level, label: level }))}
-                    onChange={(v) => updateWord(selectedIndex, { qrEcc: v })}
-                  />
-                </div>
+              {isSymbolKind(selected.kind) && (
+              <Section title={selected.kind === 'qr' ? m.words_qr_title() : m.words_barcode_title()} collapsible>
+                {selected.kind === 'qr' ? (
+                  <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
+                    <NumberField
+                      label={m.words_qr_size_label()}
+                      value={selected.qrSizeMm}
+                      onChange={(v) => updateWord(selectedIndex, { qrSizeMm: v })}
+                      step={0.5}
+                      min={0}
+                    />
+                    <SelectField<QrEcc>
+                      label={m.words_qr_ecc_label()}
+                      value={selected.qrEcc}
+                      options={QR_ECC_LEVELS.map((level) => ({ value: level, label: level }))}
+                      onChange={(v) => updateWord(selectedIndex, { qrEcc: v })}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <SelectField<Symbology>
+                      label={m.words_barcode_symbology_label()}
+                      value={selected.symbology}
+                      options={SYMBOLOGIES.map((sym) => ({ value: sym, label: m[`words_symbology_${sym}`]() }))}
+                      onChange={(v) => updateWord(selectedIndex, { symbology: v })}
+                    />
+                    <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
+                      <NumberField
+                        label={m.words_barcode_width_label()}
+                        value={selected.barcodeWidthMm}
+                        onChange={(v) => updateWord(selectedIndex, { barcodeWidthMm: v })}
+                        step={0.5}
+                        min={0}
+                      />
+                      <NumberField
+                        label={m.words_barcode_height_label()}
+                        value={selected.barcodeHeightMm}
+                        onChange={(v) => updateWord(selectedIndex, { barcodeHeightMm: v })}
+                        step={0.5}
+                        min={0}
+                      />
+                    </div>
+                  </>
+                )}
+                {/* The payload template applies to both symbol kinds. */}
                 <TextField
                   label={m.words_qr_template_label()}
-                  value={selected.qrTemplate}
+                  value={selected.payloadTemplate}
                   placeholder={`https://exemplu.ro/v?c=${QR_CODE_PLACEHOLDER}`}
-                  onChange={(v) => updateWord(selectedIndex, { qrTemplate: v })}
+                  onChange={(v) => updateWord(selectedIndex, { payloadTemplate: v })}
                 />
                 <p className="text-label text-gray-500 dark:text-gray-400">
                   {m.words_qr_template_help({ placeholder: QR_CODE_PLACEHOLDER })}
                 </p>
-                {qrModuleMm !== null && qrModuleMm < QR_MIN_MODULE_MM && (
+                {moduleMm !== null && moduleMm < minModuleMm && (
                   <p className="text-label text-amber-600 dark:text-amber-400">
-                    {m.words_qr_module_warning({
-                      module: qrModuleMm.toFixed(2),
-                      min: QR_MIN_MODULE_MM.toFixed(2),
-                    })}
+                    {selected.kind === 'qr'
+                      ? m.words_qr_module_warning({ module: moduleMm.toFixed(2), min: minModuleMm.toFixed(2) })
+                      : m.words_barcode_narrow_warning({ module: moduleMm.toFixed(2), min: minModuleMm.toFixed(2) })}
                   </p>
                 )}
-                {qrMatrixForSelected === null && (
-                  <p className="text-label text-amber-600 dark:text-amber-400">{m.words_qr_too_long()}</p>
+                {/* The symbology refused the *sample* code. The reason the encoder
+                    gives is English (it comes from Rust, which has no locale), so the
+                    panel says it in the app's language; the verbatim reason still
+                    reaches the per-row CSV in the result panel. */}
+                {symbolError !== null && (
+                  <p className="text-label text-amber-600 dark:text-amber-400">
+                    {selected.kind === 'qr'
+                      ? m.words_qr_too_long()
+                      : m.words_barcode_invalid({
+                          code: selected.text,
+                          symbology: m[`words_symbology_${selected.symbology}`](),
+                        })}
+                  </p>
+                )}
+                {/* Distinct from the error above: that one is about the *sample* code,
+                    this one about every code the source will generate. */}
+                {symbologyMismatch !== null && (
+                  <p className="text-label text-amber-600 dark:text-amber-400">
+                    {m.words_barcode_source_mismatch({
+                      symbology: m[`words_symbology_${selected.symbology}`](),
+                      need: String(symbologyMismatch.needDigits),
+                    })}
+                  </p>
                 )}
               </Section>
               )}
@@ -5476,6 +5556,31 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                     >
                       {m.result_download_overflows({ count: printArtifact.overflowSamples.length })}
                     </button>
+                  )}
+                </div>
+              )}
+              {/* A separate channel from the overflow above: those codes are drawn but
+                  stick out, these could not be encoded at all and are missing from
+                  their cards. */}
+              {printArtifact && printArtifact.symbolFailureCount > 0 && (
+                <div className="mt-inner flex flex-col gap-tight">
+                  <p className="text-label text-amber-600 dark:text-amber-400">
+                    {m.result_symbol_failures({ count: printArtifact.symbolFailureCount })}
+                  </p>
+                  {printArtifact.symbolFailureSamples.length > 0 && (
+                    <>
+                      {/* One example in full, since the reason is the actionable part. */}
+                      <p className="text-label text-gray-500 dark:text-gray-400">
+                        {printArtifact.symbolFailureSamples[0].replace('\t', ' — ')}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => downloadSymbolFailureCsv(printArtifact.symbolFailureSamples)}
+                        className="self-start text-label font-medium text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        {m.result_download_symbol_failures({ count: printArtifact.symbolFailureSamples.length })}
+                      </button>
+                    </>
                   )}
                 </div>
               )}

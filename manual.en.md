@@ -658,16 +658,18 @@ the fields apply **only to the selected word**.
 
 ![A word's properties panel, with the Typography, Position, Style, Text background and Text outline groups](manual-assets/s3-properties.png)
 
-**Draw the code as:** each code is drawn either as **Text** (letters, the default) or as
-a **QR code** — the QR of that very code, in its place. Switching to *QR code*
-replaces the Typography group with the **QR code** group below, and hides *Text
-outline* (stroking the modules' edges only thickens them and costs the symbol its
-readability). Everything else — position, alignment, colour, opacity, blend mode,
-rotation, mirroring and the text background — works exactly as it does for text.
+**Draw the code as:** each code is drawn either as **Text** (letters, the default),
+as a **QR code**, or as a **Barcode** — that is, the scanner-readable symbol for that
+very code, in its place. Switching to a symbol replaces the Typography group with the
+matching group below, and hides *Text outline* (stroking the modules' edges only
+thickens them and costs the symbol its readability). Everything else — position,
+alignment, colour, opacity, blend mode, rotation, mirroring and the text background —
+works exactly as it does for text.
 
-> To print **both** the code as text and its QR, use two codes: the CSV row must
-> hold the value twice (two fields), one set to *Text* and the other to *QR code*.
-> A row with a single field draws a single code.
+> To print **both** the code as text and its symbol, use two codes: the CSV row must
+> hold the value twice (two fields), one set to *Text* and the other to *QR code* /
+> *Barcode*. A row with a single field draws a single code. Barcodes do not print the
+> digits underneath — if you want them, that second Text code is exactly that.
 
 **QR code** (only when the type is *QR code*):
 
@@ -682,6 +684,42 @@ rotation, mirroring and the text background — works exactly as it does for tex
   web address, e.g. `https://example.com/v?c={code}`.
 
 ![The QR code group: type, size, error correction and the encoded-content template](manual-assets/s3-qr.png)
+
+**Barcode** (only when the type is *Barcode*):
+
+- **Symbology** — which kind of barcode is drawn. Each accepts something different:
+  - **Code 128** — any characters, the most compact. It is the only one that encodes
+    the app's alphanumeric codes as they are, so it is the default. For digit-only
+    codes with an even number of digits it automatically switches to the double-density
+    encoding, which roughly halves the width.
+  - **Code 39** — UPPERCASE, digits and `- . space $ / + %` only. It comes out about
+    2.5x wider than Code 128, but it is what older industrial scanners require.
+  - **EAN-13** — exactly 12 digits (or 13 if you supply the check digit yourself, which
+    is then verified). This is the retail article number.
+  - **EAN-8** — exactly 7 digits (or 8 with the check digit), for small packages.
+- **Width (mm)** and **Height (mm)** — the rectangle it occupies. The width includes
+  the **quiet zone** on either side of the symbol, so it is the whole footprint you
+  must keep free on the card. As with a QR, **Y (mm)** is the rectangle's **bottom
+  edge**.
+- **Encoded content** — the same as for a QR: empty encodes the code itself, otherwise
+  `{code}` is replaced with each row's code.
+
+> **EAN needs numeric codes.** If you pick EAN-13 or EAN-8 while the codes from the
+> "Data" step are alphanumeric or a different length, **every row fails** — the app
+> warns you immediately, right under the symbology. Either change the symbology, or set
+> the code source to "Numeric" with the matching length.
+
+> **Watch the narrow bar.** The width of the thinnest bar is the total width divided by
+> the module count; if it drops below **0.25 mm** the app warns you, because below that
+> size printing and scanning become unreliable. A longer code in the same width means
+> thinner bars, so the fix is either a larger *Width* or a shorter code.
+
+If a code cannot be encoded at all (content too long for a QR, or the wrong characters
+or length for the chosen symbology), the symbol is **left off** that card and the rest
+of the card prints normally. Generation still succeeds, and the result panel lists how
+many rows were affected and why, with a downloadable CSV.
+
+![The Barcode group: symbology, width, height and the encoded-content template](manual-assets/s3-barcode.png)
 
 > **Watch the module size.** A QR is a grid of squares ("modules"); if one comes
 > out smaller than **0.5 mm** the app warns you, because below that size printing

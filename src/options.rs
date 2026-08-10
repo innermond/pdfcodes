@@ -1,5 +1,7 @@
 use crate::align::TextAlign;
+use crate::barcode::Symbology;
 use crate::blend::BlendMode;
+use crate::code_kind::CodeKind;
 use crate::color::TextColor;
 use crate::qr::QrEcc;
 
@@ -233,23 +235,36 @@ pub struct Options {
     // contour instead of the card. `None` falls back to the card frame (0, card width).
     pub contour_align_left_mm: Option<f32>,
     pub contour_align_width_mm: Option<f32>,
-    // Render a code as a QR symbol instead of glyphs: the side (in mm) of the square
-    // the symbol occupies, one per word position (or a single entry for every word).
-    // `0` — like an empty vec — draws that position as text, so this one array carries
-    // both "is this position a QR?" and how big it is. The side *includes* the quiet
+    // How each code is drawn — as text, a QR square or a 1D barcode — one per word
+    // position (or a single entry for every word). Empty means every position is
+    // text. The kind is explicit rather than inferred from whichever size field is
+    // set, because two implicit switches could contradict each other.
+    pub code_kinds: Vec<CodeKind>,
+    // Side (in mm) of the square a `CodeKind::Qr` position occupies, one per word
+    // position (or a single entry for every word). The side *includes* the quiet
     // zone, so it is the real footprint reserved on the card. See src/generate/qr.rs.
     pub qr_sizes_mm: Vec<f32>,
     // Error-correction level for the QR positions above, one per word position (or a
     // single entry for every word). Empty defaults to `Medium` for every QR.
     pub qr_ecc: Vec<QrEcc>,
-    // Payload template for the QR positions, one per word position (or a single entry
-    // for every word). `{code}` is replaced with that position's CSV field, so a code
-    // can be wrapped in a URL. An empty template encodes the bare code. Empty vec means
-    // every QR encodes its code bare.
-    pub qr_templates: Vec<String>,
     // Quiet-zone width in modules, kept clear inside the QR square (scalar, like
     // `text_background_padding_mm`). Defaults to the standard's 4 modules.
     pub qr_quiet_modules: u32,
+    // Which 1D symbology a `CodeKind::Barcode` position uses, one per word position
+    // (or a single entry for every word). Empty defaults to Code 128 — the only one
+    // of the four that encodes an arbitrary alphanumeric code. See src/barcode.rs.
+    pub barcode_symbologies: Vec<Symbology>,
+    // Width and height (in mm) of the rectangle a barcode position occupies, one per
+    // word position (or a single entry for every word). The width *includes* the
+    // symbology's quiet zone on both sides, so — as with a QR — it is the real
+    // footprint on the card, and the narrow-bar width follows from it.
+    pub barcode_widths_mm: Vec<f32>,
+    pub barcode_heights_mm: Vec<f32>,
+    // Payload template for the symbol positions (either kind), one per word position
+    // (or a single entry for every word). `{code}` is replaced with that position's
+    // CSV field, so a code can be wrapped in a URL. An empty template encodes the
+    // bare code, which is also what an empty vec means for every position.
+    pub payload_templates: Vec<String>,
     // Total number of cards (CSV rows) the print job will emit, so the contour branch can
     // tell whether the last printed sheet is partial and, if so, append an extra contour
     // page cutting only the cards that exist on it. `None` ⇒ single full-grid page (legacy).
@@ -338,10 +353,14 @@ impl Default for Options {
             contour_inset_mm: 0.0,
             contour_align_left_mm: None,
             contour_align_width_mm: None,
+            code_kinds: Vec::new(),
             qr_sizes_mm: Vec::new(),
             qr_ecc: Vec::new(),
-            qr_templates: Vec::new(),
             qr_quiet_modules: crate::generate::qr::DEFAULT_QUIET_MODULES,
+            barcode_symbologies: Vec::new(),
+            barcode_widths_mm: Vec::new(),
+            barcode_heights_mm: Vec::new(),
+            payload_templates: Vec::new(),
             contour_total_cards: None,
         }
     }
