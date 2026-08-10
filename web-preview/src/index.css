@@ -40,3 +40,20 @@
 html.dark {
   background-color: var(--color-gray-950);
 }
+
+/*
+ * Which palette the browser paints the parts of a control that CSS can't reach:
+ * the popup list a <select> opens, number-input spinners, the text caret,
+ * classic scrollbars. Toggling the `dark` class styles our own boxes but says
+ * nothing about those, so the UA kept its light defaults and the document
+ * resolved to `color-scheme: normal` — a white dropdown list over a dark page.
+ * Keyed off the same class the theme sets, so it follows both the toggle and
+ * the pre-hydration script in index.html.
+ */
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
