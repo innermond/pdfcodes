@@ -161,8 +161,18 @@ async function generatePrint(
     addEntry(first.pdf!, 1)
   }
 
+  const isSequential = d.printOptions?.backgroundPageMode === 'sequential'
+
   const flush = async () => {
-    const out = generate_with_options(batch.join('\n'), bg, contourArg, fonts, d.printOptions)
+    // "sequential" mode cycles the background page per CSV row, continuing
+    // across batches rather than restarting at page 1 for every wasm call —
+    // `rowsDone - batch.length` is the row count already emitted by prior
+    // batches of this job (rowsDone already includes this batch's rows; batch
+    // is only cleared below).
+    const batchOptions = isSequential
+      ? { ...d.printOptions, backgroundPageStartOffset: rowsDone - batch.length }
+      : d.printOptions
+    const out = generate_with_options(batch.join('\n'), bg, contourArg, fonts, batchOptions)
     const pdf = new Uint8Array(out.pdf)
     // Read overflow before freeing: count is cumulative, samples deduped in full.
     overflowCount += out.text_overflow_count

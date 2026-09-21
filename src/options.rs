@@ -1,4 +1,5 @@
 use crate::align::TextAlign;
+use crate::background_mode::BackgroundPageMode;
 use crate::barcode::Symbology;
 use crate::blend::BlendMode;
 use crate::code_kind::CodeKind;
@@ -126,6 +127,14 @@ pub struct Options {
     // uploads). Defaults to 1. `contour_page_number` selects the page from the
     // separately-loaded contour PDF used by the `--combineb` overlay.
     pub background_page_number: u32,
+    // Off by default. `Joined`/`Sequential` only apply when the background PDF has
+    // more than one page; see `generate_pdf_multi_background`/`generate_pdf_sequential_background`.
+    pub background_page_mode: BackgroundPageMode,
+    // `Sequential` only: cumulative CSV row count already emitted by prior batches
+    // of the same job, so the per-card background-page cycle stays continuous
+    // across the web worker's batched wasm calls instead of restarting at 0 for
+    // every batch. Ignored otherwise. Default 0 (first/only batch).
+    pub background_page_start_offset: usize,
     pub contour_page_number: u32,
     // Extra clockwise rotation (degrees, multiple of 90) the user applied to the
     // print background, added to the page's own /Rotate before baking. Default 0.
@@ -165,10 +174,16 @@ pub struct Options {
     // background. Applied in the standalone contour page and the combine overlay.
     pub contour_offset_x_mm: f32,
     pub contour_offset_y_mm: f32,
-    // For the no-cut standalone contour: lay the cut page out at this size (the
-    // print background's card size) instead of the contour PDF's own size, so a
-    // contour smaller than the background can be offset within it and still cut
-    // in the right place. `None`/0 keeps the contour's own size (legacy).
+    // Lay the cut page's grid out at this size instead of the contour PDF's own
+    // (native) size; the drawn Form keeps its native size, only cell positions
+    // use this. Two independent uses: (1) no-cut, sized to the print
+    // background's card so a contour smaller than it can be offset within it
+    // and still cut in the right place (explicit placement via
+    // `contour_offset_*_mm`); (2) the multi-cell grid, sized to the contour's
+    // pre-"Redesenează" nominal size so an offset/redraw shrink or growth
+    // doesn't change the cut grid's own pitch out from under the print job's
+    // (unaffected) pitch — the shrunk/grown Form is auto-centered in each cell.
+    // `None`/0 keeps the contour's own size (legacy).
     pub contour_canvas_width_mm: Option<f32>,
     pub contour_canvas_height_mm: Option<f32>,
     // Resize/rotate applied to the contour in the combine overlay so it matches
@@ -320,6 +335,8 @@ impl Default for Options {
             text_contour_blend_modes: Vec::new(),
             text_char_spacing_pt: Vec::new(),
             background_page_number: 1,
+            background_page_mode: BackgroundPageMode::default(),
+            background_page_start_offset: 0,
             contour_page_number: 1,
             background_rotation: 0,
             background_flip_x: false,

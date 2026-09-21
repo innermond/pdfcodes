@@ -1,6 +1,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::align::TextAlign;
+use crate::background_mode::BackgroundPageMode;
 use crate::blend::BlendMode;
 use crate::color::{parse_color, parse_color_or_none, TextColor};
 use crate::generate::generate_pdf;
@@ -247,6 +248,8 @@ pub fn generate(
         payload_templates: Vec::new(),
         // The positional entry point always uses the first page.
         background_page_number: 1,
+        background_page_mode: BackgroundPageMode::Single,
+        background_page_start_offset: 0,
         contour_page_number: 1,
         background_rotation: 0,
         background_flip_x: false,
@@ -352,6 +355,17 @@ struct JsOptions {
     text_contour_blend_modes: Vec<String>,
     text_char_spacings_pt: Vec<f32>,
     background_page_number: Option<u32>,
+    // "single" (default) | "joined" | "sequential" — see `BackgroundPageMode`.
+    // Empty string ⇒ Single (today's single-page behavior). "joined" runs the
+    // whole job once per background page and joins all runs' output pages into
+    // one PDF; "sequential" shares one grid and cycles each card to the next
+    // background page in row order. Both are ignored (and hidden in the UI)
+    // when the background PDF has only 1 page.
+    background_page_mode: String,
+    // "sequential" mode only: cumulative CSV row count already emitted by prior
+    // batches of this same job, so the web worker's batched wasm calls keep the
+    // page-cycle counter continuous instead of restarting it at every batch.
+    background_page_start_offset: Option<u32>,
     contour_page_number: Option<u32>,
     background_rotation: i64,
     background_flip_x: bool,
@@ -469,6 +483,8 @@ impl Default for JsOptions {
             text_contour_blend_modes: Vec::new(),
             text_char_spacings_pt: Vec::new(),
             background_page_number: None,
+            background_page_mode: String::new(),
+            background_page_start_offset: None,
             contour_page_number: None,
             background_rotation: 0,
             background_flip_x: false,
@@ -658,6 +674,12 @@ pub fn generate_with_options(
         .collect::<Result<Vec<Symbology>, String>>()
         .map_err(|e| JsError::new(&e))?;
 
+    let background_page_mode = if js_opts.background_page_mode.trim().is_empty() {
+        BackgroundPageMode::Single
+    } else {
+        js_opts.background_page_mode.parse::<BackgroundPageMode>().map_err(|e| JsError::new(&e))?
+    };
+
     let opts = Options {
         host_width_mm: js_opts.host_width_mm,
         host_height_mm: js_opts.host_height_mm,
@@ -699,6 +721,8 @@ pub fn generate_with_options(
         text_contour_blend_modes,
         text_char_spacing_pt: js_opts.text_char_spacings_pt,
         background_page_number: js_opts.background_page_number.unwrap_or(1),
+        background_page_mode,
+        background_page_start_offset: js_opts.background_page_start_offset.unwrap_or(0) as usize,
         contour_page_number: js_opts.contour_page_number.unwrap_or(1),
         background_rotation: js_opts.background_rotation,
         background_flip_x: js_opts.background_flip_x,
@@ -746,8 +770,11 @@ pub fn generate_with_options(
         payload_templates: js_opts.payload_templates,
     };
 
-    let out = generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let out = match background_page_mode {
+        BackgroundPageMode::Joined => crate::generate::generate_pdf_multi_background(csv_data.as_deref(), background, contour_background.as_deref(), &opts),
+        BackgroundPageMode::Sequential => crate::generate::generate_pdf_sequential_background(csv_data.as_deref(), background, &opts),
+        BackgroundPageMode::Single => generate_pdf(csv_data.as_deref(), background, contour_background.as_deref(), &opts),
+    }.map_err(|e| JsError::new(&e.to_string()))?;
 
     Ok(WasmGenerateOutput {
         pdf: out.pdf,

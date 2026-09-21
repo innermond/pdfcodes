@@ -492,6 +492,17 @@ export function buildJsOptions(
   contourFootprintBottomMm?: number | null,
   contourFootprintWidthMm?: number | null,
   contourFootprintHeightMm?: number | null,
+  // Multi-page background PDF handling: "joined" runs the whole job once per
+  // page of the uploaded background PDF and joins all runs' output pages into
+  // one PDF; "sequential" shares one grid and cycles each card to the next
+  // background page in row order (wrapping). Omitted/'single'/null keeps
+  // today's single-page behavior. See `background_page_mode` in src/wasm.rs.
+  backgroundPageMode?: 'single' | 'joined' | 'sequential' | null,
+  // "sequential" mode only: cumulative CSV row count already emitted by prior
+  // batches of this same job, so the background-page cycle stays continuous
+  // across the web worker's batched calls instead of restarting at every
+  // batch. See `background_page_start_offset` in src/wasm.rs.
+  backgroundPageStartOffset?: number | null,
 ) {
   const hasBackground = words.some((w) => w.background !== null)
   // A symbol ignores the glyph-outline stroke (it would only fatten the modules), so
@@ -583,6 +594,8 @@ export function buildJsOptions(
     ...(cardWidthMm != null && isFinite(cardWidthMm) ? { cardWidthMm } : {}),
     ...(cardHeightMm != null && isFinite(cardHeightMm) ? { cardHeightMm } : {}),
     ...(backgroundPageNumber != null && backgroundPageNumber > 1 ? { backgroundPageNumber } : {}),
+    ...(backgroundPageMode && backgroundPageMode !== 'single' ? { backgroundPageMode } : {}),
+    ...(backgroundPageMode === 'sequential' && backgroundPageStartOffset ? { backgroundPageStartOffset } : {}),
     ...(backgroundRotation != null && backgroundRotation !== 0 ? { backgroundRotation } : {}),
     ...(backgroundOffsetXMm != null && backgroundOffsetXMm !== 0 ? { backgroundOffsetXMm } : {}),
     ...(backgroundOffsetYMm != null && backgroundOffsetYMm !== 0 ? { backgroundOffsetYMm } : {}),

@@ -159,6 +159,10 @@ interface Preset {
   pageOptions: PageOptions
   backgroundSource: BackgroundSource
   backgroundPageNumber: number
+  backgroundPageMode?: 'single' | 'joined' | 'sequential'
+  // Legacy field from presets saved before `backgroundPageMode` existed;
+  // `true` maps to `backgroundPageMode: 'joined'` on load.
+  backgroundUseAllPages?: boolean
   simpleBgWidthMm: number
   simpleBgHeightMm: number
   simpleBgColor: string | null
@@ -376,6 +380,14 @@ interface BgConfig {
   // Multi-page PDF page selection (1-based); sent to the generator so the print
   // output uses the same page as the preview.
   backgroundPageNumber: number
+  // Multi-page background handling: "joined" runs the whole job once per
+  // background page and joins every run's output pages into one PDF (each
+  // page gets its own dedicated sheets). "sequential" shares one grid and
+  // cycles each card to the next background page in row order (wrapping),
+  // continuing across sheets rather than resetting at each one. "single"
+  // (default) uses only `backgroundPageNumber`'s page. "joined"/"sequential"
+  // are ignored (and hidden in the UI) when the background has only 1 page.
+  backgroundPageMode: 'single' | 'joined' | 'sequential'
   // Simple solid-color background dimensions + color ("c:m:y:k" or null).
   simpleBgWidthMm: number
   simpleBgHeightMm: number
@@ -414,6 +426,7 @@ interface BgConfig {
 const defaultBgConfig: BgConfig = {
   backgroundSource: 'upload',
   backgroundPageNumber: 1,
+  backgroundPageMode: 'single',
   simpleBgWidthMm: 86,
   simpleBgHeightMm: 54,
   simpleBgColor: null,
@@ -748,7 +761,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   // immediately so every read/effect-dep site stays a plain identifier.
   const [bgConfig, setBgConfig] = useState<BgConfig>(defaultBgConfig)
   const {
-    backgroundSource, backgroundPageNumber,
+    backgroundSource, backgroundPageNumber, backgroundPageMode,
     simpleBgWidthMm, simpleBgHeightMm, simpleBgColor,
     genBgWidthMm, genBgHeightMm, genBgImageSource, genBgImageUrl,
     bgTargetWidthMm, bgTargetHeightMm, bgRotation, bgFlipX, bgFlipY,
@@ -2077,6 +2090,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       pageOptions,
       backgroundSource,
       backgroundPageNumber,
+      backgroundPageMode,
       simpleBgWidthMm,
       simpleBgHeightMm,
       simpleBgColor,
@@ -2341,6 +2355,13 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         // real page count is known so the preview and the generator agree.
         const savedBgPage = typeof preset.backgroundPageNumber === 'number' ? preset.backgroundPageNumber : 1
         const savedContourPage = typeof preset.contourPageNumber === 'number' ? preset.contourPageNumber : 1
+        // New presets carry `backgroundPageMode` directly; older ones only ever
+        // wrote the legacy `backgroundUseAllPages` boolean, which maps to 'joined'.
+        const loadedBgPageMode: BgConfig['backgroundPageMode'] =
+          preset.backgroundPageMode === 'joined' || preset.backgroundPageMode === 'sequential' || preset.backgroundPageMode === 'single'
+            ? preset.backgroundPageMode
+            : preset.backgroundUseAllPages === true ? 'joined' : 'single'
+        setBgField('backgroundPageMode', loadedBgPageMode)
         if (bgFile && loadedBackgroundSource === 'upload') {
           setBackgroundFile(bgFile)
           setBgField('backgroundPageNumber', savedBgPage)
@@ -3537,8 +3558,23 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       // to it), so the cut and the overlay place by the footprint origin — identical
       // to the box offset at 0° spin.
       const contourOffsetActive = contourFootprintLeftMm !== 0 || contourFootprintBottomMm !== 0
-      const contourCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
-      const contourCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
+      // Two independent reasons the cut job's own grid needs a canvas size
+      // different from the drawn contour Form's native size (src/generate/mod.rs
+      // picks the branch, keyed on `noCut`):
+      //  - no-cut: the contour is offset within the print background card.
+      //  - the multi-cell grid: "Redesenează" is active, so the drawn Form's
+      //    native size no longer matches the contour's pre-redraw nominal size;
+      //    pin the grid pitch to the nominal size instead. Skipped when a free
+      //    spin is also active — spin already grows/shrinks the pitch to its
+      //    own footprint, which takes priority (see src/generate/mod.rs).
+      const bgPositionCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
+      const bgPositionCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
+      const redrawPitchCanvasWMm =
+        (!pageOptions.noCut && contourRedrawActive && activeContourSpinDeg === 0) ? effectiveContourWidthMm : undefined
+      const redrawPitchCanvasHMm =
+        (!pageOptions.noCut && contourRedrawActive && activeContourSpinDeg === 0) ? effectiveContourHeightMm : undefined
+      const contourCanvasWMm = pageOptions.noCut ? bgPositionCanvasWMm : redrawPitchCanvasWMm
+      const contourCanvasHMm = pageOptions.noCut ? bgPositionCanvasHMm : redrawPitchCanvasHMm
       // Minimal sends the contour offset (the crop origin) and the contour window even
       // without combine; the window is the last two args. The window and its origin are
       // the contour's *display footprint* (rotation + spin folded in), so the crop
@@ -3548,14 +3584,17 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       const cropOriginXMm = (combine || minimal) ? contourFootprintLeftMm : undefined
       const cropOriginYMm = (combine || minimal) ? contourFootprintBottomMm : undefined
       const printOptions = needsPrintInput
-        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, cropOriginXMm, cropOriginYMm, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? footprintWidthMm : undefined, minimal ? footprintHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? activeContourSpinDeg : undefined, combine ? footprintLeft0Mm : undefined, combine ? footprintBottom0Mm : undefined, combine ? footprintWidthMm : undefined, combine ? footprintHeightMm : undefined)
+        ? buildJsOptions(words, effectiveSeparator, safeMarginMm, backgroundPaddingMm, { ...pageOptions, combine }, false, bgWidthOverride, bgHeightOverride, backgroundPageNumber, combine ? activeContourPageNumber : undefined, cropOriginXMm, cropOriginYMm, undefined, undefined, bgRotation, combine ? contourWidthOverride : undefined, combine ? contourHeightOverride : undefined, combine ? activeContourRotation : undefined, minimal ? footprintWidthMm : undefined, minimal ? footprintHeightMm : undefined, activeContourTrimToPath, contourKeepRegion, correctOverflow, minFontSizePt, overflowCorrectionMode === 'column', contourInsetMm, bgOutFlipX, bgOutFlipY, bgOffsetXMm, bgOffsetYMm, bgBackdropColor ? colorToCss(bgBackdropColor) : '', contourAlignRect?.leftMm ?? null, contourAlignRect?.widthMm ?? null, bgSpinDeg, combine ? activeContourSpinDeg : undefined, combine ? footprintLeft0Mm : undefined, combine ? footprintBottom0Mm : undefined, combine ? footprintWidthMm : undefined, combine ? footprintHeightMm : undefined, backgroundPageMode, undefined)
         : null
       // In minimal mode the cut page is the contour's own footprint at origin (matching
-      // the cropped print page), so drop the background canvas and zero the offset.
-      const cutOffsetXMm = minimal ? 0 : contourFootprintLeftMm
-      const cutOffsetYMm = minimal ? 0 : contourFootprintBottomMm
-      const cutCanvasWMm = minimal ? undefined : contourCanvasWMm
-      const cutCanvasHMm = minimal ? undefined : contourCanvasHMm
+      // the cropped print page), so drop the background canvas and zero the offset —
+      // but only for the no-cut positioning use: Minimal crops the *print* job's own
+      // pages/cells (src/generate/mod.rs), it never touches the standalone contour
+      // job, so it must not also suppress the (unrelated) redraw grid-pitch fix above.
+      const cutOffsetXMm = (minimal && pageOptions.noCut) ? 0 : contourFootprintLeftMm
+      const cutOffsetYMm = (minimal && pageOptions.noCut) ? 0 : contourFootprintBottomMm
+      const cutCanvasWMm = (minimal && pageOptions.noCut) ? undefined : contourCanvasWMm
+      const cutCanvasHMm = (minimal && pageOptions.noCut) ? undefined : contourCanvasHMm
       const contourOptions = needsContourInput
         // The contour job loads the contour PDF as its background, so its page is
         // the 9th arg (backgroundPageNumber) and its resize/rotate ride the
@@ -4004,13 +4043,29 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   />
                 </div>
                 {backgroundPageCount > 1 && (
-                  <div className="w-28 shrink-0">
-                    <NumberField
-                      label={m.common_page_label({ count: backgroundPageCount })}
-                      value={backgroundPageNumber}
-                      onChange={handleBackgroundPageChange}
-                    />
-                  </div>
+                  <>
+                    <div className="min-w-0 flex-1">
+                      <RadioGroupField<'single' | 'joined' | 'sequential'>
+                        label={m.background_page_mode_label()}
+                        value={backgroundPageMode}
+                        onChange={(v) => setBgField('backgroundPageMode', v)}
+                        options={[
+                          { value: 'single', label: m.background_page_mode_single() },
+                          { value: 'joined', label: m.background_page_mode_joined({ count: backgroundPageCount }), description: m.background_page_mode_joined_hint() },
+                          { value: 'sequential', label: m.background_page_mode_sequential({ count: backgroundPageCount }), description: m.background_page_mode_sequential_hint() },
+                        ]}
+                      />
+                    </div>
+                    {backgroundPageMode === 'single' && (
+                      <div className="w-28 shrink-0">
+                        <NumberField
+                          label={m.common_page_label({ count: backgroundPageCount })}
+                          value={backgroundPageNumber}
+                          onChange={handleBackgroundPageChange}
+                        />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             ) : backgroundSource === 'simple' ? (

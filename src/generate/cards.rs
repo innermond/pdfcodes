@@ -616,7 +616,11 @@ pub(crate) fn build_card_xobjects(
     opts: &Options,
     embedded_fonts: &[EmbeddedFont],
     layout: &CardLayout,
-    bg_form_id: ObjectId,
+    // One Form XObject per background page. A single-element slice reproduces
+    // today's "every card shares one background"; more than one, together with
+    // `opts.background_page_start_offset`, lets `Sequential` mode cycle each
+    // card to the next background page in row order (see below).
+    bg_form_ids: &[ObjectId],
 ) -> Result<(Vec<ObjectId>, OverflowReport), Box<dyn std::error::Error>> {
     let card_w = layout.card_w;
     let card_box = layout.card_box.clone();
@@ -655,7 +659,13 @@ pub(crate) fn build_card_xobjects(
     };
 
     let mut card_ids = Vec::new();
-    for record in &records {
+    for (row_idx, record) in records.iter().enumerate() {
+        // Sequential mode's per-row background: cycles across bg_form_ids in CSV
+        // row order, offset by rows already emitted by prior batches of this same
+        // job (`background_page_start_offset`) so the cycle stays continuous
+        // across the web worker's batched wasm calls. A 1-element slice (every
+        // other mode) always resolves to that one shared background.
+        let bg_form_id = bg_form_ids[(opts.background_page_start_offset + row_idx) % bg_form_ids.len()];
         // "Nu printa codurile" (skip_codes): treat every row as having no words —
         // the imposition (one card per CSV row) and the background cells stay
         // identical, but no code text is drawn and none of the per-word config

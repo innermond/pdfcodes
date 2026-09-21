@@ -1,4 +1,5 @@
 mod align;
+mod background_mode;
 mod barcode;
 mod blend;
 mod code_kind;
@@ -15,6 +16,7 @@ mod qr;
 mod wasm;
 
 pub use align::TextAlign;
+pub use background_mode::BackgroundPageMode;
 pub use barcode::Symbology;
 pub use blend::BlendMode;
 pub use code_kind::CodeKind;

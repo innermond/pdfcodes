@@ -395,17 +395,19 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // card; the *other* pages of a multi-page background upload (e.g. a print
     // PDF that carries its cut outline on a separate page) must not leak into
     // the output as stray pages — so drop them all, not just the selected one.
+    // The root's Kids is cleared outright rather than filtered: a retain()
+    // keyed on leaf page ids leaves any intermediate `/Type /Pages` node in
+    // place (a background with enough pages to have a balanced tree has
+    // these), dangling once its own leaf children are deleted below —
+    // surfacing as stray empty, zero-dimension pages.
     let original_page_ids: std::collections::HashSet<lopdf::ObjectId> =
         pages.values().copied().collect();
     {
         let pages_obj = doc.get_object(pages_id)?;
         let pages_dict_orig = pages_obj.as_dict()?;
-        let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
-        kids.retain(|kid| kid.as_reference().map(|r| !original_page_ids.contains(&r)).unwrap_or(true));
-        let count = kids.len() as i64;
         let mut pages_dict = pages_dict_orig.clone();
-        pages_dict.set("Kids", Object::Array(kids));
-        pages_dict.set("Count", Object::Integer(count));
+        pages_dict.set("Kids", Object::Array(vec![]));
+        pages_dict.set("Count", Object::Integer(0));
         doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
     }
     for id in &original_page_ids {
@@ -416,19 +418,35 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     // dimensions, offsets and registration circles), with every cell showing
     // just the background and no label text.
     if opts.contour {
-        // For no-cut, optionally lay the cut page out at the print background's
-        // size (the "canvas") instead of the contour's own size, so a contour
-        // smaller than the background can be offset within it and still cut in
-        // the right place. The contour Form XObject (built above) keeps its
-        // native size; only the page/positions use the canvas dimensions.
-        let layout = match (opts.no_cut, opts.contour_canvas_width_mm, opts.contour_canvas_height_mm) {
-            (true, Some(cw), Some(ch)) if cw > 0.0 && ch > 0.0 => {
-                CardLayout::compute(cw * crate::geometry::MM, ch * crate::geometry::MM, opts)
-            }
-            _ => layout,
+        // Lay the cut page's grid out at a "canvas" size instead of the drawn
+        // Form's own (native) size — the Form itself always keeps its native
+        // size; only cell positions use the canvas. Two independent uses:
+        //  - no-cut: canvas = the print background's card size, contour offset
+        //    within it via `contour_offset_*_mm` (explicit placement).
+        //  - the multi-cell grid: "Redesenează" can shrink/grow the drawn Form
+        //    away from its pre-redraw nominal size; pinning the grid pitch to
+        //    that native size would silently change cell spacing out from
+        //    under the print job's own (redraw-unaffected) pitch, so the web
+        //    sends the pre-redraw nominal size as the canvas instead, and the
+        //    Form is centered in each now larger/smaller cell below.
+        let (layout, canvas_w, canvas_h) = match (opts.contour_canvas_width_mm, opts.contour_canvas_height_mm) {
+            (Some(cw), Some(ch)) if cw > 0.0 && ch > 0.0 => (
+                CardLayout::compute(cw * crate::geometry::MM, ch * crate::geometry::MM, opts),
+                cw * crate::geometry::MM,
+                ch * crate::geometry::MM,
+            ),
+            _ => (layout, card_w, card_h),
         };
-        let offset_x = opts.contour_offset_x_mm * crate::geometry::MM;
-        let offset_y = opts.contour_offset_y_mm * crate::geometry::MM;
+        // Center the drawn Form within its canvas cell. No-cut already carries
+        // an explicit placement via `contour_offset_*_mm`, so it opts out of
+        // auto-centering (0 delta) — adding one would double up with it.
+        let (center_dx, center_dy) = if opts.no_cut {
+            (0.0, 0.0)
+        } else {
+            ((canvas_w - card_w) / 2.0, (canvas_h - card_h) / 2.0)
+        };
+        let offset_x = opts.contour_offset_x_mm * crate::geometry::MM + center_dx;
+        let offset_y = opts.contour_offset_y_mm * crate::geometry::MM + center_dy;
 
         // Total cards the print job will emit: the explicit option wins (the web worker
         // passes the effective row count), else the CSV record count, else a full page.
@@ -538,7 +556,7 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
 
     // Load CSV
     let csv_data = csv_data.ok_or("csv data is required unless contour is set")?;
-    let (card_ids, text_overflow) = cards::build_card_xobjects(&mut doc, csv_data, opts, &embedded_fonts, &layout, bg_form_id)?;
+    let (card_ids, text_overflow) = cards::build_card_xobjects(&mut doc, csv_data, opts, &embedded_fonts, &layout, &[bg_form_id])?;
 
     // "Minimal" mode: tile the host page with contour-box cells and crop each card's
     // full-size content down to the contour window, so the page shrinks to the contour
@@ -718,6 +736,333 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
     })
 }
 
+// Multi-page variant of `generate_pdf`: for a background PDF with more than
+// one page, when the caller opts in, run the entire single-page pipeline
+// once per background page (1..=page_count) — same CSV/options each time,
+// only `background_page_number` varies — then concatenate all runs' output
+// pages into one combined document (all of run 1's sheets, then all of run
+// 2's, etc; never round-robin/cycled per CSV row). Background-PDF-only:
+// `contour_background_bytes`/`opts.contour_page_number` pass through
+// unchanged to every run.
+pub fn generate_pdf_multi_background(csv_data: Option<&str>, background_bytes: &[u8], contour_background_bytes: Option<&[u8]>, opts: &Options) -> Result<GenerateOutput, Box<dyn std::error::Error>> {
+    let page_count = Document::load_mem(background_bytes)?.get_pages().len() as u32;
+    if page_count <= 1 {
+        return generate_pdf(csv_data, background_bytes, contour_background_bytes, opts);
+    }
+
+    let mut combined = Document::with_version("1.5");
+    {
+        let pages_id = combined.new_object_id();
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", Object::Array(vec![]));
+        pages_dict.set("Count", Object::Integer(0));
+        combined.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut catalog_dict = Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(pages_id));
+        let catalog_id = combined.add_object(Object::Dictionary(catalog_dict));
+        combined.trailer.set("Root", Object::Reference(catalog_id));
+    }
+
+    let mut cards_per_page = 0usize;
+    let mut text_overflow_count = 0usize;
+    let mut text_overflow_samples = Vec::new();
+    let mut symbol_failure_count = 0usize;
+    let mut symbol_failure_samples = Vec::new();
+    let mut seen_overflow = std::collections::HashSet::new();
+    let mut seen_symbol_failure = std::collections::HashSet::new();
+
+    for page_num in 1..=page_count {
+        let run_opts = Options { background_page_number: page_num, ..opts.clone() };
+        let out = generate_pdf(csv_data, background_bytes, contour_background_bytes, &run_opts)?;
+
+        if page_num == 1 {
+            cards_per_page = out.cards_per_page;
+        }
+        text_overflow_count += out.text_overflow_count;
+        for s in out.text_overflow_samples {
+            if seen_overflow.insert(s.clone()) { text_overflow_samples.push(s); }
+        }
+        symbol_failure_count += out.symbol_failure_count;
+        for s in out.symbol_failure_samples {
+            if seen_symbol_failure.insert(s.clone()) { symbol_failure_samples.push(s); }
+        }
+
+        let run_doc = Document::load_mem(&out.pdf)?;
+        crate::pdf_import::append_pages(&mut combined, &run_doc)?;
+    }
+
+    let mut pdf = Vec::new();
+    combined.save_to(&mut pdf)?;
+
+    Ok(GenerateOutput {
+        pdf,
+        cards_per_page,
+        path_length_per_card_mm: None,
+        path_length_total_mm: None,
+        node_count_per_card: None,
+        node_count_total: None,
+        sharp_turn_count_per_card: None,
+        sharp_turn_count_total: None,
+        time_cutting_per_card_s: None,
+        time_cutting_total_s: None,
+        text_overflow_count,
+        text_overflow_samples,
+        symbol_failure_count,
+        symbol_failure_samples,
+    })
+}
+
+// Resolve one background page's oriented (rotated/flipped) content and its
+// natural displayed size, honoring `opts.background_rotation`/`_flip_x`/`_flip_y`.
+// Shared sizing step of `build_sequential_bg_form` below, split out so the
+// reference page can be measured (to pick the shared grid footprint) without
+// building its Form XObject twice.
+fn oriented_page_content(doc: &Document, page_id: lopdf::ObjectId, opts: &Options) -> Result<(f32, f32, Vec<u8>, Dictionary), Box<dyn std::error::Error>> {
+    let page_obj = doc.get_object(page_id)?;
+    let page_dict = page_obj.as_dict()?.clone();
+    let media_box = page_dict.get(b"MediaBox")?.as_array()?.clone();
+
+    let raw_w = match &media_box[2] { Object::Integer(w) => *w as f32, Object::Real(w) => *w, _ => 595.0 };
+    let raw_h = match &media_box[3] { Object::Integer(h) => *h as f32, Object::Real(h) => *h, _ => 842.0 };
+    let raw_page_content = doc.get_page_content(page_id)?;
+
+    let page_rotate = match page_dict.get(b"Rotate") { Ok(Object::Integer(r)) => *r, _ => 0 };
+    let rotate = (((page_rotate + opts.background_rotation) % 360) + 360) % 360;
+    let (orig_w, orig_h, rotate_prefix): (f32, f32, Vec<u8>) = match rotate {
+        90 => (raw_h, raw_w, format!("0 -1 1 0 0 {raw_w:.4} cm\n").into_bytes()),
+        180 => (raw_w, raw_h, format!("-1 0 0 -1 {raw_w:.4} {raw_h:.4} cm\n").into_bytes()),
+        270 => (raw_h, raw_w, format!("0 1 -1 0 {raw_h:.4} 0 cm\n").into_bytes()),
+        _ => (raw_w, raw_h, Vec::new()),
+    };
+
+    let flip_prefix: Vec<u8> = match (opts.background_flip_x, opts.background_flip_y) {
+        (true, true) => format!("-1 0 0 -1 {orig_w:.4} {orig_h:.4} cm\n").into_bytes(),
+        (true, false) => format!("-1 0 0 1 {orig_w:.4} 0 cm\n").into_bytes(),
+        (false, true) => format!("1 0 0 -1 0 {orig_h:.4} cm\n").into_bytes(),
+        (false, false) => Vec::new(),
+    };
+
+    let content = if rotate_prefix.is_empty() && flip_prefix.is_empty() {
+        raw_page_content
+    } else {
+        [b"q\n".to_vec(), flip_prefix, rotate_prefix, raw_page_content, b"\nQ\n".to_vec()].concat()
+    };
+
+    Ok((orig_w, orig_h, content, page_dict))
+}
+
+// Build one page's background Form XObject for `generate_pdf_sequential_background`.
+// A print-only counterpart of `generate_pdf`'s own background construction
+// (rotate/flip/scale-to-target/pan/spin/backdrop) — the contour-only branches
+// there (trim-to-path, the spun cut's footprint re-origin) never apply here
+// since this path never runs with `opts.contour` set. The page is always
+// scaled to `(target_w, target_h)` — the shared grid's card size — so every
+// page in a sequential job lands on one uniform card footprint, regardless of
+// its own native size.
+fn build_sequential_bg_form(doc: &mut Document, page_id: lopdf::ObjectId, opts: &Options, layout: &CardLayout, target_w: f32, target_h: f32) -> Result<lopdf::ObjectId, Box<dyn std::error::Error>> {
+    let (orig_w, orig_h, content_raw, page_dict) = oriented_page_content(doc, page_id, opts)?;
+
+    let bg_content_bytes = if (target_w - orig_w).abs() > 0.1 || (target_h - orig_h).abs() > 0.1 {
+        let sx = target_w / orig_w;
+        let sy = target_h / orig_h;
+        let prefix = format!("q {sx:.6} 0 0 {sy:.6} 0 0 cm\n").into_bytes();
+        [prefix, content_raw, b"\nQ".to_vec()].concat()
+    } else {
+        content_raw
+    };
+
+    let mut bg_xobj_dict = Dictionary::new();
+    bg_xobj_dict.set("Type", Object::Name(b"XObject".to_vec()));
+    bg_xobj_dict.set("Subtype", Object::Name(b"Form".to_vec()));
+    bg_xobj_dict.set("BBox", Object::Array(layout.card_box.clone()));
+    if let Ok(resources) = page_dict.get(b"Resources") {
+        bg_xobj_dict.set("Resources", resources.clone());
+    }
+
+    let mut transform: Vec<u8> = Vec::new();
+    if opts.background_offset_x_mm != 0.0 || opts.background_offset_y_mm != 0.0 {
+        let ox = opts.background_offset_x_mm * crate::geometry::MM;
+        let oy = opts.background_offset_y_mm * crate::geometry::MM;
+        transform.extend_from_slice(format!("1 0 0 1 {ox:.4} {oy:.4} cm\n").as_bytes());
+    }
+    if opts.background_spin_deg != 0.0 {
+        if let Some(m) = crate::geometry::word_transform(opts.background_spin_deg, false, false, target_w / 2.0, target_h / 2.0) {
+            transform.extend_from_slice(format!("{:.6} {:.6} {:.6} {:.6} {:.4} {:.4} cm\n", m[0], m[1], m[2], m[3], m[4], m[5]).as_bytes());
+        }
+    }
+    let panned_bg = if transform.is_empty() {
+        bg_content_bytes.clone()
+    } else {
+        [b"q\n".to_vec(), transform, bg_content_bytes.clone(), b"\nQ".to_vec()].concat()
+    };
+
+    let backdrop_prefix: Vec<u8> = match opts.background_backdrop_color {
+        Some(TextColor::Rgb(r, g, b)) => format!("q {r:.4} {g:.4} {b:.4} rg 0 0 {target_w:.4} {target_h:.4} re f Q\n").into_bytes(),
+        Some(TextColor::Cmyk(c, m, y, k)) => format!("q {c:.4} {m:.4} {y:.4} {k:.4} k 0 0 {target_w:.4} {target_h:.4} re f Q\n").into_bytes(),
+        None => Vec::new(),
+    };
+    let bg_form_content = [backdrop_prefix, panned_bg].concat();
+    let bg_form = Stream::new(bg_xobj_dict, bg_form_content);
+    Ok(doc.add_object(bg_form))
+}
+
+// Sequential variant of `generate_pdf`: for a background PDF with more than
+// one page, build one Form XObject per page (each scaled to the same shared
+// footprint) and cycle every CSV row's card to the next page in page order —
+// row 0 -> page 1, row 1 -> page 2, ... wrapping back to page 1 once the pages
+// run out, continuing across sheets (never resetting at a sheet boundary) —
+// instead of repeating one page in every cell. All cards share one grid and
+// one set of sheets, unlike `generate_pdf_multi_background`, which gives each
+// page its own dedicated sheets. Print-only, mirroring the scope
+// `background_page_mode` exposes in the web UI: no contour/combine-overlay or
+// minimal-mode cropping support (both require a single shared background to
+// crop/overlay against, which a per-card cycling background doesn't have).
+pub fn generate_pdf_sequential_background(csv_data: Option<&str>, background_bytes: &[u8], opts: &Options) -> Result<GenerateOutput, Box<dyn std::error::Error>> {
+    if opts.combine {
+        return Err("sequential background mode does not support the alignment overlay (--combineb)".into());
+    }
+    if opts.minimal {
+        return Err("sequential background mode does not support minimal-mode cropping".into());
+    }
+
+    let mut doc = Document::load_mem(background_bytes)?;
+    let pages = doc.get_pages();
+    let page_count = pages.len() as u32;
+    if page_count <= 1 {
+        return generate_pdf(csv_data, background_bytes, None, opts);
+    }
+
+    // Reference page/size: the same page `cards_per_page` and the single-page
+    // path use (`background_page_number`, default 1), honoring an explicit
+    // `card_width_mm`/`card_height_mm` target if the user set one — every other
+    // page is then forced to this exact footprint so all cards fit one grid.
+    let ref_page_id = pages
+        .get(&opts.background_page_number)
+        .copied()
+        .or_else(|| pages.values().next().copied())
+        .ok_or("No pages in background PDF")?;
+    let (ref_w, ref_h, _, _) = oriented_page_content(&doc, ref_page_id, opts)?;
+    let (target_w, target_h) = match (opts.card_width_mm, opts.card_height_mm) {
+        (Some(tw_mm), Some(th_mm)) if tw_mm > 0.0 && th_mm > 0.0 => (tw_mm * crate::geometry::MM, th_mm * crate::geometry::MM),
+        _ => (ref_w, ref_h),
+    };
+
+    let layout = CardLayout::compute(target_w, target_h, opts);
+
+    let mut bg_form_ids = Vec::with_capacity(page_count as usize);
+    for page_num in 1..=page_count {
+        let page_id = *pages.get(&page_num).ok_or("Missing background page")?;
+        bg_form_ids.push(build_sequential_bg_form(&mut doc, page_id, opts, &layout, target_w, target_h)?);
+    }
+
+    // Get pages root
+    let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let catalog = doc.get_object(catalog_id)?;
+    let pages_id = catalog.as_dict()?.get(b"Pages").unwrap().as_reference()?;
+
+    // Remove all of the source PDF's original pages — their content is now
+    // reused as the per-card BG XObjects built above (mirrors `generate_pdf`).
+    // Every page is gone, so the root's Kids is cleared outright rather than
+    // filtered: a retain() keyed on leaf page ids leaves any intermediate
+    // `/Type /Pages` node in place (a background with enough pages to have a
+    // balanced tree has these), dangling once its own leaf children are
+    // deleted below — surfacing as stray empty, zero-dimension pages.
+    let original_page_ids: std::collections::HashSet<lopdf::ObjectId> = pages.values().copied().collect();
+    {
+        let pages_obj = doc.get_object(pages_id)?;
+        let pages_dict_orig = pages_obj.as_dict()?;
+        let mut pages_dict = pages_dict_orig.clone();
+        pages_dict.set("Kids", Object::Array(vec![]));
+        pages_dict.set("Count", Object::Integer(0));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    }
+    for id in &original_page_ids {
+        doc.objects.remove(id);
+    }
+
+    let font_bytes_list: Vec<&[u8]> = if opts.font_data.is_empty() {
+        vec![MONTSERRAT_BOLD_TTF]
+    } else {
+        opts.font_data.iter().map(|v| v.as_slice()).collect()
+    };
+    let embedded_fonts = embed_fonts(&mut doc, &font_bytes_list)?;
+
+    let csv_data = csv_data.ok_or("csv data is required")?;
+    let (card_ids, text_overflow) = cards::build_card_xobjects(&mut doc, csv_data, opts, &embedded_fonts, &layout, &bg_form_ids)?;
+
+    for chunk in card_ids.chunks(layout.cards_per_page) {
+        let mut operations = Vec::new();
+        let mut xobjects = Dictionary::new();
+
+        for (i, card_id) in chunk.iter().enumerate() {
+            let (x, y) = layout.position(i);
+            let name = format!("C{}", i);
+            operations.push(Operation::new("q", vec![]));
+            operations.push(Operation::new("cm", vec![
+                Object::Real(1.0), Object::Real(0.0),
+                Object::Real(0.0), Object::Real(1.0),
+                Object::Real(x), Object::Real(y),
+            ]));
+            operations.push(Operation::new("Do", vec![Object::Name(name.clone().into_bytes())]));
+            operations.push(Operation::new("Q", vec![]));
+            xobjects.set(name, Object::Reference(*card_id));
+        }
+
+        operations.extend(layout.registration_circles());
+
+        let content = Content { operations };
+        let content_data = content.encode()?;
+        let content_stream = Stream::new(Dictionary::new(), content_data);
+        let content_id = doc.add_object(content_stream);
+
+        let mut page_dict = Dictionary::new();
+        page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        page_dict.set("Parent", Object::Reference(pages_id));
+        page_dict.set("MediaBox", Object::Array(layout.host_box.clone()));
+        page_dict.set("Contents", Object::Reference(content_id));
+        page_dict.set("Resources", Object::Dictionary({
+            let mut res = Dictionary::new();
+            res.set("XObject", Object::Dictionary(xobjects));
+            res
+        }));
+
+        let page_id = doc.add_object(Object::Dictionary(page_dict));
+
+        let pages_obj = doc.get_object(pages_id)?;
+        let pages_dict_orig = pages_obj.as_dict()?;
+        let mut kids = pages_dict_orig.get(b"Kids").unwrap().as_array()?.clone();
+        kids.push(Object::Reference(page_id));
+        let count = pages_dict_orig.get(b"Count").unwrap().as_i64().unwrap_or(0) + 1;
+        let mut pages_dict = pages_dict_orig.clone();
+        pages_dict.set("Kids", Object::Array(kids));
+        pages_dict.set("Count", Object::Integer(count));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    }
+
+    let mut pdf = Vec::new();
+    doc.save_to(&mut pdf)?;
+
+    Ok(GenerateOutput {
+        pdf,
+        cards_per_page: layout.cards_per_page,
+        path_length_per_card_mm: None,
+        path_length_total_mm: None,
+        node_count_per_card: None,
+        node_count_total: None,
+        sharp_turn_count_per_card: None,
+        sharp_turn_count_total: None,
+        time_cutting_per_card_s: None,
+        time_cutting_total_s: None,
+        text_overflow_count: text_overflow.count,
+        text_overflow_samples: text_overflow.samples,
+        symbol_failure_count: text_overflow.symbol_failure_count,
+        symbol_failure_samples: text_overflow.symbol_failures,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,6 +1102,93 @@ mod tests {
         let mut buf = Vec::new();
         doc.save_to(&mut buf).unwrap();
         buf
+    }
+
+    // Like `multi_page_pdf`, but the tree is *nested*: the first half of the
+    // pages sit under an intermediate `/Type /Pages` node instead of directly
+    // under the root, mirroring how real multi-page PDF writers balance large
+    // trees. Used to catch page-tree cleanup that only retain()s over the
+    // root's direct Kids and so leaves such a node dangling.
+    fn nested_multi_page_pdf(sizes: &[(f32, f32)]) -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let interior_id = doc.new_object_id();
+        let split = sizes.len() / 2;
+
+        let mut interior_kids = Vec::new();
+        let mut root_kids = Vec::new();
+        for (i, &(w, h)) in sizes.iter().enumerate() {
+            let parent_id = if i < split { interior_id } else { pages_id };
+            let content_id = doc.add_object(Stream::new(Dictionary::new(), Content { operations: vec![] }.encode().unwrap()));
+            let mut page_dict = Dictionary::new();
+            page_dict.set("Type", Object::Name(b"Page".to_vec()));
+            page_dict.set("Parent", Object::Reference(parent_id));
+            page_dict.set("Contents", Object::Reference(content_id));
+            page_dict.set("MediaBox", Object::Array(vec![Object::Real(0.0), Object::Real(0.0), Object::Real(w), Object::Real(h)]));
+            let page_id = doc.add_object(Object::Dictionary(page_dict));
+            if i < split {
+                interior_kids.push(Object::Reference(page_id));
+            } else {
+                root_kids.push(Object::Reference(page_id));
+            }
+        }
+
+        let mut interior_dict = Dictionary::new();
+        interior_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        interior_dict.set("Parent", Object::Reference(pages_id));
+        interior_dict.set("Count", Object::Integer(interior_kids.len() as i64));
+        interior_dict.set("Kids", Object::Array(interior_kids));
+        doc.objects.insert(interior_id, Object::Dictionary(interior_dict));
+
+        let mut kids = vec![Object::Reference(interior_id)];
+        kids.extend(root_kids);
+        let mut pages_dict = Dictionary::new();
+        pages_dict.set("Type", Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Count", Object::Integer(sizes.len() as i64));
+        pages_dict.set("Kids", Object::Array(kids));
+        doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+        let mut catalog_dict = Dictionary::new();
+        catalog_dict.set("Type", Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", Object::Reference(pages_id));
+        let catalog_id = doc.add_object(Object::Dictionary(catalog_dict));
+        doc.trailer.set("Root", Object::Reference(catalog_id));
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    // Number of `/Type /Pages` dictionaries *reachable from the catalog's page
+    // tree root* — should be exactly 1 (the root itself) once a background's
+    // original tree has been fully cleared out of the tree, regardless of
+    // whether any of its objects still linger unreferenced elsewhere in the
+    // file (harmless, like the background's unused fonts/images would be). A
+    // dangling intermediate node still linked into Kids (left behind once its
+    // own leaf children are deleted, but the node itself never unlinked)
+    // counts as an extra page-tree node here even though lopdf's own
+    // `get_pages()` is tolerant enough to silently skip its now-missing
+    // children instead of surfacing them as extra pages.
+    fn count_reachable_pages_nodes(doc: &Document) -> usize {
+        fn walk(doc: &Document, id: lopdf::ObjectId, count: &mut usize) {
+            let Ok(dict) = doc.get_object(id).and_then(|o| o.as_dict()) else { return };
+            if dict.get(b"Type").ok().and_then(|t| t.as_name().ok()) != Some(b"Pages".as_slice()) {
+                return;
+            }
+            *count += 1;
+            if let Ok(kids) = dict.get(b"Kids").and_then(|k| k.as_array()) {
+                for kid in kids {
+                    if let Ok(r) = kid.as_reference() {
+                        walk(doc, r, count);
+                    }
+                }
+            }
+        }
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let catalog = doc.get_object(catalog_id).unwrap();
+        let root_id = catalog.as_dict().unwrap().get(b"Pages").unwrap().as_reference().unwrap();
+        let mut count = 0;
+        walk(doc, root_id, &mut count);
+        count
     }
 
     // A single-page PDF with the given MediaBox (points) and `/Rotate` value.
@@ -1012,6 +1444,190 @@ mod tests {
     }
 
     #[test]
+    fn generate_no_cut_drops_unselected_background_pages_with_nested_tree() {
+        // Same as above, but the source PDF's page tree is nested (an
+        // intermediate `/Type /Pages` node holds some of the pages) rather than
+        // flat — a retain() that only checks the root's direct Kids leaves that
+        // node dangling once its own leaf pages are deleted, surfacing as stray
+        // empty, zero-dimension pages in the output.
+        let bg = nested_multi_page_pdf(&[(288.0, 360.0), (288.0, 360.0), (288.0, 360.0), (288.0, 360.0)]);
+        let out = generate_pdf(
+            Some("1A 1\n"),
+            &bg,
+            None,
+            &Options { background_page_number: 3, no_cut: true, ..Options::default() },
+        )
+        .expect("no-cut generation should succeed");
+        let doc = Document::load_mem(&out.pdf).expect("output should be a valid PDF");
+        assert_eq!(doc.get_pages().len(), 1, "only the generated card page should remain, not a stray nested-tree remnant");
+        assert_eq!(count_reachable_pages_nodes(&doc), 1, "the intermediate /Type /Pages node must not survive as a dangling remnant");
+    }
+
+    #[test]
+    fn generate_multi_background_joins_pages_in_order() {
+        // Three distinctly-sized background pages, no_cut so each run's single
+        // card page is sized to its own background page. One CSV row means each
+        // run produces exactly one page, so the joined output should have all
+        // three, in page order (run 1's page, then run 2's, then run 3's).
+        let sizes = [(72.0, 72.0), (144.0, 100.0), (200.0, 50.0)];
+        let bg = multi_page_pdf(&sizes);
+        let opts = Options { no_cut: true, ..Options::default() };
+        let out = generate_pdf_multi_background(Some("1A 1\n"), &bg, None, &opts)
+            .expect("multi-background generation should succeed");
+
+        let doc = Document::load_mem(&out.pdf).expect("output should be a valid PDF");
+        let pages = doc.get_pages();
+        assert_eq!(pages.len(), sizes.len(), "one output page per background page");
+
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        for (i, page_id) in pages.values().enumerate() {
+            let mb = doc.get_object(*page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+            let (w, h) = (num(&mb[2]), num(&mb[3]));
+            let (ew, eh) = sizes[i];
+            assert!((w - ew).abs() < 0.5 && (h - eh).abs() < 0.5, "page {i} expected {ew}x{eh}, got {w}x{h}");
+        }
+    }
+
+    #[test]
+    fn generate_multi_background_single_page_matches_plain_generation() {
+        // A 1-page background should short-circuit straight to `generate_pdf`,
+        // producing byte-identical output.
+        let bg = multi_page_pdf(&[(72.0, 72.0)]);
+        let opts = Options { no_cut: true, ..Options::default() };
+        let plain = generate_pdf(Some("1A 1\n"), &bg, None, &opts).unwrap();
+        let multi = generate_pdf_multi_background(Some("1A 1\n"), &bg, None, &opts).unwrap();
+        assert_eq!(multi.pdf, plain.pdf, "single-page background must match plain generate_pdf exactly");
+        assert_eq!(multi.cards_per_page, plain.cards_per_page);
+    }
+
+    #[test]
+    fn generate_multi_background_sums_overflow_counts_but_dedupes_samples() {
+        // The same CSV runs unchanged against every background page, so the same
+        // row overflows on every run: the count should reflect all N occurrences,
+        // but the sample list should report the offending row only once.
+        let (w, h) = {
+            let doc = Document::load_mem(BACKGROUND_PDF).unwrap();
+            let page_id = *doc.get_pages().values().next().unwrap();
+            let mb = doc.get_object(page_id).unwrap().as_dict().unwrap().get(b"MediaBox").unwrap().as_array().unwrap();
+            let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+            (num(&mb[2]), num(&mb[3]))
+        };
+        let bg = multi_page_pdf(&[(w, h), (w, h), (w, h)]);
+        let opts = Options { font_sizes: vec![14.0], text_y_mm: vec![7.0], ..Options::default() };
+
+        let single = generate_pdf(Some("LONGCODE123\n"), &bg, None, &opts).unwrap();
+        assert!(single.text_overflow_count > 0, "long code should overflow a single run too");
+
+        let out = generate_pdf_multi_background(Some("LONGCODE123\n"), &bg, None, &opts)
+            .expect("multi-background generation should succeed");
+        assert_eq!(out.text_overflow_count, 3 * single.text_overflow_count, "count sums across the 3 runs");
+        assert_eq!(out.text_overflow_samples, vec!["LONGCODE123".to_string()], "sample deduped across runs");
+    }
+
+    // Which of `sizes` a generated card's `BG` Form XObject was built from, given
+    // every page is forced to the same `(target_w, target_h)` footprint: a page
+    // whose native size already matches the target is embedded unscaled (no `cm`
+    // op), everything else carries a `q sx 0 0 sy 0 0 cm` prefix this reads back.
+    fn card_source_page(doc: &Document, card_id: lopdf::ObjectId, target_w: f32, target_h: f32, sizes: &[(f32, f32)]) -> usize {
+        let card = &doc.get_object(card_id).unwrap().as_stream().unwrap().dict;
+        let res = card.get(b"Resources").unwrap().as_dict().unwrap();
+        let xobjs = res.get(b"XObject").unwrap().as_dict().unwrap();
+        let bg_ref = xobjs.get(b"BG").unwrap().as_reference().unwrap();
+        let bg_stream = doc.get_object(bg_ref).unwrap().as_stream().unwrap();
+        let content_bytes = bg_stream.decompressed_content().unwrap_or_else(|_| bg_stream.content.clone());
+        let content = Content::decode(&content_bytes).unwrap();
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        for op in &content.operations {
+            if op.operator == "cm" && op.operands.len() == 6 {
+                let (sx, sy) = (num(&op.operands[0]), num(&op.operands[3]));
+                let (orig_w, orig_h) = (target_w / sx, target_h / sy);
+                return sizes.iter().position(|&(w, h)| (w - orig_w).abs() < 0.5 && (h - orig_h).abs() < 0.5)
+                    .unwrap_or_else(|| panic!("no size in {sizes:?} matches back-computed {orig_w}x{orig_h}"));
+            }
+        }
+        // No scale op: the page's own native size already matched the target.
+        sizes.iter().position(|&(w, h)| (w - target_w).abs() < 0.5 && (h - target_h).abs() < 0.5)
+            .unwrap_or_else(|| panic!("no size in {sizes:?} matches unscaled target {target_w}x{target_h}"))
+    }
+
+    // Card object IDs in "C0", "C1", ... order from the (single, in these tests)
+    // output page's Resources.
+    fn ordered_card_ids(doc: &Document) -> Vec<lopdf::ObjectId> {
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let page = doc.get_object(page_id).unwrap().as_dict().unwrap();
+        let xobjs = page.get(b"Resources").unwrap().as_dict().unwrap().get(b"XObject").unwrap().as_dict().unwrap();
+        let mut names: Vec<&Vec<u8>> = xobjs.iter().map(|(k, _)| k).collect();
+        names.sort_by_key(|n| String::from_utf8_lossy(n)[1..].parse::<usize>().unwrap_or(0));
+        names.into_iter().map(|n| xobjs.get(n).unwrap().as_reference().unwrap()).collect()
+    }
+
+    #[test]
+    fn sequential_mode_cycles_backgrounds_per_row() {
+        // Three distinctly-sized pages, 4 CSV rows: row 0 -> page 1 (the
+        // reference/target size, unscaled), row 1 -> page 2, row 2 -> page 3,
+        // row 3 wraps back to page 1 — continuing past the page count rather
+        // than resetting or erroring.
+        let sizes = [(72.0, 72.0), (144.0, 100.0), (200.0, 50.0)];
+        let bg = multi_page_pdf(&sizes);
+        let out = generate_pdf_sequential_background(Some("A\nB\nC\nD\n"), &bg, &Options::default())
+            .expect("sequential generation should succeed");
+
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        assert_eq!(doc.get_pages().len(), 1, "4 cards fit on a single sheet at these sizes");
+        let card_ids = ordered_card_ids(&doc);
+        assert_eq!(card_ids.len(), 4);
+
+        let (target_w, target_h) = sizes[0];
+        let got: Vec<usize> = card_ids.iter().map(|&id| card_source_page(&doc, id, target_w, target_h, &sizes)).collect();
+        assert_eq!(got, vec![0, 1, 2, 0], "background page cycles 1,2,3,1 across the 4 rows");
+    }
+
+    #[test]
+    fn sequential_mode_start_offset_continues_the_cycle() {
+        // `background_page_start_offset` simulates a later web-worker batch of the
+        // same job: with 2 rows already emitted by prior batches, this batch's own
+        // row 0/1 must land on the pages a single unbatched call's row 2/3 would
+        // have used (2, 0), not restart the cycle at page 1.
+        let sizes = [(72.0, 72.0), (144.0, 100.0), (200.0, 50.0)];
+        let bg = multi_page_pdf(&sizes);
+        let opts = Options { background_page_start_offset: 2, ..Options::default() };
+        let out = generate_pdf_sequential_background(Some("X\nY\n"), &bg, &opts)
+            .expect("sequential generation with a start offset should succeed");
+
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let card_ids = ordered_card_ids(&doc);
+        let (target_w, target_h) = sizes[0];
+        let got: Vec<usize> = card_ids.iter().map(|&id| card_source_page(&doc, id, target_w, target_h, &sizes)).collect();
+        assert_eq!(got, vec![2, 0], "offset 2 continues the cycle at page 3, then wraps to page 1");
+    }
+
+    #[test]
+    fn sequential_mode_falls_back_to_generate_pdf_for_single_page_background() {
+        // A 1-page background should short-circuit straight to `generate_pdf`,
+        // producing byte-identical output.
+        let bg = multi_page_pdf(&[(72.0, 72.0)]);
+        let opts = Options { no_cut: true, ..Options::default() };
+        let plain = generate_pdf(Some("1A 1\n"), &bg, None, &opts).unwrap();
+        let sequential = generate_pdf_sequential_background(Some("1A 1\n"), &bg, &opts).unwrap();
+        assert_eq!(sequential.pdf, plain.pdf, "single-page background must match plain generate_pdf exactly");
+        assert_eq!(sequential.cards_per_page, plain.cards_per_page);
+    }
+
+    #[test]
+    fn sequential_mode_drops_unselected_background_pages_with_nested_tree() {
+        // Same bug as `generate_no_cut_drops_unselected_background_pages_with_nested_tree`,
+        // but for the sequential path's own page-tree cleanup: a background PDF
+        // whose tree is nested must not leave a dangling intermediate `/Type
+        // /Pages` node behind as a stray empty, zero-dimension output page.
+        let bg = nested_multi_page_pdf(&[(72.0, 72.0), (72.0, 72.0), (72.0, 72.0), (72.0, 72.0)]);
+        let out = generate_pdf_sequential_background(Some("A\nB\n"), &bg, &Options::default())
+            .expect("sequential generation should succeed");
+        let doc = Document::load_mem(&out.pdf).expect("output should be a valid PDF");
+        assert_eq!(doc.get_pages().len(), 1, "only the tiled host sheet should remain, not a stray nested-tree remnant");
+        assert_eq!(count_reachable_pages_nodes(&doc), 1, "the intermediate /Type /Pages node must not survive as a dangling remnant");
+    }
+
+    #[test]
     fn generate_contour_pdf() {
         let opts = Options { contour: true, ..Options::default() };
         let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("contour generation should succeed");
@@ -1095,6 +1711,84 @@ mod tests {
         let out2 = generate_pdf(None, &contour, None, &legacy).expect("contour gen should succeed");
         let (w2, _) = page_media_box(&out2.pdf);
         assert!((w2 - 72.0).abs() < 0.5, "without a canvas the page keeps the contour size");
+    }
+
+    // Extract each cell's placement `(x + offset_x, y + offset_y)` from the `cm`
+    // operator immediately preceding its `Do /BG`, in draw order.
+    fn contour_bg_placements(pdf: &[u8]) -> Vec<(f32, f32)> {
+        let doc = Document::load_mem(pdf).unwrap();
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        let content = doc.get_page_content(page_id).unwrap();
+        let parsed = Content::decode(&content).unwrap();
+        let num = |o: &Object| match o { Object::Real(v) => *v, Object::Integer(v) => *v as f32, _ => 0.0 };
+        let mut placements = Vec::new();
+        let mut last_cm: Option<(f32, f32)> = None;
+        for op in &parsed.operations {
+            if op.operator == "cm" && op.operands.len() == 6 {
+                last_cm = Some((num(&op.operands[4]), num(&op.operands[5])));
+            } else if op.operator == "Do" && matches!(op.operands.first(), Some(Object::Name(n)) if n == b"BG") {
+                placements.push(last_cm.expect("Do /BG should follow a cm"));
+            }
+        }
+        placements
+    }
+
+    #[test]
+    fn contour_canvas_keeps_grid_pitch_at_nominal_size_and_centers_shape() {
+        use crate::geometry::MM;
+        // A 20mm-square "shrunk" contour Form (stand-in for a redrawn -3mm circle,
+        // tight to its own offset outline) with a 40mm nominal canvas and zero
+        // gutter — mirrors the reported repro (Circle preset, redraw -3mm, gutter 0).
+        let native_mm = 20.0;
+        let canvas_mm = 40.0;
+        let contour = multi_page_pdf(&[(native_mm * MM, native_mm * MM)]);
+        let opts = Options {
+            contour: true,
+            contour_canvas_width_mm: Some(canvas_mm),
+            contour_canvas_height_mm: Some(canvas_mm),
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(None, &contour, None, &opts).expect("contour generation should succeed");
+        let placements = contour_bg_placements(&out.pdf);
+        assert!(placements.len() >= 2, "test needs at least 2 cells per row, got {}", placements.len());
+
+        // Pitch between adjacent cells follows the 40mm canvas, not the 20mm native Form.
+        let pitch = (placements[1].0 - placements[0].0).abs();
+        assert!((pitch - canvas_mm * MM).abs() < 0.5, "cell pitch should follow the canvas size ({} pt), got {}", canvas_mm * MM, pitch);
+
+        // The 20mm Form is centered within its 40mm cell: the drawn placement is
+        // the cell's own (unoffset) origin plus a (canvas - native)/2 delta.
+        let canvas_layout = CardLayout::compute(canvas_mm * MM, canvas_mm * MM, &opts);
+        let (cell_x, cell_y) = canvas_layout.position_serpentine(0);
+        let expected_delta = (canvas_mm - native_mm) / 2.0 * MM;
+        assert!((placements[0].0 - cell_x - expected_delta).abs() < 0.5, "shape should be centered in X");
+        assert!((placements[0].1 - cell_y - expected_delta).abs() < 0.5, "shape should be centered in Y");
+    }
+
+    #[test]
+    fn no_cut_contour_canvas_centering_stays_disabled() {
+        use crate::geometry::MM;
+        // No-cut keeps its existing explicit-offset placement (no auto-centering
+        // mixed in), even though the canvas-override match arm is no longer
+        // gated on `no_cut` at the type level — a regression guard for the
+        // `contour_canvas_keeps_grid_pitch_...` change above.
+        let contour = multi_page_pdf(&[(72.0, 72.0)]);
+        let opts = Options {
+            contour: true,
+            no_cut: true,
+            contour_canvas_width_mm: Some(60.0),
+            contour_canvas_height_mm: Some(40.0),
+            contour_offset_x_mm: 5.0,
+            contour_offset_y_mm: 3.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(None, &contour, None, &opts).expect("contour gen should succeed");
+        let placements = contour_bg_placements(&out.pdf);
+        assert_eq!(placements.len(), 1, "no-cut draws a single card");
+        assert!((placements[0].0 - 5.0 * MM).abs() < 0.5, "no-cut placement must stay the explicit offset, not centered");
+        assert!((placements[0].1 - 3.0 * MM).abs() < 0.5, "no-cut placement must stay the explicit offset, not centered");
     }
 
     #[test]
