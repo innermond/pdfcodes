@@ -2551,9 +2551,13 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         setBgField('bgTargetWidthMm', bg.widthPt / MM)
         setBgField('bgTargetHeightMm', bg.heightPt / MM)
         await ensureDefaultFont()
-        const maxWidthPt = bg.widthPt * 0.9
-        const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
-        handleSampleTextChange(word)
+        // Seed a sample row only for the very first background; replacing the file
+        // must not touch the codes (text, count, styles) the user already set up.
+        if (!sampleText) {
+          const maxWidthPt = bg.widthPt * 0.9
+          const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+          handleSampleTextChange(word)
+        }
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
