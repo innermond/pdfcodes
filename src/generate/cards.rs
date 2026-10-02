@@ -98,6 +98,9 @@ fn code_fits_contour(
     // Inward safety margin (card points): the code must clear the cut by at least
     // this much, i.e. it's tested against the region eroded by `inset_pt`.
     inset_pt: f32,
+    // Rotate/flip pivot when the code is part of a joined unit and turns about the
+    // unit's centre rather than its own; `None` uses the code's own centre.
+    pivot: Option<(f32, f32)>,
 ) -> bool {
     let scale = font_size / units_per_em as f32;
     // The same flip/rotate pivot the draw path uses (word center).
@@ -111,8 +114,7 @@ fn code_fits_contour(
         let n = text.chars().count() as f32;
         w + char_spacing * (n - 1.0).max(0.0)
     };
-    let cx = x + text_width_for_center / 2.0;
-    let cy = y + (ascent + descent) / 2.0;
+    let (cx, cy) = pivot.unwrap_or((x + text_width_for_center / 2.0, y + (ascent + descent) / 2.0));
     let matrix = word_transform(rotation_deg, flip_x, flip_y, cx, cy);
 
     // Pen advances glyph-by-glyph from the baseline origin, matching the width
@@ -326,7 +328,7 @@ fn word_overflows(
         let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * fs;
         !code_fits_contour(
             &ef.face, ef.units_per_em, fs, wf.char_spacing, text,
-            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep, inset_pt,
+            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep, inset_pt, None,
         )
     } else {
         box_overflows_card(x, WordBox { width: text_width, ascent: 0.0, descent: 0.0 }, card_w, safe_margin)
@@ -534,6 +536,168 @@ fn compute_uniform_fs(
         }
     }
     uniform
+}
+
+// Where a word that belongs to a joined unit (see `Options::text_join_prev`) is
+// drawn on one row: its own baseline origin and size, but the unit's baseline,
+// rotation/flip and pivot, so the unit turns as one block.
+#[derive(Clone, Copy)]
+struct JoinedWord {
+    x: f32,
+    y: f32,
+    font_size: f32,
+    rotation_deg: f32,
+    flip_x: bool,
+    flip_y: bool,
+    pivot: (f32, f32),
+}
+
+// One text run of a unit, with everything that doesn't depend on the unit's scale.
+struct UnitRun<'a> {
+    idx: usize,
+    text: &'a str,
+    ef: &'a EmbeddedFont<'a>,
+    advance_per_pt: f32,
+    space_per_pt: f32,
+    num_chars: f32,
+    char_spacing: f32,
+    base_fs: f32,
+}
+
+// Positions each unit of this row. A unit is a text word followed by consecutive
+// text words flagged in `text_join_prev`; it is laid out left to right on the first
+// word's baseline with one space (in the preceding run's font and size) between
+// runs, and the whole width is what the first word's alignment, X and overflow
+// check work on. With "Corectare depășire" every run shrinks by the same factor
+// (each never below the minimum size) until the unit fits. Returns the placement
+// per word index (`None` for words outside a unit) and whether any unit still
+// overflows.
+#[allow(clippy::too_many_arguments)]
+fn plan_units(
+    texts: &[&str],
+    opts: &Options,
+    embedded_fonts: &[EmbeddedFont],
+    y_positions: &[f32],
+    uniform_fs: &Option<Vec<f32>>,
+    card_w: f32,
+    safe_margin: f32,
+    inset_pt: f32,
+) -> (Vec<Option<JoinedWord>>, bool) {
+    let n = texts.len();
+    let mut plan: Vec<Option<JoinedWord>> = vec![None; n];
+    let mut overflow = false;
+    let joins = |i: usize| opts.text_join_prev.get(i).copied().unwrap_or(false);
+    let is_text = |i: usize| !pick_word(&opts.code_kinds, i).unwrap_or_default().is_symbol();
+    let contour = contour_frame(opts, card_w);
+
+    let mut start = 0;
+    while start < n {
+        let mut end = start + 1;
+        while end < n && joins(end) && is_text(end) && is_text(start) {
+            end += 1;
+        }
+        if end - start > 1 {
+            let wf = resolve_word_fit(opts, y_positions, start);
+            let runs: Vec<UnitRun> = (start..end)
+                .map(|idx| {
+                    let rwf = resolve_word_fit(opts, y_positions, idx);
+                    let ef = &embedded_fonts[if embedded_fonts.len() == 1 { 0 } else { idx }];
+                    UnitRun {
+                        idx,
+                        text: texts[idx],
+                        ef,
+                        advance_per_pt: advance_sum_per_pt(&ef.face, ef.units_per_em, texts[idx]),
+                        space_per_pt: advance_sum_per_pt(&ef.face, ef.units_per_em, " "),
+                        num_chars: texts[idx].chars().count() as f32,
+                        char_spacing: rwf.char_spacing,
+                        base_fs: uniform_fs.as_ref().map(|u| u[idx]).unwrap_or(rwf.configured_fs),
+                    }
+                })
+                .collect();
+            let floor_of = |r: &UnitRun| opts.min_font_size_pt.min(r.base_fs);
+            let size_at = |r: &UnitRun, s: f32| (r.base_fs * s).max(floor_of(r));
+            // (x offset of each run from the unit's left edge, total width)
+            let layout = |s: f32| -> (Vec<f32>, f32) {
+                let mut offsets = Vec::with_capacity(runs.len());
+                let mut cursor = 0.0f32;
+                let mut gap_after_prev: Option<f32> = None;
+                for r in &runs {
+                    let fs = size_at(r, s);
+                    if r.text.is_empty() {
+                        offsets.push(cursor);
+                        continue;
+                    }
+                    if let Some(gap) = gap_after_prev {
+                        cursor += gap;
+                    }
+                    offsets.push(cursor);
+                    cursor += word_text_width(r.advance_per_pt, r.char_spacing, r.num_chars, fs);
+                    gap_after_prev = Some(r.space_per_pt * fs + r.char_spacing);
+                }
+                (offsets, cursor)
+            };
+            let metrics = |s: f32| -> (f32, f32) {
+                runs.iter().filter(|r| !r.text.is_empty()).fold((0.0f32, 0.0f32), |(a, d), r| {
+                    let fs = size_at(r, s);
+                    (
+                        a.max((r.ef.face.ascender() as f32 / r.ef.units_per_em as f32) * fs),
+                        d.min((r.ef.face.descender() as f32 / r.ef.units_per_em as f32) * fs),
+                    )
+                })
+            };
+            let place = |s: f32| -> (f32, Vec<f32>, f32) {
+                let (offsets, width) = layout(s);
+                let x0 = resolve_x(wf.align, wf.text_x_mm, card_w, safe_margin, width, contour, inset_pt);
+                (x0, offsets, width)
+            };
+            let fits = |s: f32| -> bool {
+                let (x0, offsets, width) = place(s);
+                let (ascent, descent) = metrics(s);
+                let pivot = (x0 + width / 2.0, wf.y + (ascent + descent) / 2.0);
+                if opts.contour_keep_polygons.is_empty() {
+                    return !box_overflows_card(x0, WordBox { width, ascent: 0.0, descent: 0.0 }, card_w, safe_margin);
+                }
+                runs.iter().zip(&offsets).all(|(r, off)| {
+                    r.text.is_empty() || {
+                        let fs = size_at(r, s);
+                        let a = (r.ef.face.ascender() as f32 / r.ef.units_per_em as f32) * fs;
+                        let d = (r.ef.face.descender() as f32 / r.ef.units_per_em as f32) * fs;
+                        code_fits_contour(
+                            &r.ef.face, r.ef.units_per_em, fs, r.char_spacing, r.text, x0 + off, wf.y,
+                            wf.rotation_deg, wf.flip_x, wf.flip_y, a, d, &opts.contour_keep_polygons, inset_pt, Some(pivot),
+                        )
+                    }
+                })
+            };
+
+            let mut scale = 1.0f32;
+            if opts.correct_overflow {
+                // 2 % steps from full size down to the floor (scale 0 pins every run there).
+                while scale > 0.0 && !fits(scale) {
+                    scale = (scale - 0.02).max(0.0);
+                }
+            }
+            if !fits(scale) {
+                overflow = true;
+            }
+            let (x0, offsets, width) = place(scale);
+            let (ascent, descent) = metrics(scale);
+            let pivot = (x0 + width / 2.0, wf.y + (ascent + descent) / 2.0);
+            for (r, off) in runs.iter().zip(&offsets) {
+                plan[r.idx] = Some(JoinedWord {
+                    x: x0 + off,
+                    y: wf.y,
+                    font_size: size_at(r, scale),
+                    rotation_deg: wf.rotation_deg,
+                    flip_x: wf.flip_x,
+                    flip_y: wf.flip_y,
+                    pivot,
+                });
+            }
+        }
+        start = end;
+    }
+    (plan, overflow)
 }
 
 // Push the per-word rotate/flip transform about the box's center, if the word has
@@ -826,14 +990,22 @@ pub(crate) fn build_card_xobjects(
         // reported (with the reason), so one bad row can't sink the whole job.
         let mut row_symbol_failure: Option<String> = None;
 
+        // Joined units (several codes on one line, aligned as a whole): positioned up
+        // front so each member just draws itself at its slot below.
+        let (units, units_overflow) = plan_units(&texts, opts, embedded_fonts, &y_positions, &uniform_fs, card_w, safe_margin, inset_pt);
+        if units_overflow {
+            row_overflows = true;
+        }
+
         for (idx, text) in texts.iter().enumerate() {
             let wf = resolve_word_fit(opts, &y_positions, idx);
+            let joined = units[idx];
             let align = wf.align;
             let char_spacing = wf.char_spacing;
-            let rotation_deg = wf.rotation_deg;
-            let flip_x = wf.flip_x;
-            let flip_y = wf.flip_y;
-            let y = wf.y;
+            let rotation_deg = joined.map_or(wf.rotation_deg, |j| j.rotation_deg);
+            let flip_x = joined.map_or(wf.flip_x, |j| j.flip_x);
+            let flip_y = joined.map_or(wf.flip_y, |j| j.flip_y);
+            let y = joined.map_or(wf.y, |j| j.y);
 
             // Styling that depends on the word's position alone, resolved before the
             // text/QR split below because both composite identically: a QR takes its
@@ -984,7 +1156,9 @@ pub(crate) fn build_card_xobjects(
             // "Corectare depășire": render at a uniform per-column size (Pe
             // coloană), an individually shrunk size (Pe cod), or the configured
             // size when correction is off.
-            let font_size = if let Some(uf) = &uniform_fs {
+            let font_size = if let Some(j) = &joined {
+                j.font_size
+            } else if let Some(uf) = &uniform_fs {
                 uf[idx]
             } else if opts.correct_overflow {
                 max_fitting_fs(
@@ -996,7 +1170,10 @@ pub(crate) fn build_card_xobjects(
             };
 
             let text_width = word_text_width(advance_per_pt, char_spacing, num_chars, font_size);
-            let x = resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width, contour_frame(opts, card_w), inset_pt);
+            let x = joined.map_or_else(
+                || resolve_x(align, wf.text_x_mm, card_w, safe_margin, text_width, contour_frame(opts, card_w), inset_pt),
+                |j| j.x,
+            );
 
             let ascent = (ef.face.ascender() as f32 / ef.units_per_em as f32) * font_size;
             let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * font_size;
@@ -1005,12 +1182,14 @@ pub(crate) fn build_card_xobjects(
             // Note if this field still doesn't fit at the (possibly corrected) size —
             // the cut contour when supplied, else the card/safe-margin extent. The row
             // is recorded once, after the loop.
-            if word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
+            // (A unit member was checked with its whole unit in `plan_units`.)
+            if joined.is_none() && word_overflows(ef, font_size, advance_per_pt, &wf, num_chars, text, card_w, safe_margin, &opts.contour_keep_polygons, inset_pt, contour_frame(opts, card_w)) {
                 row_overflows = true;
             }
 
             operations.push(Operation::new("q", vec![])); // save
-            push_word_transform(&mut operations, rotation_deg, flip_x, flip_y, x + text_width / 2.0, y + (ascent + descent) / 2.0);
+            let (pivot_x, pivot_y) = joined.map_or((x + text_width / 2.0, y + (ascent + descent) / 2.0), |j| j.pivot);
+            push_word_transform(&mut operations, rotation_deg, flip_x, flip_y, pivot_x, pivot_y);
 
             if let Some(bg_color) = background {
                 push_code_background(
@@ -1557,5 +1736,123 @@ mod tests {
         let templated = encode_symbol(&wf, "AB12").unwrap();
         let modules = |s: &EncodedSymbol| s.modules_across(4);
         assert!(modules(&templated) > modules(&plain), "the extra character widens the symbol");
+    }
+    // --- joined units ("Pe același rând cu codul anterior") ---
+
+    const CARD_W: f32 = 200.0;
+
+    fn unit_options(join: Vec<bool>, sizes: Vec<f32>) -> Options {
+        let n = sizes.len();
+        Options {
+            font_sizes: sizes,
+            text_y_mm: vec![10.0; n],
+            align: vec![TextAlign::Center],
+            text_join_prev: join,
+            safe_margin_mm: 0.0,
+            ..Options::default()
+        }
+    }
+
+    fn plan(opts: &Options, texts: &[&str]) -> (Vec<Option<JoinedWord>>, bool) {
+        let fonts = [font()];
+        let y: Vec<f32> = opts.text_y_mm.iter().map(|y| y * MM).collect();
+        plan_units(texts, opts, &fonts, &y, &None, CARD_W, opts.safe_margin_mm * MM, 0.0)
+    }
+
+    fn width(text: &str, fs: f32) -> f32 {
+        let f = font();
+        word_text_width(advance_sum_per_pt(&f.face, f.units_per_em, text), 0.0, text.chars().count() as f32, fs)
+    }
+
+    fn space(fs: f32) -> f32 {
+        let f = font();
+        advance_sum_per_pt(&f.face, f.units_per_em, " ") * fs
+    }
+
+    #[test]
+    fn words_not_flagged_as_joined_stand_alone() {
+        let (units, overflow) = plan(&unit_options(vec![], vec![9.0, 9.0]), &["AB", "CD"]);
+        assert!(units.iter().all(Option::is_none));
+        assert!(!overflow);
+        // A join flag on the very first word has nothing to continue.
+        let (units, _) = plan(&unit_options(vec![true, false], vec![9.0, 9.0]), &["AB", "CD"]);
+        assert!(units.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_unit_is_aligned_as_a_whole_with_a_space_between_runs() {
+        let (units, _) = plan(&unit_options(vec![false, true, true], vec![12.0, 8.0, 10.0]), &["PETRACHE", "(GOLUMBEANU)", "ELENA"]);
+        let [a, b, c] = [units[0].unwrap(), units[1].unwrap(), units[2].unwrap()];
+        // Each run keeps its own size, all on the first word's baseline.
+        assert_eq!((a.font_size, b.font_size, c.font_size), (12.0, 8.0, 10.0));
+        assert!(a.y == b.y && b.y == c.y);
+        // Runs follow each other, one space of the preceding run's size apart.
+        let eps = 1e-3;
+        assert!((b.x - (a.x + width("PETRACHE", 12.0) + space(12.0))).abs() < eps);
+        assert!((c.x - (b.x + width("(GOLUMBEANU)", 8.0) + space(8.0))).abs() < eps);
+        // The whole unit, not the first word, is centred on the card.
+        let total = (c.x + width("ELENA", 10.0)) - a.x;
+        assert!((a.x + total / 2.0 - CARD_W / 2.0).abs() < eps, "unit centre {} vs card centre", a.x + total / 2.0);
+        // And it turns about one pivot.
+        assert!(a.pivot == b.pivot && b.pivot == c.pivot);
+        assert!((a.pivot.0 - CARD_W / 2.0).abs() < eps);
+    }
+
+    #[test]
+    fn left_and_right_alignment_frame_the_whole_unit() {
+        let mut opts = unit_options(vec![false, true], vec![10.0, 10.0]);
+        opts.align = vec![TextAlign::Right];
+        let (units, _) = plan(&opts, &["AB", "CD"]);
+        let end = units[1].unwrap().x + width("CD", 10.0);
+        assert!((end - CARD_W).abs() < 1e-3, "right edge of the last run sits on the card edge");
+        opts.align = vec![TextAlign::Left];
+        let (units, _) = plan(&opts, &["AB", "CD"]);
+        assert!(units[0].unwrap().x.abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_first_word_decides_alignment_position_and_rotation() {
+        let mut opts = unit_options(vec![false, true], vec![10.0, 10.0]);
+        opts.align = vec![TextAlign::Left, TextAlign::Right];
+        opts.text_y_mm = vec![10.0, 30.0];
+        opts.text_rotations = vec![15.0, 90.0];
+        let (units, _) = plan(&opts, &["AB", "CD"]);
+        let [a, b] = [units[0].unwrap(), units[1].unwrap()];
+        assert!(a.x.abs() < 1e-3, "left-aligned by the first word, ignoring the second's Right");
+        assert!(a.y == b.y && a.y == 10.0 * MM);
+        assert!(a.rotation_deg == 15.0 && b.rotation_deg == 15.0);
+    }
+
+    #[test]
+    fn a_symbol_never_joins() {
+        let mut opts = unit_options(vec![false, true, true], vec![10.0, 10.0, 10.0]);
+        opts.code_kinds = vec![CodeKind::Text, CodeKind::Qr, CodeKind::Text];
+        let (units, _) = plan(&opts, &["AB", "CD", "EF"]);
+        assert!(units.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn an_empty_run_adds_no_extra_space() {
+        let (units, _) = plan(&unit_options(vec![false, true, true], vec![10.0; 3]), &["AB", "", "CD"]);
+        let (a, c) = (units[0].unwrap(), units[2].unwrap());
+        assert!((c.x - (a.x + width("AB", 10.0) + space(10.0))).abs() < 1e-3);
+    }
+
+    #[test]
+    fn overflow_correction_shrinks_the_whole_unit_together() {
+        let mut opts = unit_options(vec![false, true], vec![40.0, 20.0]);
+        let texts = ["MMMMMMMMMM", "WWWWWWWWWW"];
+        let (units, overflow) = plan(&opts, &texts);
+        assert!(overflow, "too wide for a 200pt card at the configured sizes");
+        assert!(units[0].unwrap().font_size == 40.0, "no correction → configured sizes");
+
+        opts.correct_overflow = true;
+        opts.min_font_size_pt = 2.0;
+        let (units, overflow) = plan(&opts, &texts);
+        assert!(!overflow);
+        let (a, b) = (units[0].unwrap(), units[1].unwrap());
+        assert!(a.font_size < 40.0 && b.font_size < 20.0);
+        assert!((a.font_size / b.font_size - 2.0).abs() < 0.2, "sizes shrink in proportion");
+        assert!(b.x + width("WWWWWWWWWW", b.font_size) <= CARD_W + OVERFLOW_EPS_PT);
     }
 }

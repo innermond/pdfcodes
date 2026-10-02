@@ -171,6 +171,10 @@ export interface WordStyle {
   contourBlendMode: BlendMode
   // Extra spacing (in points) inserted between characters (PDF `Tc`).
   charSpacingPt: number
+  // Continue the previous code on the same line instead of standing alone. A run of
+  // such codes is one unit — see ./wordUnits and `text_join_prev` in src/options.rs.
+  // Placement (align, X/Y, rotation, flip) is the unit's first code's.
+  joinPrev: boolean
 }
 
 export function defaultWordStyle(index: number): WordStyle {
@@ -211,6 +215,7 @@ export function defaultWordStyle(index: number): WordStyle {
     contourWidthMm: 0.25,
     contourBlendMode: 'normal',
     charSpacingPt: 0.0,
+    joinPrev: false,
   }
 }
 
@@ -383,6 +388,9 @@ export interface PageOptions {
   // "Nu printa codurile": draw no code text on the print PDF — imposition,
   // pages and background cells stay identical (a codes-free proof/print).
   noCodes: boolean
+  // "Neimprimabil": the print PDF is view-only — its content sits in a layer that
+  // shows on screen but is left out when printing. A deterrent, not copy protection.
+  unprintable: boolean
 }
 
 // Defaults mirror `Options::default()` in src/options.rs, except offsetXMm/offsetYMm
@@ -404,6 +412,7 @@ export const defaultPageOptions: PageOptions = {
   drawCircles: false,
   minimal: true,
   noCodes: false,
+  unprintable: false,
 }
 
 // Build the camelCase options object expected by `generate_with_options`'s
@@ -547,6 +556,8 @@ export function buildJsOptions(
     minimal: page.minimal,
     // "Nu printa codurile" → Options::skip_codes; the contour job ignores it.
     skipCodes: page.noCodes,
+    // "Neimprimabil" → Options::unprintable; the contour job ignores it.
+    unprintable: page.unprintable,
     safeMarginMm,
     textColors: words.map((w) => w.color),
     // Text fill opacity, one per word (always sent — text always renders).
@@ -570,6 +581,7 @@ export function buildJsOptions(
       : new Float32Array(),
     textContourBlendModes: hasContour ? words.map((w) => w.contourBlendMode) : [],
     textCharSpacingsPt: new Float32Array(words.map((w) => w.charSpacingPt)),
+    textJoinPrev: words.map((w) => w.joinPrev === true),
     splitChars: separator,
     // Symbol positions. `codeKinds` is the switch — explicit rather than inferred
     // from a size, since more than one kind of symbol exists (see `code_kinds` in

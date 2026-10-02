@@ -58,6 +58,11 @@ pub struct Options {
     // as with codes — only the text (and its per-word config validation) is
     // skipped, so the output can serve as a codes-free proof/print.
     pub skip_codes: bool,
+    // "Neimprimabil": the print PDF is view-only. All page content goes into a layer
+    // that is visible on screen but excluded when printing, so compliant viewers
+    // (Acrobat, Chrome/Edge, Firefox) print blank pages. A deterrent, not copy
+    // protection. Ignored by the contour (cut) PDF, which a cutter must be able to use.
+    pub unprintable: bool,
     // Margin (in mm) kept clear of left/right-aligned text and used as the
     // intrusion threshold for the centering warning.
     pub safe_margin_mm: f32,
@@ -123,6 +128,13 @@ pub struct Options {
     // entry for every word). Empty defaults to no extra tracking (0.0) for
     // every word.
     pub text_char_spacing_pt: Vec<f32>,
+    // Per word position: `true` makes the word continue the previous word on the
+    // same line instead of standing alone. A run of such words is one *unit*: laid
+    // out left to right on the first word's baseline, one space apart, each in its
+    // own font/size/colour, and aligned, positioned, rotated and flipped as a whole
+    // by the unit's first word. Empty (or a single `false`) means every word stands
+    // alone; QR/barcode positions never join. Indexed by position, not broadcast.
+    pub text_join_prev: Vec<bool>,
     // 1-based page to use from the uploaded background PDF (for multi-page
     // uploads). Defaults to 1. `contour_page_number` selects the page from the
     // separately-loaded contour PDF used by the `--combineb` overlay.
@@ -316,6 +328,7 @@ impl Default for Options {
             combine: false,
             debug: false,
             skip_codes: false,
+            unprintable: false,
             safe_margin_mm: 0.0,
             text_rotations: Vec::new(),
             text_flip_x: Vec::new(),
@@ -334,6 +347,7 @@ impl Default for Options {
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
             text_char_spacing_pt: Vec::new(),
+            text_join_prev: Vec::new(),
             background_page_number: 1,
             background_page_mode: BackgroundPageMode::default(),
             background_page_start_offset: 0,

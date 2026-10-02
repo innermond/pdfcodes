@@ -546,6 +546,12 @@ This is useful when **a code contains the separator itself**: e.g. the code
 "1A 1", with a space separator, got broken into "1A" and "1" — you join the
 pieces back into a single field, without re-editing the file.
 
+Joining or separating pieces after you have styled the codes in step 4 keeps
+those styles: a joined field takes the look (font, size, colour…) of its most customised piece
+— the first one if none was customised — and the position of its first piece, the
+codes after it keep their own, and when you separate a field again both halves
+keep its style.
+
 #### 5.2.1 Skipping rows (header, totals)
 
 The application reads the file **without a header**: it has no way of knowing
@@ -789,6 +795,16 @@ many rows were affected and why, with a downloadable CSV.
   - **Outline width (mm)** — the line's thickness.
   - **Outline blend mode** — the outline's blend.
 
+**On the same line as the previous code** (*Position* section) — for a name like
+"PETRACHE (GOLUMBEANU) ELENA" where each name needs its own style but the whole line
+must be aligned as one. Ticked codes form, together with the code before them,
+**one line**: they sit one after another on the same baseline, a space apart, and
+each keeps its own font, size, colour, background and outline. Alignment, position
+(X, Y), rotation and flip are those of the **first code of the line** and apply to
+the whole line (it is the total width that gets centred, or aligned left/right or
+to the contour). With "Overflow correction" every code of the line shrinks in
+proportion until it fits. QR codes and barcodes cannot join a line.
+
 ### 6.3 Moving codes directly in the preview
 
 Besides the fields above, you can handle the codes directly in the preview on the
@@ -937,6 +953,11 @@ for "Print" / "Print + Contour", and the cutting ones only for "Contour" /
   single file (only with print, without "No cutting").
 - **Don't print the codes** — generates the print PDF without texts (the same
   layout, backgrounds only).
+- **Unprintable (view only)** — the print PDF shows on screen but, in most viewers
+  (Acrobat, Chrome, Firefox), prints as blank pages: all page content sits in a layer
+  marked "don't print". It discourages printing but is not copy protection (a
+  screenshot, a conversion to an image or a tool that ignores layers can still print
+  it). The cut PDF is not affected.
 - **Minimal** — crops the generated page to the contour's box.
 - **Rectangle contour** — only for the preset **rectangle** shape: emits plain
   rectangles instead of the optimized cutting lines (grid).

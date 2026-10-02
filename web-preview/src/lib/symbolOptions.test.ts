@@ -29,6 +29,15 @@ function jsOptions(words: WordStyle[]) {
   return buildJsOptions(words, ' ', 0, 0, defaultPageOptions, false) as Record<string, unknown>
 }
 
+describe('the "Neimprimabil" page option', () => {
+  it('is off by default and sent to the generator when set', () => {
+    expect(defaultPageOptions.unprintable).toBe(false)
+    expect(jsOptions([textWord]).unprintable).toBe(false)
+    const on = buildJsOptions([textWord], ' ', 0, 0, { ...defaultPageOptions, unprintable: true }, false) as Record<string, unknown>
+    expect(on.unprintable).toBe(true)
+  })
+})
+
 describe('codePayload', () => {
   it('encodes the bare code when no template is set', () => {
     expect(codePayload(qrWord)).toBe('AB12')

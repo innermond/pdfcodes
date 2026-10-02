@@ -154,6 +154,39 @@ export function mergeFields(pieces: string[], mergedGaps: ReadonlySet<number>, j
   )
 }
 
+// For every field `newGaps` produces from `pieceCount` pieces, the old fields
+// (as `oldGaps` grouped them) that its pieces came from, in order and without
+// repeats. Per-code state (styles, fonts) is positional, so when the merges
+// change it must be re-read through this: a merged field draws on the old fields
+// of all its pieces, and both halves of a split field draw on the same old one.
+// Gaps at or past `pieceCount - 1` don't join anything and are ignored.
+export function oldFieldsPerField(
+  oldGaps: ReadonlySet<number>,
+  newGaps: ReadonlySet<number>,
+  pieceCount: number,
+): number[][] {
+  const result: number[][] = []
+  let oldField = -1
+  for (let piece = 0; piece < pieceCount; piece++) {
+    if (piece === 0 || !oldGaps.has(piece - 1)) oldField++
+    if (piece === 0 || !newGaps.has(piece - 1)) result.push([oldField])
+    else {
+      const current = result[result.length - 1]
+      if (current[current.length - 1] !== oldField) current.push(oldField)
+    }
+  }
+  return result
+}
+
+// The old field of each new field's FIRST piece — where the field sits.
+export function remapFieldIndices(
+  oldGaps: ReadonlySet<number>,
+  newGaps: ReadonlySet<number>,
+  pieceCount: number,
+): number[] {
+  return oldFieldsPerField(oldGaps, newGaps, pieceCount).map((olds) => olds[0])
+}
+
 // Strip leading/trailing whitespace and, for a non-whitespace `joiner`, any
 // stray edge separators left by merging an empty edge piece.
 function trimFieldEdges(field: string, joiner: string): string {
