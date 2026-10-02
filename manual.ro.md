@@ -528,6 +528,12 @@ Este util când **un cod conține chiar separatorul**: de ex. codul „1A 1”, 
 separator spațiu, a fost rupt în „1A” și „1” — unești bucățile la loc într-un
 singur câmp, fără să re-editezi fișierul.
 
+Unirea sau separarea bucăților după ce ai stilizat codurile la pasul 4 păstrează
+stilurile: câmpul unit preia aspectul (font, mărime, culoare…) bucății celei mai personalizate
+— prima, dacă niciuna nu a fost personalizată — și poziția primei bucăți, codurile
+de după el își păstrează propriul stil, iar la separarea unui câmp ambele jumătăți
+păstrează stilul lui.
+
 #### 5.2.1 Sărirea unor rânduri (antet, total)
 
 Aplicația citește fișierul **fără antet**: nu are cum să știe dacă primul rând
@@ -771,6 +777,19 @@ rezultat listează câte rânduri au pățit-o și de ce, cu un CSV descărcabil
   - **Lățime contur (mm)** — grosimea liniei.
   - **Mod îmbinare contur** — blend-ul conturului.
 
+**Pe același rând cu codul anterior** (secțiunea *Poziție*) — pentru un nume ca
+„PETRACHE (GOLUMBEANU) ELENA”, în care fiecare nume trebuie stilizat diferit dar
+tot rândul trebuie aliniat ca un întreg. Codurile bifate formează, împreună cu cel
+dinainte, **un singur rând**: se așază unul după altul pe aceeași linie de bază, la
+distanța unui spațiu, iar fiecare își păstrează propriul font, mărime, culoare,
+fundal și contur. Alinierea, poziția (X, Y), rotirea și oglindirea sunt cele ale
+**primului cod din rând** și se aplică întregului rând (lățimea totală e cea care
+se centrează, se aliniază la stânga/dreapta sau la contur). *Rotirea* proprie a unui
+cod următor este un plus: rotește doar acel cod, în jurul centrului său, peste
+rotirea rândului. Cu „Corectare
+depășire”, toate codurile rândului se micșorează proporțional până încape. QR-urile
+și codurile de bare nu se pot alătura.
+
 ### 6.3 Mutarea codurilor direct în previzualizare
 
 Pe lângă câmpurile de mai sus, poți manevra codurile direct în previzualizarea din
@@ -914,6 +933,12 @@ doar la „Print” / „Print + Contur”, iar cele de tăiere doar la „Contu
   într-un singur fișier (doar cu print, fără „Non-decupare”).
 - **Nu printa codurile** — generează PDF-ul de print fără texte (aceeași așezare,
   doar fundalurile).
+- **Neimprimabil (doar vizualizare)** — PDF-ul de print se vede pe ecran, dar în
+  majoritatea vizualizatoarelor (Acrobat, Chrome, Firefox) se tipărește ca pagini
+  goale: tot conținutul paginii stă într-un strat marcat „nu se tipărește”. Descurajează
+  tipărirea, dar nu este protecție împotriva copierii (o captură de ecran, o
+  conversie în imagine sau un program care ignoră straturile îl pot tipări). PDF-ul
+  de decupare nu este afectat.
 - **Minimal** — decupează pagina generată la caseta conturului.
 - **Contur Dreptunghi** — doar pentru forma presetată **dreptunghi**: emite
   dreptunghiuri simple în loc de liniile de tăiere optimizate (grilă).

@@ -1,10 +1,12 @@
 import { useId, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { fontFamilyForWord, type LoadedFont } from '../lib/fonts'
-import { MM, isSymbolKind, type BlendMode, type WordStyle } from '../lib/options'
+import { MM, isSymbolKind, type BlendMode, type ContourAlignRect, type WordStyle } from '../lib/options'
 import { colorToCss } from '../lib/cmyk'
 import { contourMaskPathD } from '../lib/contourMask'
 import { flattenPathD, rotate, type Pt } from '../lib/contourKeepRegion'
 import { WordOverlay } from './WordOverlay'
+import { WordUnitOverlay } from './WordUnitOverlay'
+import { wordUnits } from '../lib/wordUnits'
 import { SymbolOverlay } from './SymbolOverlay'
 import { ContourOverlay } from './ContourOverlay'
 
@@ -58,6 +60,8 @@ export function CardCanvas({
   fonts,
   safeMarginMm,
   backgroundPaddingMm,
+  contourAlignRect = null,
+  contourInsetMm = 0,
   selectedIndex,
   onSelect,
   onChangeWord,
@@ -113,6 +117,10 @@ export function CardCanvas({
   fonts: (LoadedFont | null)[]
   safeMarginMm: number
   backgroundPaddingMm: number
+  // Frame for the `contour-*` alignments of a joined unit (a single code gets its X
+  // resolved by the parent instead). Null ⇒ the card frame.
+  contourAlignRect?: ContourAlignRect | null
+  contourInsetMm?: number
   selectedIndex: number | null
   onSelect: (index: number) => void
   onChangeWord: (index: number, next: Partial<WordStyle>) => void
@@ -368,7 +376,30 @@ export function CardCanvas({
           onChange={onContourOffsetChange}
         />
       )}
-      {words.map((word, index) =>
+      {wordUnits(words).flatMap((unit) => {
+        if (unit.length > 1) {
+          return [
+            <WordUnitOverlay
+              key={unit[0]}
+              words={unit.map((i) => words[i])}
+              indexes={unit}
+              fontFamilies={unit.map((i) => fontFamilyForWord(fonts, i))}
+              cardWidthPt={cardWidthPt}
+              cardHeightPt={cardHeightPt}
+              safeMarginMm={safeMarginMm}
+              backgroundPaddingMm={backgroundPaddingMm}
+              contourAlignRect={contourAlignRect}
+              contourInsetMm={contourInsetMm}
+              selectedIndex={contourSelected ? null : selectedIndex}
+              svgRef={svgRef}
+              onSelect={onSelect}
+              onChange={onChangeWord}
+            />,
+          ]
+        }
+        const index = unit[0]
+        const word = words[index]
+        return [
         // A symbol (QR or barcode) replaces the glyphs with a module grid; everything
         // else about the code (position, selection, dragging) is the same, so the two
         // overlays share ../lib/codeDrag. Mirrors the branch in src/generate/cards.rs.
@@ -400,7 +431,8 @@ export function CardCanvas({
             onChange={(next) => onChangeWord(index, next)}
           />
         ),
-      )}
+        ]
+      })}
       {bgNudgeMode && onBackgroundOffsetChange && (
         <BackgroundPanOverlay
           svgRef={svgRef}

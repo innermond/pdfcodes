@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { CardCanvas, type ContourCutShape } from './components/CardCanvas'
 import { WizardFooter, WizardNav } from './components/WizardNav'
+import { canJoinPrevious, continuesPrevious } from './lib/wordUnits'
 import { CheckboxField, ColorField, FileField, LinkedDimensions, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
 import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
@@ -24,7 +25,7 @@ import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { axisClearance, backgroundCoversCut } from './lib/cutClearance'
 import { offsetPolygons, polygonsAreAxisAlignedRect, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
-import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
+import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, oldFieldsPerField, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter, isRaggedRowsWarning, keptRows, rowsToLeaderValues, skippedRows } from './lib/csvSerialize'
 import { solidColorBackground } from './lib/solidColorBackground'
 import type { PdfBackground } from './lib/pdfBackground'
@@ -356,6 +357,46 @@ function resizeWords(words: WordStyle[], texts: string[]): WordStyle[] {
       result.push({ ...base, valign: 'custom', yMm: Math.max(0, prev.yMm - spacingMm), text })
     } else {
       result.push({ ...base, text })
+    }
+  })
+  return result
+}
+
+// Layout fields stay with the first piece of a joined field: they say where the
+// code sits, not how it looks, and the later pieces' spots are simply freed.
+const WORD_LAYOUT_KEYS: ReadonlySet<keyof WordStyle> = new Set(['text', 'align', 'valign', 'xMm', 'yMm', 'joinPrev'])
+
+// How much a code was customised: the number of look-defining style fields that
+// differ from a fresh code, plus one when it has its own font. Used to decide
+// which piece's look a joined field keeps.
+function wordCustomisation(word: WordStyle, hasOwnFont: boolean): number {
+  const base = defaultWordStyle(0)
+  const changed = (Object.keys(base) as (keyof WordStyle)[]).filter(
+    (key) => !WORD_LAYOUT_KEYS.has(key) && word[key] !== base[key],
+  ).length
+  return changed + (hasOwnFont ? 1 : 0)
+}
+
+// Carry per-code styles across a change of the merged fields. `groups[i]` lists
+// the old indices new field `i` was built from (see `oldFieldsPerField`). A joined
+// field takes the look of its most customised piece (the first on a tie, so
+// untouched codes behave as "first wins") but the position of its first piece.
+// When a split makes consecutive fields share an old index, the later one keeps
+// the style but stacks under the previous, as a newly added code does in
+// `resizeWords`, so the halves don't print on top of each other.
+function remapWordsByFields(words: WordStyle[], looks: number[], groups: number[][]): WordStyle[] {
+  const result: WordStyle[] = []
+  looks.forEach((look, index) => {
+    const first = groups[index][0]
+    const lookWord = words[look] ?? defaultWordStyle(index)
+    const place = words[first] ?? lookWord
+    const merged: WordStyle = { ...lookWord, align: place.align, valign: place.valign, xMm: place.xMm, yMm: place.yMm, joinPrev: place.joinPrev }
+    const prev = result[index - 1]
+    if (prev && groups[index - 1][0] === first && groups[index].length === 1 && groups[index - 1].length === 1) {
+      const spacingMm = (Math.max(prev.fontSizePt, merged.fontSizePt) * 1.2) / MM
+      result.push({ ...merged, valign: 'custom', yMm: Math.max(0, prev.yMm - spacingMm) })
+    } else {
+      result.push(merged)
     }
   })
   return result
@@ -1906,6 +1947,22 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
 
   // Re-apply merges to the already-parsed rows when the user toggles a field gap.
   function handleUploadFieldMergesChange(gaps: number[]) {
+    // Per-code styles are positional, so re-read them through the new grouping
+    // before the sample-text effect resizes them by index. Ignored in single-field
+    // mode, where the merges don't shape the fields.
+    if (!codeSingleField) {
+      const groups = oldFieldsPerField(new Set(codeFieldMerges), new Set(gaps), widestUploadedRow.length)
+      const customisation = (old: number) =>
+        words[old] ? wordCustomisation(words[old], fonts[old] != null || googleFontSelections[old] != null) : 0
+      // Most customised piece first-wins on ties.
+      const looks = groups.map((olds) => olds.reduce((best, old) => (customisation(old) > customisation(best) ? old : best), olds[0]))
+      const pick = <T,>(items: T[], fallback: T) => looks.map((old) => items[old] ?? fallback)
+      setWords((prev) => remapWordsByFields(prev, looks, groups))
+      setFonts((prev) => pick(prev, null))
+      setFontSources((prev) => pick<FontSource>(prev, 'google'))
+      setGoogleFontSelections((prev) => pick(prev, null))
+      setSelectedIndex((prev) => (prev === null ? prev : Math.min(prev, groups.length - 1)))
+    }
     setDataField('codeFieldMerges', gaps)
     applyUploadedCsvRows(uploadedRows, gaps, codeSeparator || ' ', codeSingleField, codeSkipFirst, codeSkipLast)
   }
@@ -2506,9 +2563,13 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         setBgField('bgTargetWidthMm', bg.widthPt / MM)
         setBgField('bgTargetHeightMm', bg.heightPt / MM)
         await ensureDefaultFont()
-        const maxWidthPt = bg.widthPt * 0.9
-        const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
-        handleSampleTextChange(word)
+        // Seed a sample row only for the very first background; replacing the file
+        // must not touch the codes (text, count, styles) the user already set up.
+        if (!sampleText) {
+          const maxWidthPt = bg.widthPt * 0.9
+          const word = randomWordFittingWidth(maxWidthPt, defaultWordStyle(0).fontSizePt)
+          handleSampleTextChange(word)
+        }
       })
       .catch((err) => setBackgroundError(err instanceof Error ? err.message : String(err)))
   }
@@ -4928,6 +4989,18 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
               </Section>
               )}
               <Section title={m.words_position_title()} collapsible>
+                {canJoinPrevious(words, selectedIndex) && (
+                  <>
+                    <CheckboxField
+                      label={m.words_join_prev_label()}
+                      checked={selected.joinPrev}
+                      onChange={(v) => updateWord(selectedIndex, { joinPrev: v })}
+                    />
+                    <p className="text-label text-gray-500 dark:text-gray-400">
+                      {continuesPrevious(words, selectedIndex) ? m.words_join_prev_active_help() : m.words_join_prev_help()}
+                    </p>
+                  </>
+                )}
                 <div className="flex flex-wrap gap-field [&>*]:min-w-40 [&>*]:flex-1">
                 <SelectField<Align | 'custom'>
                   label={m.words_halign_label()}
@@ -5255,6 +5328,11 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
               {needsPrintInput && (
                 <CheckboxField label={m.generate_no_codes()} checked={pageOptions.noCodes} onChange={(v) => setPageOption('noCodes', v)} />
               )}
+              {/* "Neimprimabil": the print PDF shows on screen but prints blank pages. The cut
+                  PDF is never affected, so it needs a print output (like "Nu printa codurile"). */}
+              {needsPrintInput && (
+                <CheckboxField label={m.generate_unprintable()} checked={pageOptions.unprintable} onChange={(v) => setPageOption('unprintable', v)} />
+              )}
               {/* "Minimal" crops the generated page down to the contour box (needs a contour). */}
               <CheckboxField label={m.generate_minimal()} checked={pageOptions.minimal} onChange={(v) => setPageOption('minimal', v)} />
               {/* "Contur Dreptunghi" emits plain rectangles instead of the optimized grid
@@ -5283,6 +5361,9 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                 <CheckboxField label={m.generate_measure_paths()} checked={pageOptions.measurePaths} onChange={(v) => setPageOption('measurePaths', v)} />
               )}
             </div>
+            {needsPrintInput && pageOptions.unprintable && (
+              <p className="-mt-tight text-label text-gray-500 dark:text-gray-400">{m.generate_unprintable_hint()}</p>
+            )}
             {needsPrintInput && correctOverflow && (
               <div className="-mt-tight flex flex-col gap-inner border-l-2 border-gray-200 pl-3 dark:border-gray-700">
                 <p className="text-label text-gray-500 dark:text-gray-400">
@@ -5568,6 +5649,8 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                       fonts={fonts}
                       safeMarginMm={safeMarginMm}
                       backgroundPaddingMm={backgroundPaddingMm}
+                      contourAlignRect={contourAlignRect}
+                      contourInsetMm={contourInsetMm}
                       selectedIndex={selectedIndex}
                       onSelect={(i) => { setSelectedIndex(i); setContourSelected(false) }}
                       onChangeWord={updateWord}

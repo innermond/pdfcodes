@@ -712,6 +712,12 @@ pub fn generate_pdf(csv_data: Option<&str>, background_bytes: &[u8], contour_bac
         doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
     }
 
+    // "Neimprimabil": wrap every page in the view-only layer (the contour PDF, which a
+    // cutter has to be able to use, returned earlier).
+    if opts.unprintable {
+        ocg::make_unprintable(&mut doc, catalog_id)?;
+    }
+
     // Save
     let mut pdf = Vec::new();
     doc.save_to(&mut pdf)?;
@@ -775,7 +781,9 @@ pub fn generate_pdf_multi_background(csv_data: Option<&str>, background_bytes: &
     let mut seen_symbol_failure = std::collections::HashSet::new();
 
     for page_num in 1..=page_count {
-        let run_opts = Options { background_page_number: page_num, ..opts.clone() };
+        // The view-only layer is applied once to the joined document below, not per run
+        // (`append_pages` doesn't carry the catalog's OCProperties over).
+        let run_opts = Options { background_page_number: page_num, unprintable: false, ..opts.clone() };
         let out = generate_pdf(csv_data, background_bytes, contour_background_bytes, &run_opts)?;
 
         if page_num == 1 {
@@ -792,6 +800,11 @@ pub fn generate_pdf_multi_background(csv_data: Option<&str>, background_bytes: &
 
         let run_doc = Document::load_mem(&out.pdf)?;
         crate::pdf_import::append_pages(&mut combined, &run_doc)?;
+    }
+
+    if opts.unprintable && !opts.contour {
+        let combined_catalog_id = combined.trailer.get(b"Root")?.as_reference()?;
+        ocg::make_unprintable(&mut combined, combined_catalog_id)?;
     }
 
     let mut pdf = Vec::new();
@@ -1040,6 +1053,10 @@ pub fn generate_pdf_sequential_background(csv_data: Option<&str>, background_byt
         pages_dict.set("Kids", Object::Array(kids));
         pages_dict.set("Count", Object::Integer(count));
         doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    }
+
+    if opts.unprintable {
+        ocg::make_unprintable(&mut doc, catalog_id)?;
     }
 
     let mut pdf = Vec::new();
@@ -2830,6 +2847,105 @@ mod tests {
             }
         }
         panic!("no card form XObject found");
+    }
+
+    // --- "Neimprimabil" (Options::unprintable) ---
+
+    // The OCG object ids listed in the catalog's OCProperties /OCGs.
+    fn ocg_ids(doc: &Document) -> Vec<lopdf::ObjectId> {
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        doc.get_object(catalog_id).unwrap().as_dict().unwrap()
+            .get(b"OCProperties").expect("OCProperties")
+            .as_dict().unwrap().get(b"OCGs").unwrap().as_array().unwrap()
+            .iter().map(|o| o.as_reference().unwrap()).collect()
+    }
+
+    fn print_state(doc: &Document, ocg: lopdf::ObjectId) -> Vec<u8> {
+        doc.get_object(ocg).unwrap().as_dict().unwrap()
+            .get(b"Usage").unwrap().as_dict().unwrap()
+            .get(b"Print").unwrap().as_dict().unwrap()
+            .get(b"PrintState").unwrap().as_name().unwrap().to_vec()
+    }
+
+    // Every page's content, concatenated the way a viewer reads a /Contents array.
+    fn page_content(doc: &Document, page_id: lopdf::ObjectId) -> String {
+        String::from_utf8_lossy(&doc.get_page_content(page_id).unwrap()).into_owned()
+    }
+
+    fn assert_pages_wrapped_in_view_only_layer(doc: &Document) {
+        let ocgs = ocg_ids(doc);
+        assert!(
+            ocgs.iter().any(|id| print_state(doc, *id) == b"OFF"),
+            "a layer with PrintState OFF should exist"
+        );
+        let pages = doc.get_pages();
+        assert!(!pages.is_empty());
+        for page_id in pages.values() {
+            let props = doc.get_object(*page_id).unwrap().as_dict().unwrap()
+                .get(b"Resources").unwrap().as_dict().unwrap()
+                .get(b"Properties").expect("page maps the layer").as_dict().unwrap();
+            let layer = props.get(b"OCU").expect("OCU property").as_reference().unwrap();
+            assert_eq!(print_state(doc, layer), b"OFF");
+
+            let content = page_content(doc, *page_id);
+            assert!(content.trim_start().starts_with("/OC /OCU BDC"), "content opens the layer");
+            assert!(content.trim_end().ends_with("EMC"), "content closes the layer");
+        }
+    }
+
+    #[test]
+    fn unprintable_wraps_every_page_in_a_view_only_layer() {
+        let opts = Options { unprintable: true, ..Options::default() };
+        let out = generate_pdf(Some("1A 1\n2B 2\n"), BACKGROUND_PDF, None, &opts).expect("unprintable run");
+        assert_pages_wrapped_in_view_only_layer(&Document::load_mem(&out.pdf).unwrap());
+    }
+
+    #[test]
+    fn printing_stays_allowed_without_the_unprintable_option() {
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, None, &Options::default()).unwrap();
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let catalog_id = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        assert!(doc.get_object(catalog_id).unwrap().as_dict().unwrap().get(b"OCProperties").is_err());
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        assert!(!page_content(&doc, page_id).contains("BDC"));
+    }
+
+    #[test]
+    fn unprintable_keeps_the_combine_overlay_layer_too() {
+        let opts = Options { combine: true, unprintable: true, ..Options::default() };
+        let out = generate_pdf(Some("1A 1\n"), BACKGROUND_PDF, Some(BACKGROUND_PDF), &opts).expect("combine + unprintable");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        assert_eq!(ocg_ids(&doc).len(), 2, "overlay layer and print layer are both declared");
+        assert_pages_wrapped_in_view_only_layer(&doc);
+        // The overlay's own marked content is still there, nested inside the print layer.
+        let (_, page_id) = doc.get_pages().into_iter().next().unwrap();
+        assert!(page_content(&doc, page_id).contains("/OC /MC0 BDC"));
+    }
+
+    #[test]
+    fn unprintable_covers_every_page_of_a_joined_multi_background_run() {
+        let bg = multi_page_pdf(&[(72.0, 72.0), (144.0, 100.0)]);
+        let opts = Options { no_cut: true, unprintable: true, ..Options::default() };
+        let out = generate_pdf_multi_background(Some("1A 1\n"), &bg, None, &opts).expect("joined run");
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        assert_eq!(doc.get_pages().len(), 2);
+        assert_eq!(ocg_ids(&doc).len(), 1, "one shared layer, not one per run");
+        assert_pages_wrapped_in_view_only_layer(&doc);
+    }
+
+    #[test]
+    fn unprintable_covers_a_sequential_background_run() {
+        let bg = multi_page_pdf(&[(72.0, 72.0), (72.0, 72.0)]);
+        let opts = Options { unprintable: true, ..Options::default() };
+        let out = generate_pdf_sequential_background(Some("A\nB\n"), &bg, &opts).expect("sequential run");
+        assert_pages_wrapped_in_view_only_layer(&Document::load_mem(&out.pdf).unwrap());
+    }
+
+    #[test]
+    fn the_contour_pdf_ignores_unprintable() {
+        let plain = generate_pdf(None, BACKGROUND_PDF, None, &Options { contour: true, ..Options::default() }).unwrap();
+        let flagged = generate_pdf(None, BACKGROUND_PDF, None, &Options { contour: true, unprintable: true, ..Options::default() }).unwrap();
+        assert_eq!(plain.pdf, flagged.pdf, "the cutter's file must not change");
     }
 
     #[test]

@@ -218,6 +218,7 @@ pub fn generate(
         debug,
         // The positional entry point predates "Nu printa codurile".
         skip_codes: false,
+        unprintable: false,
         safe_margin_mm,
         text_rotations,
         text_flip_x: text_flip_x.iter().map(|v| *v != 0).collect(),
@@ -237,6 +238,7 @@ pub fn generate(
         text_contour_blend_modes,
         // The positional entry point keeps the previous fixed spacing.
         text_char_spacing_pt: Vec::new(),
+        text_join_prev: Vec::new(),
         // ...and predates the symbol kinds entirely: every position renders as text.
         code_kinds: Vec::new(),
         qr_sizes_mm: Vec::new(),
@@ -334,6 +336,8 @@ struct JsOptions {
     debug: bool,
     // "Nu printa codurile": background cells only, no code text (Options::skip_codes).
     skip_codes: bool,
+    // "Neimprimabil" (Options::unprintable): view-only print PDF.
+    unprintable: bool,
     safe_margin_mm: f32,
     text_colors: Vec<String>,
     text_blend_modes: Vec<String>,
@@ -354,6 +358,7 @@ struct JsOptions {
     text_contour_widths_mm: Vec<f32>,
     text_contour_blend_modes: Vec<String>,
     text_char_spacings_pt: Vec<f32>,
+    text_join_prev: Vec<bool>,
     background_page_number: Option<u32>,
     // "single" (default) | "joined" | "sequential" — see `BackgroundPageMode`.
     // Empty string ⇒ Single (today's single-page behavior). "joined" runs the
@@ -462,6 +467,7 @@ impl Default for JsOptions {
             combine: base.combine,
             debug: base.debug,
             skip_codes: base.skip_codes,
+            unprintable: base.unprintable,
             safe_margin_mm: base.safe_margin_mm,
             text_colors: Vec::new(),
             text_blend_modes: Vec::new(),
@@ -482,6 +488,7 @@ impl Default for JsOptions {
             text_contour_widths_mm: Vec::new(),
             text_contour_blend_modes: Vec::new(),
             text_char_spacings_pt: Vec::new(),
+            text_join_prev: Vec::new(),
             background_page_number: None,
             background_page_mode: String::new(),
             background_page_start_offset: None,
@@ -702,6 +709,7 @@ pub fn generate_with_options(
         combine: js_opts.combine,
         debug: js_opts.debug,
         skip_codes: js_opts.skip_codes,
+        unprintable: js_opts.unprintable,
         safe_margin_mm: js_opts.safe_margin_mm,
         text_rotations: js_opts.text_rotations,
         text_flip_x: js_opts.text_flip_x,
@@ -720,6 +728,7 @@ pub fn generate_with_options(
         text_contour_widths_mm: js_opts.text_contour_widths_mm,
         text_contour_blend_modes,
         text_char_spacing_pt: js_opts.text_char_spacings_pt,
+        text_join_prev: js_opts.text_join_prev,
         background_page_number: js_opts.background_page_number.unwrap_or(1),
         background_page_mode,
         background_page_start_offset: js_opts.background_page_start_offset.unwrap_or(0) as usize,

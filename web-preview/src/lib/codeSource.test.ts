@@ -9,6 +9,8 @@ import {
   maxGroupRowCount,
   mergeFields,
   normalizeColumns,
+  oldFieldsPerField,
+  remapFieldIndices,
   streamCodesCsv,
   totalRowCount,
   type CodeColumnConfig,
@@ -24,6 +26,54 @@ function leader(values: [string, number | null][], overrides: Partial<CodeColumn
   const list: LeaderValue[] = values.map(([value, rows]) => ({ value, rows }))
   return column({ mode: 'list', values: list, ...overrides })
 }
+
+describe('remapFieldIndices', () => {
+  it('is the identity when the merges do not change', () => {
+    expect(remapFieldIndices(new Set(), new Set(), 4)).toEqual([0, 1, 2, 3])
+    expect(remapFieldIndices(new Set([1]), new Set([1]), 4)).toEqual([0, 1, 2])
+  })
+
+  it('maps a merged field to the old field of its first piece and keeps the tail aligned', () => {
+    // pieces 0 1 2 3, join 1+2 → fields [0] [1 2] [3] ← old fields 0, 1, 3
+    expect(remapFieldIndices(new Set(), new Set([1]), 4)).toEqual([0, 1, 3])
+  })
+
+  it('handles several merged gaps', () => {
+    expect(remapFieldIndices(new Set(), new Set([0, 2]), 4)).toEqual([0, 2])
+  })
+
+  it('points both halves of a split field at the same old field', () => {
+    // old fields [0] [1 2] [3]; unmerging gap 1 → four fields
+    expect(remapFieldIndices(new Set([1]), new Set(), 4)).toEqual([0, 1, 1, 2])
+  })
+
+  it('maps a field that grows by absorbing a neighbour to its first piece', () => {
+    // old [0 1] [2] [3]; new [0] [1 2] [3]: field 1 starts on piece 1 (old field 0)
+    expect(remapFieldIndices(new Set([0]), new Set([1]), 4)).toEqual([0, 0, 2])
+  })
+
+  it('ignores gaps beyond the last piece and handles no pieces', () => {
+    expect(remapFieldIndices(new Set(), new Set([7]), 3)).toEqual([0, 1, 2])
+    expect(remapFieldIndices(new Set(), new Set([0]), 0)).toEqual([])
+  })
+})
+
+describe('oldFieldsPerField', () => {
+  it('lists every old field a merged field draws on, in order', () => {
+    // pieces 0 1 2 3, join 1+2 → [0] [1 2] [3]
+    expect(oldFieldsPerField(new Set(), new Set([1]), 4)).toEqual([[0], [1, 2], [3]])
+    expect(oldFieldsPerField(new Set(), new Set([0, 1, 2]), 4)).toEqual([[0, 1, 2, 3]])
+  })
+
+  it('does not repeat an old field a merged field only partly covers', () => {
+    // old [0 1] [2]; new [0 1 2] → fields 0 and 1
+    expect(oldFieldsPerField(new Set([0]), new Set([0, 1]), 3)).toEqual([[0, 1]])
+  })
+
+  it('gives both halves of a split field the same old field', () => {
+    expect(oldFieldsPerField(new Set([1]), new Set(), 4)).toEqual([[0], [1], [1], [2]])
+  })
+})
 
 describe('mergeFields', () => {
   it('returns the pieces unchanged when no gaps are merged', () => {
