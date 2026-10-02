@@ -1,4 +1,5 @@
 import { m } from '../paraglide/messages'
+import { preloadStep } from '../lib/chunks'
 
 export interface WizardStep {
   id: string
@@ -30,6 +31,8 @@ export function WizardNav({
             <button
               type="button"
               onClick={() => enabled && onSelect(step.id)}
+              onPointerEnter={() => preloadStep(step.id)}
+              onFocus={() => preloadStep(step.id)}
               disabled={!enabled}
               title={!enabled ? lockedHint : undefined}
               className={`flex items-center gap-inner rounded-full px-3 py-1 text-label font-medium ${

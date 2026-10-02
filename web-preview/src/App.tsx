@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { CardCanvas, type ContourCutShape } from './components/CardCanvas'
-import { CodeSourceSection } from './components/CodeSourceSection'
 import { WizardFooter, WizardNav } from './components/WizardNav'
 import { CheckboxField, ColorField, FileField, LinkedDimensions, NumberField, RadioGroupField, Section, SelectField, TextField } from './components/fields'
-import { DownloadBothButton, FileDownload, ResultPanel } from './components/ResultPanel'
 import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
-import { GoogleFontPicker, type GoogleFontSelection } from './components/GoogleFontPicker'
+import type { GoogleFontSelection } from './components/GoogleFontPicker'
+import { codeSourceChunk, fontPickerChunk, preloadStep, resultChunk } from './lib/chunks'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
@@ -120,6 +119,13 @@ function loadPresetBundle(
   presetBundleMod ??= import('./lib/presetBundle')
   return presetBundleMod.then((m) => m.loadPresetBundle(...args))
 }
+
+// Components only a later step shows — see lib/chunks.ts.
+const CodeSourceSection = lazy(() => codeSourceChunk.load().then((mod) => ({ default: mod.CodeSourceSection })))
+const GoogleFontPicker = lazy(() => fontPickerChunk.load().then((mod) => ({ default: mod.GoogleFontPicker })))
+const ResultPanel = lazy(() => resultChunk.load().then((mod) => ({ default: mod.ResultPanel })))
+const FileDownload = lazy(() => resultChunk.load().then((mod) => ({ default: mod.FileDownload })))
+const DownloadBothButton = lazy(() => resultChunk.load().then((mod) => ({ default: mod.DownloadBothButton })))
 // -----------------------------------------------------------------------------
 
 type Mode = 'print' | 'contour' | 'both'
@@ -742,6 +748,12 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   const [theme, toggleTheme] = useTheme(lightMode ?? ENV_LIGHT_MODE)
   const [step, setStep] = useState<WizardStepId>('fundal')
   const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
+  // The wizard runs one way, so warm the next step's chunks while this one is
+  // worked on — see lib/chunks.ts.
+  const nextStepId = WIZARD_STEPS[stepIndex + 1]?.id
+  useEffect(() => {
+    if (nextStepId) preloadStep(nextStepId)
+  }, [nextStepId])
 
   useEffect(() => {
     // Prefetch the default font off the critical first-paint path: every place
@@ -4891,11 +4903,13 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   />
                   <div className="mt-inner">
                     {fontSources[selectedIndex] === 'google' ? (
-                      <GoogleFontPicker
-                        key={selectedIndex}
-                        value={googleFontSelections[selectedIndex]}
-                        onChange={(selection, font) => handleWordGoogleFontChange(selectedIndex, selection, font)}
-                      />
+                      <Suspense fallback={null}>
+                        <GoogleFontPicker
+                          key={selectedIndex}
+                          value={googleFontSelections[selectedIndex]}
+                          onChange={(selection, font) => handleWordGoogleFontChange(selectedIndex, selection, font)}
+                        />
+                      </Suspense>
                     ) : (
                       <>
                         <FileField
@@ -5098,6 +5112,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
           )}
 
           {step === 'date' && (
+          <Suspense fallback={null}>
           <CodeSourceSection
             dataMode={codeDataMode}
             onDataModeChange={handleCodeDataModeChange}
@@ -5142,6 +5157,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
             blocked={codeUniquenessImpossible}
             duplicates={codeDataMode === 'generate' ? codeCsvDuplicates : null}
           />
+          </Suspense>
           )}
 
           {step === 'generare' && (
@@ -5571,81 +5587,83 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
 
           {(printArtifact || contourResult || sampleArtifact) && (
             <Section title={m.result_title()}>
-              {sampleArtifact && (
-                <FileDownload
-                  title={m.result_sample_title()}
-                  blob={sampleArtifact.blob}
-                  name="mostra.pdf"
-                  note={m.result_sample_note()}
-                />
-              )}
-              {printArtifact && (
-                <FileDownload
-                  title={m.result_print_title()}
-                  blob={printArtifact.blob}
-                  name={printArtifact.name}
-                  isZip={printArtifact.isZip}
-                  note={
-                    printArtifact.isZip
-                      ? m.result_zip_note() +
-                        (printArtifact.sink === 'opfs' ? ` ${m.result_zip_opfs_note()}` : '')
-                      : undefined
-                  }
-                />
-              )}
-              {printArtifact && printArtifact.overflowCount > 0 && (
-                <div className="mt-inner flex flex-col gap-tight">
-                  <p className="text-label text-amber-600 dark:text-amber-400">
-                    {m.result_overflow({
-                      count: printArtifact.overflowCount,
-                      samples: printArtifact.overflowSamples.length > 0
-                        ? ` ${m.result_overflow_examples({ list: printArtifact.overflowSamples.slice(0, 5).join(' | ') + (printArtifact.overflowSamples.length > 5 ? '…' : '') })}`
-                        : '',
-                    })}
-                  </p>
-                  {printArtifact.overflowSamples.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => downloadOverflowCsv(printArtifact.overflowSamples)}
-                      className="self-start text-label font-medium text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      {m.result_download_overflows({ count: printArtifact.overflowSamples.length })}
-                    </button>
-                  )}
-                </div>
-              )}
-              {/* A separate channel from the overflow above: those codes are drawn but
-                  stick out, these could not be encoded at all and are missing from
-                  their cards. */}
-              {printArtifact && printArtifact.symbolFailureCount > 0 && (
-                <div className="mt-inner flex flex-col gap-tight">
-                  <p className="text-label text-amber-600 dark:text-amber-400">
-                    {m.result_symbol_failures({ count: printArtifact.symbolFailureCount })}
-                  </p>
-                  {printArtifact.symbolFailureSamples.length > 0 && (
-                    <>
-                      {/* One example in full, since the reason is the actionable part. */}
-                      <p className="text-label text-gray-500 dark:text-gray-400">
-                        {printArtifact.symbolFailureSamples[0].replace('\t', ' — ')}
-                      </p>
+              <Suspense fallback={null}>
+                {sampleArtifact && (
+                  <FileDownload
+                    title={m.result_sample_title()}
+                    blob={sampleArtifact.blob}
+                    name="mostra.pdf"
+                    note={m.result_sample_note()}
+                  />
+                )}
+                {printArtifact && (
+                  <FileDownload
+                    title={m.result_print_title()}
+                    blob={printArtifact.blob}
+                    name={printArtifact.name}
+                    isZip={printArtifact.isZip}
+                    note={
+                      printArtifact.isZip
+                        ? m.result_zip_note() +
+                          (printArtifact.sink === 'opfs' ? ` ${m.result_zip_opfs_note()}` : '')
+                        : undefined
+                    }
+                  />
+                )}
+                {printArtifact && printArtifact.overflowCount > 0 && (
+                  <div className="mt-inner flex flex-col gap-tight">
+                    <p className="text-label text-amber-600 dark:text-amber-400">
+                      {m.result_overflow({
+                        count: printArtifact.overflowCount,
+                        samples: printArtifact.overflowSamples.length > 0
+                          ? ` ${m.result_overflow_examples({ list: printArtifact.overflowSamples.slice(0, 5).join(' | ') + (printArtifact.overflowSamples.length > 5 ? '…' : '') })}`
+                          : '',
+                      })}
+                    </p>
+                    {printArtifact.overflowSamples.length > 0 && (
                       <button
                         type="button"
-                        onClick={() => downloadSymbolFailureCsv(printArtifact.symbolFailureSamples)}
+                        onClick={() => downloadOverflowCsv(printArtifact.overflowSamples)}
                         className="self-start text-label font-medium text-blue-600 hover:underline dark:text-blue-400"
                       >
-                        {m.result_download_symbol_failures({ count: printArtifact.symbolFailureSamples.length })}
+                        {m.result_download_overflows({ count: printArtifact.overflowSamples.length })}
                       </button>
-                    </>
-                  )}
-                </div>
-              )}
-              {contourResult && <ResultPanel title={m.result_contour_title()} result={contourResult} downloadName="contur.pdf" />}
-              {mode === 'both' && printArtifact && contourResult && (
-                <DownloadBothButton
-                  print={{ blob: printArtifact.blob, name: printArtifact.name, isZip: printArtifact.isZip }}
-                  contourPdf={contourResult.pdf}
-                />
-              )}
+                    )}
+                  </div>
+                )}
+                {/* A separate channel from the overflow above: those codes are drawn but
+                    stick out, these could not be encoded at all and are missing from
+                    their cards. */}
+                {printArtifact && printArtifact.symbolFailureCount > 0 && (
+                  <div className="mt-inner flex flex-col gap-tight">
+                    <p className="text-label text-amber-600 dark:text-amber-400">
+                      {m.result_symbol_failures({ count: printArtifact.symbolFailureCount })}
+                    </p>
+                    {printArtifact.symbolFailureSamples.length > 0 && (
+                      <>
+                        {/* One example in full, since the reason is the actionable part. */}
+                        <p className="text-label text-gray-500 dark:text-gray-400">
+                          {printArtifact.symbolFailureSamples[0].replace('\t', ' — ')}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => downloadSymbolFailureCsv(printArtifact.symbolFailureSamples)}
+                          className="self-start text-label font-medium text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          {m.result_download_symbol_failures({ count: printArtifact.symbolFailureSamples.length })}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+                {contourResult && <ResultPanel title={m.result_contour_title()} result={contourResult} downloadName="contur.pdf" />}
+                {mode === 'both' && printArtifact && contourResult && (
+                  <DownloadBothButton
+                    print={{ blob: printArtifact.blob, name: printArtifact.name, isZip: printArtifact.isZip }}
+                    contourPdf={contourResult.pdf}
+                  />
+                )}
+              </Suspense>
             </Section>
           )}
         </div>
