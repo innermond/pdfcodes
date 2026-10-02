@@ -802,7 +802,8 @@ must be aligned as one. Ticked codes form, together with the code before them,
 each keeps its own font, size, colour, background and outline. Alignment, position
 (X, Y), rotation and flip are those of the **first code of the line** and apply to
 the whole line (it is the total width that gets centred, or aligned left/right or
-to the contour). With "Overflow correction" every code of the line shrinks in
+to the contour). A later code's own *Rotation* is an extra: it turns just that code,
+around its own centre, on top of the line's rotation. With "Overflow correction" every code of the line shrinks in
 proportion until it fits. QR codes and barcodes cannot join a line.
 
 ### 6.3 Moving codes directly in the preview

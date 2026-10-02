@@ -784,7 +784,9 @@ dinainte, **un singur rând**: se așază unul după altul pe aceeași linie de 
 distanța unui spațiu, iar fiecare își păstrează propriul font, mărime, culoare,
 fundal și contur. Alinierea, poziția (X, Y), rotirea și oglindirea sunt cele ale
 **primului cod din rând** și se aplică întregului rând (lățimea totală e cea care
-se centrează, se aliniază la stânga/dreapta sau la contur). Cu „Corectare
+se centrează, se aliniază la stânga/dreapta sau la contur). *Rotirea* proprie a unui
+cod următor este un plus: rotește doar acel cod, în jurul centrului său, peste
+rotirea rândului. Cu „Corectare
 depășire”, toate codurile rândului se micșorează proporțional până încape. QR-urile
 și codurile de bare nu se pot alătura.
 

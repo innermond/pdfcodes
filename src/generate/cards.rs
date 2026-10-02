@@ -92,6 +92,9 @@ fn code_fits_contour(
     rotation_deg: f32,
     flip_x: bool,
     flip_y: bool,
+    // A joined run's extra turn about its own centre, applied before the unit's
+    // rotation/flip (the order the draw path stacks its two `cm` transforms in).
+    own_rotation_deg: f32,
     ascent: f32,
     descent: f32,
     keep: &[Vec<(f32, f32)>],
@@ -114,8 +117,10 @@ fn code_fits_contour(
         let n = text.chars().count() as f32;
         w + char_spacing * (n - 1.0).max(0.0)
     };
-    let (cx, cy) = pivot.unwrap_or((x + text_width_for_center / 2.0, y + (ascent + descent) / 2.0));
+    let own_centre = (x + text_width_for_center / 2.0, y + (ascent + descent) / 2.0);
+    let (cx, cy) = pivot.unwrap_or(own_centre);
     let matrix = word_transform(rotation_deg, flip_x, flip_y, cx, cy);
+    let own_matrix = word_transform(own_rotation_deg, false, false, own_centre.0, own_centre.1);
 
     // Pen advances glyph-by-glyph from the baseline origin, matching the width
     // calc and the PDF text layout.
@@ -130,6 +135,9 @@ fn code_fits_contour(
             for contour in contours.iter_mut() {
                 for p in contour.iter_mut() {
                     p.1 += y;
+                    if let Some(m) = &own_matrix {
+                        *p = apply_matrix(m, *p);
+                    }
                     if let Some(m) = &matrix {
                         *p = apply_matrix(m, *p);
                     }
@@ -328,7 +336,7 @@ fn word_overflows(
         let descent = (ef.face.descender() as f32 / ef.units_per_em as f32) * fs;
         !code_fits_contour(
             &ef.face, ef.units_per_em, fs, wf.char_spacing, text,
-            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, ascent, descent, keep, inset_pt, None,
+            x, wf.y, wf.rotation_deg, wf.flip_x, wf.flip_y, 0.0, ascent, descent, keep, inset_pt, None,
         )
     } else {
         box_overflows_card(x, WordBox { width: text_width, ascent: 0.0, descent: 0.0 }, card_w, safe_margin)
@@ -540,13 +548,15 @@ fn compute_uniform_fs(
 
 // Where a word that belongs to a joined unit (see `Options::text_join_prev`) is
 // drawn on one row: its own baseline origin and size, but the unit's baseline,
-// rotation/flip and pivot, so the unit turns as one block.
+// rotation/flip and pivot, so the unit turns as one block. A run after the first may
+// also turn about its own centre by `own_rotation_deg`, on top of the unit's turn.
 #[derive(Clone, Copy)]
 struct JoinedWord {
     x: f32,
     y: f32,
     font_size: f32,
     rotation_deg: f32,
+    own_rotation_deg: f32,
     flip_x: bool,
     flip_y: bool,
     pivot: (f32, f32),
@@ -562,6 +572,8 @@ struct UnitRun<'a> {
     num_chars: f32,
     char_spacing: f32,
     base_fs: f32,
+    // The run's own rotation field; the unit's first run leaves it to the unit.
+    own_rotation_deg: f32,
 }
 
 // Positions each unit of this row. A unit is a text word followed by consecutive
@@ -611,6 +623,7 @@ fn plan_units(
                         num_chars: texts[idx].chars().count() as f32,
                         char_spacing: rwf.char_spacing,
                         base_fs: uniform_fs.as_ref().map(|u| u[idx]).unwrap_or(rwf.configured_fs),
+                        own_rotation_deg: if idx == start { 0.0 } else { rwf.rotation_deg },
                     }
                 })
                 .collect();
@@ -664,7 +677,7 @@ fn plan_units(
                         let d = (r.ef.face.descender() as f32 / r.ef.units_per_em as f32) * fs;
                         code_fits_contour(
                             &r.ef.face, r.ef.units_per_em, fs, r.char_spacing, r.text, x0 + off, wf.y,
-                            wf.rotation_deg, wf.flip_x, wf.flip_y, a, d, &opts.contour_keep_polygons, inset_pt, Some(pivot),
+                            wf.rotation_deg, wf.flip_x, wf.flip_y, r.own_rotation_deg, a, d, &opts.contour_keep_polygons, inset_pt, Some(pivot),
                         )
                     }
                 })
@@ -689,6 +702,7 @@ fn plan_units(
                     y: wf.y,
                     font_size: size_at(r, scale),
                     rotation_deg: wf.rotation_deg,
+                    own_rotation_deg: r.own_rotation_deg,
                     flip_x: wf.flip_x,
                     flip_y: wf.flip_y,
                     pivot,
@@ -1190,6 +1204,11 @@ pub(crate) fn build_card_xobjects(
             operations.push(Operation::new("q", vec![])); // save
             let (pivot_x, pivot_y) = joined.map_or((x + text_width / 2.0, y + (ascent + descent) / 2.0), |j| j.pivot);
             push_word_transform(&mut operations, rotation_deg, flip_x, flip_y, pivot_x, pivot_y);
+            // A joined run's own rotation turns it about its own centre, inside the
+            // unit's turn (the later `cm` applies to the points first).
+            if let Some(j) = &joined {
+                push_word_transform(&mut operations, j.own_rotation_deg, false, false, x + text_width / 2.0, y + (ascent + descent) / 2.0);
+            }
 
             if let Some(bg_color) = background {
                 push_code_background(
@@ -1821,6 +1840,33 @@ mod tests {
         assert!(a.x.abs() < 1e-3, "left-aligned by the first word, ignoring the second's Right");
         assert!(a.y == b.y && a.y == 10.0 * MM);
         assert!(a.rotation_deg == 15.0 && b.rotation_deg == 15.0);
+        assert!(a.own_rotation_deg == 0.0 && b.own_rotation_deg == 90.0, "a later run keeps its own angle on top");
+    }
+
+    #[test]
+    fn a_joined_run_turns_by_its_own_rotation_inside_an_unrotated_unit() {
+        let mut opts = unit_options(vec![false, true, true], vec![10.0; 3]);
+        opts.text_rotations = vec![0.0, 45.0, 0.0];
+        let (units, _) = plan(&opts, &["AB", "CD", "EF"]);
+        let [a, b, c] = [units[0].unwrap(), units[1].unwrap(), units[2].unwrap()];
+        assert!([a, b, c].iter().all(|j| j.rotation_deg == 0.0), "the unit stays level");
+        assert!(a.own_rotation_deg == 0.0 && b.own_rotation_deg == 45.0 && c.own_rotation_deg == 0.0);
+    }
+
+    #[test]
+    fn the_cut_check_uses_a_joined_runs_own_rotation() {
+        // A level line fits inside a thin strip; the same line with its second run
+        // turned upright sticks out of it.
+        let y = 10.0 * MM;
+        let strip = vec![vec![(0.0, y - 6.0), (CARD_W, y - 6.0), (CARD_W, y + 14.0), (0.0, y + 14.0)]];
+        let mut opts = unit_options(vec![false, true], vec![10.0, 10.0]);
+        opts.contour_keep_polygons = strip;
+        let texts = ["A", "ABCDEFGH"];
+        let (_, overflow) = plan(&opts, &texts);
+        assert!(!overflow, "level run fits the strip");
+        opts.text_rotations = vec![0.0, 90.0];
+        let (_, overflow) = plan(&opts, &texts);
+        assert!(overflow, "the upright run leaves the strip");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // The preview counterpart of a joined unit in src/generate/cards.rs (`plan_units`):
 // several text codes drawn on one line, each with its own font, size and colour,
 // but placed, aligned, rotated and flipped as a whole by the unit's first code.
+// A later code's own rotation turns just that run about its own centre, on top.
 // Every run stays individually selectable so its style can be edited; dragging or
 // nudging any of them moves the unit (i.e. edits the first code).
 import { useLayoutEffect, useRef, useState } from 'react'
@@ -144,6 +145,13 @@ export function WordUnitOverlay({
         const xPt = x0 + offsets[i]
         const rectWPt = word.backgroundWidthMm !== null ? word.backgroundWidthMm * MM : m.widthPt + 2 * padPt
         const rectXPt = word.backgroundWidthMm !== null ? xPt + m.widthPt / 2 - rectWPt / 2 : xPt - padPt
+        // The run's own turn is applied first (rightmost), then the unit's, as in the
+        // generator's stacked `cm` transforms. The first code's angle is the unit's.
+        const ownRotation = i > 0 ? word.rotationDeg : 0
+        const runTransform =
+          ownRotation !== 0
+            ? [transform, `rotate(${-ownRotation} ${xPt + m.widthPt / 2} ${ySvg - (m.ascent - m.descent) / 2})`].filter(Boolean).join(' ')
+            : transform
         return (
           <g
             key={index}
@@ -153,11 +161,11 @@ export function WordUnitOverlay({
             }}
           >
             {selectedIndex === index && (
-              <SelectionAnts x={xPt - 2} y={ySvg - m.ascent - 2} width={m.widthPt + 4} height={m.ascent + m.descent + 4} transform={transform} />
+              <SelectionAnts x={xPt - 2} y={ySvg - m.ascent - 2} width={m.widthPt + 4} height={m.ascent + m.descent + 4} transform={runTransform} />
             )}
             {word.background !== null && (
               <rect
-                transform={transform}
+                transform={runTransform}
                 x={rectXPt}
                 y={ySvg - m.ascent - padPt}
                 width={rectWPt}
@@ -171,7 +179,7 @@ export function WordUnitOverlay({
               ref={(el) => {
                 textRefs.current[i] = el
               }}
-              transform={transform}
+              transform={runTransform}
               x={xPt}
               y={ySvg}
               fontSize={word.fontSizePt}
@@ -185,7 +193,7 @@ export function WordUnitOverlay({
             </text>
             {word.contourColor !== null && (
               <text
-                transform={transform}
+                transform={runTransform}
                 x={xPt}
                 y={ySvg}
                 fontSize={word.fontSizePt}
