@@ -2050,7 +2050,7 @@ mod tests {
     fn partial_grid_sheet_shares_lines_and_stops_at_the_last_card() {
         // The partially-filled last sheet is a grid page too: neighbouring cards share
         // one cut line instead of each getting its own rectangle, and every line runs
-        // only as far as the cards that need it — plus the same 3 mm overshoot past the
+        // only as far as the cards that need it — plus the same 1.5 mm overshoot past the
         // outermost card that the full page draws.
         //
         // 15×15 mm cards on a 100×100 mm sheet → a 6×6 grid (36 per sheet). 44 cards
@@ -2100,30 +2100,76 @@ mod tests {
         assert_eq!(horizontals.len(), 3, "one line per row edge, shared: {horizontals:?}");
 
         let x0 = verticals[0].0;
-        let y0 = verticals[0].1 + 3.0; // the bottom line starts 3 mm below the cards
+        let y0 = verticals[0].1 + 1.5; // the bottom line starts 1.5 mm below the cards
         let len = |lo: f32, hi: f32| hi - lo;
         // The 2 cards of the short row sit at columns 0–1, so only the first three
-        // verticals reach up into it (2 rows = 30 mm + 3 mm overshoot at each end);
+        // verticals reach up into it (2 rows = 30 mm + 1.5 mm overshoot at each end);
         // the other four stop after the full row below (15 mm + the two overshoots).
         for (i, &(_, lo, hi)) in verticals.iter().enumerate() {
-            let expected = if i < 3 { 36.0 } else { 21.0 };
+            let expected = if i < 3 { 33.0 } else { 18.0 };
             assert!((len(lo, hi) - expected).abs() < 0.05, "vertical {i} spans {} mm, expected {expected}", len(lo, hi));
-            assert!((lo - (y0 - 3.0)).abs() < 0.05, "every vertical starts 3 mm below the bottom row");
+            assert!((lo - (y0 - 1.5)).abs() < 0.05, "every vertical starts 1.5 mm below the bottom row");
         }
-        // The two lower horizontals run the full 6-card row (90 mm + 3 mm each side);
+        // The two lower horizontals run the full 6-card row (90 mm + 1.5 mm each side);
         // the top edge of the short row spans just its 2 cards.
         for (j, &(_, lo, hi)) in horizontals.iter().enumerate() {
-            let expected = if j < 2 { 96.0 } else { 36.0 };
+            let expected = if j < 2 { 93.0 } else { 33.0 };
             assert!((len(lo, hi) - expected).abs() < 0.05, "horizontal {j} spans {} mm, expected {expected}", len(lo, hi));
-            assert!((lo - (x0 - 3.0)).abs() < 0.05, "every horizontal starts 3 mm left of the first column");
+            assert!((lo - (x0 - 1.5)).abs() < 0.05, "every horizontal starts 1.5 mm left of the first column");
         }
 
         // The reported cutting metrics measure that same geometry: the full sheet's
-        // 14 × 96 mm plus the partial sheet's 3·36 + 4·21 + 2·96 + 36 = 420 mm.
+        // 14 × 93 mm plus the partial sheet's 3·33 + 4·18 + 2·93 + 33 = 390 mm.
         let total_len = out.path_length_total_mm.expect("grid metrics should include path length");
-        assert!((total_len - (14.0 * 96.0 + 420.0)).abs() < 0.5, "expected 1764 mm, got {total_len}");
+        assert!((total_len - (14.0 * 93.0 + 390.0)).abs() < 0.5, "expected 1692 mm, got {total_len}");
         assert_eq!(out.node_count_total, Some(28 + 20), "two nodes per line on both sheets");
         assert_eq!(out.sharp_turn_count_total, Some(0), "straight grid lines have no sharp turns");
+    }
+
+    #[test]
+    fn grid_contour_outermost_lines_cross_even_with_no_slack() {
+        // 15 mm cards, 100 mm sheet, 5 mm registration circles: the 90 mm of usable
+        // height holds exactly 6 rows, so the grid touches the circle zone on every
+        // side. The outermost verticals must still run 1.5 mm past the lowest and
+        // highest horizontal, and the outermost horizontals past the outermost
+        // verticals, or the blade leaves an uncut corner.
+        let opts = Options {
+            contour: true,
+            contour_as_grid: true,
+            host_width_mm: 100.0,
+            host_height_mm: 100.0,
+            offset_x_mm: 0.0,
+            offset_y_mm: 0.0,
+            circle_diameter_mm: 5.0,
+            ..Options::default()
+        };
+        let out = generate_pdf(None, BACKGROUND_PDF, None, &opts).expect("grid contour generation should succeed");
+        assert_eq!(out.cards_per_page, 36);
+        let doc = Document::load_mem(&out.pdf).unwrap();
+        let page = *doc.get_pages().values().next().unwrap();
+
+        let (mut verticals, mut horizontals) = (Vec::new(), Vec::new());
+        for (a, b) in stroked_lines_mm(&doc, page) {
+            if (a.0 - b.0).abs() < 1e-3 {
+                verticals.push((a.0, a.1.min(b.1), a.1.max(b.1)));
+            } else {
+                horizontals.push((a.1, a.0.min(b.0), a.0.max(b.0)));
+            }
+        }
+        assert_eq!((verticals.len(), horizontals.len()), (7, 7));
+
+        let min_of = |it: &mut dyn Iterator<Item = f32>| it.fold(f32::MAX, f32::min);
+        let max_of = |it: &mut dyn Iterator<Item = f32>| it.fold(f32::MIN, f32::max);
+        let (bottom, top) = (min_of(&mut horizontals.iter().map(|h| h.0)), max_of(&mut horizontals.iter().map(|h| h.0)));
+        let (left, right) = (min_of(&mut verticals.iter().map(|v| v.0)), max_of(&mut verticals.iter().map(|v| v.0)));
+        for &(x, lo, hi) in &verticals {
+            assert!((lo - (bottom - 1.5)).abs() < 0.01, "vertical at x={x} starts at {lo}, bottom horizontal at {bottom}");
+            assert!((hi - (top + 1.5)).abs() < 0.01, "vertical at x={x} ends at {hi}, top horizontal at {top}");
+        }
+        for &(y, lo, hi) in &horizontals {
+            assert!((lo - (left - 1.5)).abs() < 0.01, "horizontal at y={y} starts at {lo}, left vertical at {left}");
+            assert!((hi - (right + 1.5)).abs() < 0.01, "horizontal at y={y} ends at {hi}, right vertical at {right}");
+        }
     }
 
     #[test]
@@ -2351,8 +2397,8 @@ mod tests {
         // the grid page's own line geometry.
         //
         // 15×15 mm card on a 100×100 mm sheet, no gutters or circles → a 6×6 grid
-        // with 7 shared lines per axis (the 90 mm grid + 3 mm bleed on both ends,
-        // so each line spans 96 mm).
+        // with 7 shared lines per axis (the 90 mm grid + 1.5 mm bleed on both ends,
+        // so each line spans 93 mm).
         let opts = Options {
             contour: true,
             contour_as_grid: true,
@@ -2368,7 +2414,7 @@ mod tests {
         assert_eq!(out.cards_per_page, 36);
 
         let total_len = out.path_length_total_mm.expect("grid metrics should include path length");
-        assert!((total_len - 14.0 * 96.0).abs() < 0.5, "expected 14 lines × 96 mm, got {total_len}");
+        assert!((total_len - 14.0 * 93.0).abs() < 0.5, "expected 14 lines × 93 mm, got {total_len}");
         assert_eq!(out.node_count_total, Some(28), "two nodes per line");
         assert_eq!(out.sharp_turn_count_total, Some(0), "straight grid lines have no sharp turns");
         let per_card_len = out.path_length_per_card_mm.unwrap();
@@ -2379,7 +2425,7 @@ mod tests {
         // the fixture really is metric (a wrong unit would break the 6×6 grid).
         assert!((15.0 * MM - 42.52).abs() < 0.01);
         let total_time = out.time_cutting_total_s.expect("grid metrics should include cutting time");
-        let expected = 14.0 * 96.0 / opts.cutting_speed_mm_s
+        let expected = 14.0 * 93.0 / opts.cutting_speed_mm_s
             + opts.preparation_time_s
             + 180.0 / opts.travel_speed_mm_s;
         assert!((total_time - expected).abs() < 1e-2, "expected {expected}s, got {total_time}s");

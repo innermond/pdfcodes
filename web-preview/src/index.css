@@ -57,3 +57,14 @@ html {
 html.dark {
   color-scheme: dark;
 }
+
+/*
+ * The popup list is painted from the <option>'s own colours, not the select's
+ * tint: the highlight and warning variants use a translucent background (/30,
+ * /40 alpha) that composites over the popup's white, leaving a light list under
+ * light text. Opaque dark colours keep every select's list readable.
+ */
+html.dark option {
+  background-color: var(--color-gray-800);
+  color: var(--color-gray-100);
+}

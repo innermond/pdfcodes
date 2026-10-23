@@ -221,23 +221,23 @@ fn grid_segments(layout: &CardLayout, cells: usize, offset_x: f32, offset_y: f32
     xs.sort_by(|a, b| a.0.total_cmp(&b.0));
     ys.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Extend each line 3 mm past the outermost card it serves so the cutter enters
-    // and exits cleanly. Clamped to the registration-circle safe zone so lines don't
-    // overlap the circles at the sheet corners.
-    let bleed = 3.0 * MM;
-    let safe = layout.circle_r * 2.0;
+    // Extend each line 1.5 mm past the outermost card it serves so the outermost
+    // horizontals and verticals cross and the blade cuts through every corner. Only the
+    // sheet edge limits it: the grid sits at least one circle diameter inside the page,
+    // so a line can touch a registration circle but never cross it.
+    let bleed = 1.5 * MM;
     let verticals = xs.iter()
         .map(|&(x, r_lo, r_hi)| (
             x,
-            (cell_y(r_lo) - bleed).max(safe),
-            (cell_y(r_hi) + layout.card_h + bleed).min(layout.host_h - safe),
+            (cell_y(r_lo) - bleed).max(0.0),
+            (cell_y(r_hi) + layout.card_h + bleed).min(layout.host_h),
         ))
         .collect();
     let horizontals = ys.iter()
         .map(|&(y, c_lo, c_hi)| (
             y,
-            (cell_x(c_lo) - bleed).max(safe),
-            (cell_x(c_hi) + layout.card_w + bleed).min(layout.host_w - safe),
+            (cell_x(c_lo) - bleed).max(0.0),
+            (cell_x(c_hi) + layout.card_w + bleed).min(layout.host_w),
         ))
         .collect();
 
