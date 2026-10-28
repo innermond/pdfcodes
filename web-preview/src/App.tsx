@@ -3642,10 +3642,12 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
       //    own footprint, which takes priority (see src/generate/mod.rs).
       const bgPositionCanvasWMm = contourOffsetActive ? effectiveCardWidthMm : undefined
       const bgPositionCanvasHMm = contourOffsetActive ? effectiveCardHeightMm : undefined
+      // Not in Minimal: there the print cell is the redrawn (offset) box + Decalaj, so
+      // the cut grid must use that same box rather than the pre-redraw nominal size.
       const redrawPitchCanvasWMm =
-        (!pageOptions.noCut && contourRedrawActive && activeContourSpinDeg === 0) ? effectiveContourWidthMm : undefined
+        (!pageOptions.noCut && contourRedrawActive && activeContourSpinDeg === 0 && !minimal) ? effectiveContourWidthMm : undefined
       const redrawPitchCanvasHMm =
-        (!pageOptions.noCut && contourRedrawActive && activeContourSpinDeg === 0) ? effectiveContourHeightMm : undefined
+        (!pageOptions.noCut && contourRedrawActive && activeContourSpinDeg === 0 && !minimal) ? effectiveContourHeightMm : undefined
       const contourCanvasWMm = pageOptions.noCut ? bgPositionCanvasWMm : redrawPitchCanvasWMm
       const contourCanvasHMm = pageOptions.noCut ? bgPositionCanvasHMm : redrawPitchCanvasHMm
       // Minimal sends the contour offset (the crop origin) and the contour window even
