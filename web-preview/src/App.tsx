@@ -23,7 +23,7 @@ import { symbologyFitsColumn } from './lib/symbologyFit'
 import { computeContourKeepRegion, contourLocalPolygons, type Pt } from './lib/contourKeepRegion'
 import { contourDisplayFootprintMm } from './lib/contourFootprint'
 import { axisClearance, backgroundCoversCut } from './lib/cutClearance'
-import { offsetPolygons, polygonsAreAxisAlignedRect, polygonsBBox, polygonsToPathD, removeSelfIntersections } from './lib/contourOffset'
+import { polygonsAreAxisAlignedRect, polygonsBBox, polygonsToPathD } from './lib/contourOffset'
 import { polygonAspectExtent, starInnerRatio } from './lib/contourMask'
 import { CSV_PREVIEW_ROW_COUNT, defaultCodeColumn, generateCsvPreview, generateSampleRow, leaderColumn, maxGroupRowCount, mergeFields, normalizeColumns, oldFieldsPerField, randomCodeSpace, streamCodesCsv, totalRowCount, type CodeColumnConfig } from './lib/codeSource'
 import { serializeRows, describeDelimiter, isRaggedRowsWarning, keptRows, rowsToLeaderValues, skippedRows } from './lib/csvSerialize'
@@ -54,6 +54,21 @@ function renderPdfBackground(
 ): ReturnType<typeof import('./lib/pdfBackground').renderPdfBackground> {
   pdfBackgroundMod ??= import('./lib/pdfBackground')
   return pdfBackgroundMod.then((m) => m.renderPdfBackground(...args))
+}
+
+let contourFromCardMod: Promise<typeof import('./lib/contourFromCard')> | null = null
+function deriveCardOutline(
+  ...args: Parameters<typeof import('./lib/contourFromCard').deriveCardOutline>
+): ReturnType<typeof import('./lib/contourFromCard').deriveCardOutline> {
+  contourFromCardMod ??= import('./lib/contourFromCard')
+  return contourFromCardMod.then((m) => m.deriveCardOutline(...args))
+}
+
+// Clipper-backed cut-path cleanup; kept out of the main chunk with the other geometry libs.
+let cutPolygonsMod: Promise<typeof import('./lib/cutPolygons')> | null = null
+function loadCutPolygons(): Promise<typeof import('./lib/cutPolygons')> {
+  cutPolygonsMod ??= import('./lib/cutPolygons')
+  return cutPolygonsMod
 }
 
 let contourVectorMaskMod: Promise<typeof import('./lib/contourVectorMask')> | null = null
@@ -308,6 +323,9 @@ interface UploadRestore {
 // gives a distinct File object per <input>, but the same on-disk file has the
 // same name, size and last-modified time. Used to default the contour to a
 // different page when it reuses the background PDF.
+// Loops enclosing less than this (mm²) are noise, not something worth cutting.
+const CUT_SPECK_MM2 = 0.25
+
 function isSameFile(a: File, b: File): boolean {
   return a.name === b.name && a.size === b.size && a.lastModified === b.lastModified
 }
@@ -413,7 +431,7 @@ type FontSource = 'google' | 'custom'
 type BackgroundSource = 'upload' | 'simple' | 'generate'
 // Where the "Fundal imagine" (generate) source gets its raster image from.
 type GenBgImageSource = 'file' | 'url' | 'clipboard'
-type ContourSource = 'upload' | 'shape'
+type ContourSource = 'upload' | 'shape' | 'card'
 type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart' | 'polygon'
 
 // Grouped user-input config for the "Fundal" (background) step, folded into one
@@ -883,6 +901,8 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   // (preset shapes use the precise `contourCutShape` instead). Recomputed from
   // the rendered outline below; null falls back to the bounding box.
   const [contourInteriorMaskPath, setContourInteriorMaskPath] = useState<string | null>(null)
+  // The derived/traced cut still has overlapping or self-crossing loops (clean-up is off).
+  const [contourCutDefects, setContourCutDefects] = useState(false)
   // "Redesenează" (equidistant offset) products. When `contourRedrawMm` is non-zero
   // the base contour outline is offset and re-emitted as a fresh cut PDF
   // (`redrawnContourFile` + its rendered `redrawnContour`), a normalized preview mask
@@ -1080,6 +1100,8 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
   const [codeCsvStale, setCodeCsvStale] = useState(false)
+  // Row count edited since the last CSV generation: pulses the Generate CSV button.
+  const [codeRowCountDirty, setCodeRowCountDirty] = useState(false)
   // Forced-duplicate count from the last generation (null until generated): the
   // post-generation uniqueness check shown next to the download link.
   const [codeCsvDuplicates, setCodeCsvDuplicates] = useState<number | null>(null)
@@ -1619,6 +1641,8 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
     // (which momentarily sets contourBackground to null), and this effect must not
     // wipe the freshly-traced path during that transient.
     if (contourTraceImage) return
+    // 'card' sets its own interior mask in the derive-from-card effect.
+    if (contourSource === 'card') return
     if (contourSource !== 'upload' || !contourBackgroundFile || !contourBackground) {
       setContourInteriorMaskPath(null)
       return
@@ -1675,10 +1699,16 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         // itself, and re-derive the interior mask from the cleaned polys so the preview,
         // text-fit keep-region and the redraw base all use the simple outline.
         let maskD = d
-        if (contourNoSelfIntersect) {
-          polys = removeSelfIntersections(polys)
+        // Always drop noise specks; the full overlap/self-crossing repair stays opt-in
+        // ("Fără autointersectare"), but flag remaining defects so the user can enable it.
+        const { dropSpecks, findCutDefects, simplifyEvenOdd } = await loadCutPolygons()
+        if (cancelled) return
+        const defects = findCutDefects(polys, CUT_SPECK_MM2)
+        if (contourNoSelfIntersect || defects.specks > 0) {
+          polys = dropSpecks(contourNoSelfIntersect ? simplifyEvenOdd(polys) : polys, CUT_SPECK_MM2)
           maskD = polygonsToPathD(polys.map((sp) => sp.map(([x, y]): Pt => [x / Wmm, y / Hmm]))) || d
         }
+        setContourCutDefects(!contourNoSelfIntersect && defects.overlapping)
         const coords: number[] = []
         const lens: number[] = []
         for (const sp of polys) {
@@ -1720,6 +1750,76 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contourTraceImage, contourTraceAlpha, contourTraceSmooth, contourNoSelfIntersect])
 
+  // "Din card": no contour supplied — derive the cut outline from the card itself
+  // (`deriveCardOutline`: outermost vector shapes, else the image's alpha silhouette,
+  // else the card rectangle) and emit it as a polygon cut PDF the same way the
+  // PNG-trace effect above does, so everything downstream treats it like an upload.
+  // The first run goes through the normal handler (prefills size); re-runs swap in place.
+  const cardContourFirstRef = useRef(true)
+  useEffect(() => {
+    if (contourSource !== 'card') { cardContourFirstRef.current = true; return }
+    const Wmm = effectiveCardWidthMm
+    const Hmm = effectiveCardHeightMm
+    if (!background || !(Wmm > 0) || !(Hmm > 0)) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const flipX = backgroundSource === 'upload' && bgFlipX
+        const flipY = backgroundSource === 'upload' && bgFlipY
+        let d: string | null = null
+        let vector = false
+        if (backgroundFile) {
+          ;({ d, vector } = await deriveCardOutline(backgroundFile, backgroundPageNumber, bgRotation, flipX, flipY, contourTraceAlpha, contourTraceSmooth))
+        }
+        if (cancelled) return
+        // No shape found (opaque card, solid colour): cut the card rectangle.
+        let polys = contourLocalPolygons({ width: Wmm, height: Hmm, cutShape: null, interiorMaskPath: d })
+        if (vector) {
+          // The vector walk ignores the Step-1 flips (the raster path bakes them in).
+          polys = polys.map((sp) => sp.map(([x, y]): Pt => [flipX ? Wmm - x : x, flipY ? Hmm - y : y]))
+        }
+        let maskD = d
+        // Always drop noise specks; the full overlap/self-crossing repair stays opt-in
+        // ("Fără autointersectare"), but flag remaining defects so the user can enable it.
+        const { dropSpecks, findCutDefects, simplifyEvenOdd } = await loadCutPolygons()
+        if (cancelled) return
+        const defects = findCutDefects(polys, CUT_SPECK_MM2)
+        if (contourNoSelfIntersect || defects.specks > 0) {
+          polys = dropSpecks(contourNoSelfIntersect ? simplifyEvenOdd(polys) : polys, CUT_SPECK_MM2)
+          maskD = polygonsToPathD(polys.map((sp) => sp.map(([x, y]): Pt => [x / Wmm, y / Hmm]))) || d
+        }
+        setContourCutDefects(!contourNoSelfIntersect && defects.overlapping)
+        const coords: number[] = []
+        const lens: number[] = []
+        for (const sp of polys) {
+          if (sp.length < 3) continue
+          for (const [x, y] of sp) coords.push(x * MM, (Hmm - y) * MM) // flip to PDF y-up
+          lens.push(sp.length)
+        }
+        if (coords.length === 0) { setContourBackgroundError(m.errors_trace_failed()); return }
+        await ensureWasmInit()
+        if (cancelled) return
+        const bytes = generate_polygon_pdf(Wmm, Hmm, new Float32Array(coords), new Uint32Array(lens), '0:1:0:0')
+        const file = new File([bytes.buffer as ArrayBuffer], 'contur-din-card.pdf', { type: 'application/pdf' })
+        if (cancelled) return
+        if (cardContourFirstRef.current) {
+          cardContourFirstRef.current = false
+          handleContourBackgroundFileChange(file)
+        } else {
+          setContourBackgroundFile(file)
+          renderContourPreview(file, 1, contourRotation)
+            .then((bg) => { if (!cancelled) setContourBackground(bg) })
+            .catch(() => {})
+        }
+        setContourInteriorMaskPath(maskD)
+      } catch (err) {
+        if (!cancelled) setContourBackgroundError(err instanceof Error ? err.message : String(err))
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contourSource, background, backgroundFile, backgroundPageNumber, bgRotation, bgFlipX, bgFlipY, backgroundSource, effectiveCardWidthMm, effectiveCardHeightMm, contourTraceAlpha, contourTraceSmooth, contourNoSelfIntersect])
+
   // "Redesenează": equidistant-offset the base contour outline by `contourRedrawMm`
   // and re-emit it as a fresh cut PDF, a preview mask, and a footprint — the same way
   // for both contour sources (the base outline `contourLocalPolygons` returns already
@@ -1738,48 +1838,49 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
     // Base outline in the contour's own box (mm, SVG y-down), then offset it. 1 local
     // unit = 1 card mm on both axes, so `dist` mm is a true equidistant offset.
     const base = contourLocalPolygons({ width: Wc, height: Hc, cutShape: contourCutShape, interiorMaskPath: contourInteriorMaskPath })
-    // Offset can self-intersect on concave shapes; "Fără autointersectare" cleans the
-    // result so the redrawn cut path stays simple.
-    const offset = contourNoSelfIntersect
-      ? removeSelfIntersections(offsetPolygons(base, dist))
-      : offsetPolygons(base, dist)
-    const bb = polygonsBBox(offset)
-    if (!bb || bb.maxX - bb.minX <= 0 || bb.maxY - bb.minY <= 0) {
-      setRedrawnContourFile(null); setRedrawnContour(null); setRedrawnMaskPath(null); setRedrawnFootprint(null)
-      return
-    }
-    const Wf = bb.maxX - bb.minX
-    const Hf = bb.maxY - bb.minY
-    // Translate the offset outline so its box starts at (0,0). For the cut PDF, flip
-    // to PDF points (y-up); for the mask, normalize to 0..1 (y-down).
-    const localZeroed = offset.map((sp) => sp.map(([x, y]): Pt => [x - bb.minX, y - bb.minY]))
-    const coords: number[] = []
-    const lens: number[] = []
-    for (const sp of localZeroed) {
-      if (sp.length < 3) continue
-      for (const [x, y] of sp) coords.push(x * MM, (Hf - y) * MM)
-      lens.push(sp.length)
-    }
-    const maskD = polygonsToPathD(localZeroed.map((sp) => sp.map(([x, y]): Pt => [x / Wf, y / Hf])))
-    // Judged on the offset outline itself rather than on the base shape's kind: an inward
-    // offset of a rectangle is still a rectangle (the join is mitered on the overlap side),
-    // an outward one is a rounded rectangle, and an interior hole leaves two subpaths.
-    const footprint = { widthMm: Wf, heightMm: Hf, isRect: polygonsAreAxisAlignedRect(offset) }
-
     let cancelled = false
-    ensureWasmInit()
-      .then(() => {
-        if (cancelled || coords.length === 0) return null
-        const bytes = generate_polygon_pdf(Wf, Hf, new Float32Array(coords), new Uint32Array(lens), '0:1:0:0')
-        const file = new File([bytes.buffer as ArrayBuffer], 'contur-redesenat.pdf', { type: 'application/pdf' })
-        if (cancelled) return null
-        setRedrawnContourFile(file)
-        setRedrawnMaskPath(maskD || null)
-        setRedrawnFootprint(footprint)
-        return renderPdfBackground(file, 1, 0)
-      })
-      .then((bg) => { if (!cancelled && bg) setRedrawnContour(bg) })
-      .catch((err) => { if (!cancelled) setShapeError(err instanceof Error ? err.message : String(err)) })
+    loadCutPolygons().then(({ dropSpecks, offsetClean }) => {
+      if (cancelled) return null
+      // Offset as one region (Clipper): parts that grow into each other merge and a thin
+      // part that shrinks away disappears, so the redrawn cut never doubles back on itself.
+      const offset = dropSpecks(offsetClean(base, dist), CUT_SPECK_MM2)
+      const bb = polygonsBBox(offset)
+      if (!bb || bb.maxX - bb.minX <= 0 || bb.maxY - bb.minY <= 0) {
+        setRedrawnContourFile(null); setRedrawnContour(null); setRedrawnMaskPath(null); setRedrawnFootprint(null)
+        return null
+      }
+      const Wf = bb.maxX - bb.minX
+      const Hf = bb.maxY - bb.minY
+      // Translate the offset outline so its box starts at (0,0). For the cut PDF, flip
+      // to PDF points (y-up); for the mask, normalize to 0..1 (y-down).
+      const localZeroed = offset.map((sp) => sp.map(([x, y]): Pt => [x - bb.minX, y - bb.minY]))
+      const coords: number[] = []
+      const lens: number[] = []
+      for (const sp of localZeroed) {
+        if (sp.length < 3) continue
+        for (const [x, y] of sp) coords.push(x * MM, (Hf - y) * MM)
+        lens.push(sp.length)
+      }
+      const maskD = polygonsToPathD(localZeroed.map((sp) => sp.map(([x, y]): Pt => [x / Wf, y / Hf])))
+      // Judged on the offset outline itself rather than on the base shape's kind: an inward
+      // offset of a rectangle is still a rectangle (the join is mitered on the overlap side),
+      // an outward one is a rounded rectangle, and an interior hole leaves two subpaths.
+      const footprint = { widthMm: Wf, heightMm: Hf, isRect: polygonsAreAxisAlignedRect(offset) }
+
+      ensureWasmInit()
+        .then(() => {
+          if (cancelled || coords.length === 0) return null
+          const bytes = generate_polygon_pdf(Wf, Hf, new Float32Array(coords), new Uint32Array(lens), '0:1:0:0')
+          const file = new File([bytes.buffer as ArrayBuffer], 'contur-redesenat.pdf', { type: 'application/pdf' })
+          if (cancelled) return null
+          setRedrawnContourFile(file)
+          setRedrawnMaskPath(maskD || null)
+          setRedrawnFootprint(footprint)
+          return renderPdfBackground(file, 1, 0)
+        })
+        .then((bg) => { if (!cancelled && bg) setRedrawnContour(bg) })
+        .catch((err) => { if (!cancelled) setShapeError(err instanceof Error ? err.message : String(err)) })
+    }).catch((err) => { if (!cancelled) setShapeError(err instanceof Error ? err.message : String(err)) })
     return () => { cancelled = true }
   }, [contourRedrawMm, effectiveContourWidthMm, effectiveContourHeightMm, contourBackground, contourCutShape, contourInteriorMaskPath, contourNoSelfIntersect])
 
@@ -1826,6 +1927,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   }, [fonts, background, effectiveCardWidthMm, safeMarginMm, words, contourAlignRect, contourInsetMm])
 
   async function handleGenerateCsv() {
+    setCodeRowCountDirty(false)
     setCodeCsvProgress(0)
     let duplicates = 0
     const encoder = new TextEncoder()
@@ -2104,6 +2206,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
 
   function handleCodeRowCountChange(value: number) {
     setDataField('codeRowCount', value)
+    setCodeRowCountDirty(true)
     invalidateCsv()
   }
 
@@ -2401,7 +2504,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
         if (typeof preset.simpleBgWidthMm === 'number') setBgField('simpleBgWidthMm', preset.simpleBgWidthMm)
         if (typeof preset.simpleBgHeightMm === 'number') setBgField('simpleBgHeightMm', preset.simpleBgHeightMm)
         if (preset.simpleBgColor === null || typeof preset.simpleBgColor === 'string') setBgField('simpleBgColor', preset.simpleBgColor)
-        if (preset.contourSource === 'upload' || preset.contourSource === 'shape') setContourField('contourSource', preset.contourSource)
+        if (preset.contourSource === 'upload' || preset.contourSource === 'shape' || preset.contourSource === 'card') setContourField('contourSource', preset.contourSource)
         if (preset.shapeKind && SHAPE_OPTIONS.some((o) => o.value === preset.shapeKind)) setContourField('shapeKind', preset.shapeKind)
         if (typeof preset.shapeCornerRadiusMm === 'number') setContourField('shapeCornerRadiusMm', preset.shapeCornerRadiusMm)
         if (preset.shapeCornerOrientation === 'in' || preset.shapeCornerOrientation === 'out')
@@ -3188,7 +3291,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
     setContourBackgroundError(null)
     // A preset shape's generation effect depends on contourRotation and re-renders
     // the rotated outline itself; only the uploaded file needs a manual re-render.
-    if (contourSource === 'upload') {
+    if (contourSource !== 'shape') {
       renderContourPreview(contourBackgroundFile, contourPageNumber, next)
         .then(setContourBackground)
         .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
@@ -3211,9 +3314,10 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
     // against the previous source's slack.
     contourShapeTargetAutoRef.current = true
     prevContourBoundsRef.current = null
-    if (source === 'upload') {
+    if (source === 'upload' || source === 'card') {
       setContourBackground(null)
       setContourBackgroundFile(null)
+      setContourInteriorMaskPath(null)
       setContourBackgroundError(null)
       setContourField('contourPageNumber', 1)
       setContourPageCount(1)
@@ -4390,6 +4494,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
               options={[
                 { value: 'upload', label: m.contour_source_upload() },
                 { value: 'shape', label: m.contour_source_shape() },
+                { value: 'card', label: m.contour_source_card() },
               ]}
             />
 
@@ -4560,6 +4665,13 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                   </div>
                 )}
               </>
+            ) : contourSource === 'card' ? (
+              <>
+                <p className="text-label text-gray-500 dark:text-gray-400">{m.contour_card_hint()}</p>
+                {!background && (
+                  <p className="text-label text-gray-500 dark:text-gray-400">{m.contour_need_card()}</p>
+                )}
+              </>
             ) : (
               <>
                 {/* Shape and its corner controls are tightly related: keep them on
@@ -4629,6 +4741,9 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
               </>
             )}
             {contourBackgroundError && <p className="text-label text-red-600 dark:text-red-400">{contourBackgroundError}</p>}
+            {contourCutDefects && !contourNoSelfIntersect && (
+              <p className="text-label text-amber-600 dark:text-amber-400">{m.contour_cut_defects_warning()}</p>
+            )}
             {contourBackground && (
               <>
                 {/* Native contour size. The "Redesenează" offset never changes the
@@ -4639,7 +4754,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                 </p>
                 {/* Resize / switch dimensions / rotate apply to both the uploaded
                     contour PDF and the generated preset shape (treated alike). */}
-                {(contourSource === 'upload' || contourSource === 'shape') && (
+                {(contourSource === 'upload' || contourSource === 'shape' || contourSource === 'card') && (
                   <>
                     <LinkedDimensions
                       widthLabel={m.common_target_width_mm()}
@@ -5229,6 +5344,7 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
             downloadUrl={codeDataMode === 'generate' ? codeCsvUrl : null}
             progress={codeCsvProgress}
             stale={codeCsvStale}
+            pulseGenerate={codeRowCountDirty || codeCsvUrl === null}
             blocked={codeUniquenessImpossible}
             duplicates={codeDataMode === 'generate' ? codeCsvDuplicates : null}
           />

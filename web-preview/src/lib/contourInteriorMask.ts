@@ -139,7 +139,7 @@ export async function computeContourInteriorMaskPath(
   let d = ''
   for (const loop of loops) {
     const simple = simplifyClosed(loop, EPS)
-    if (simple.length < 3 || polygonArea(simple) < 2) continue // drop slivers / specks
+    if (simple.length < 3 || polygonArea(simple) < Math.max(2, n * 2e-6)) continue // drop slivers / specks (scales with image size)
     simple.forEach(([x, y], i) => {
       d += `${i === 0 ? 'M' : 'L'}${f(x / w)} ${f(y / h)}`
     })

@@ -259,6 +259,10 @@
 
 	"contour_source_upload": "Încarcă PDF/SVG/PNG",
 	"contour_source_shape": "Formă presetată",
+	"contour_source_card": "Din card",
+	"contour_cut_defects_warning": "Conturul derivat are bucle suprapuse sau care se intersectează (tăiere dublă). Bifează „Fără autointersectare”.",
+	"contour_card_hint": "Conturul de tăiere se obține din forma exterioară a cardului (vectorială sau din transparența imaginii). Un card opac se taie dreptunghiular.",
+	"contour_need_card": "Adaugă întâi fundalul cardului pentru a deriva conturul.",
 	"contour_file_source_label": "Sursă fișier",
 	"contour_file_label": "PDF, SVG, PNG sau JPEG (opțional)",
 	"contour_url_label": "URL fișier (PDF, SVG, PNG sau JPEG)",

@@ -252,6 +252,10 @@
 
 	"contour_source_upload": "Upload PDF/SVG/PNG",
 	"contour_source_shape": "Preset shape",
+	"contour_source_card": "From card",
+	"contour_cut_defects_warning": "The derived cut has overlapping or self-crossing loops (double cut). Enable \"No self-intersection\".",
+	"contour_card_hint": "The cut path is derived from the card's outer shape (vector outline or image transparency). An opaque card is cut as a rectangle.",
+	"contour_need_card": "Add the card background first to derive the contour.",
 	"contour_file_source_label": "File source",
 	"contour_file_label": "PDF, SVG, PNG or JPEG (optional)",
 	"contour_url_label": "File URL (PDF, SVG, PNG or JPEG)",

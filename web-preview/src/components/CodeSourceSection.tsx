@@ -443,6 +443,7 @@ export function CodeSourceSection({
   downloadUrl,
   progress,
   stale,
+  pulseGenerate,
   blocked,
   duplicates,
 }: {
@@ -504,6 +505,8 @@ export function CodeSourceSection({
   progress: number | null
   /** True when settings changed after the last CSV generation. */
   stale?: boolean
+  /** Pulse the Generate CSV button to nudge the user (e.g. after the row count changed). */
+  pulseGenerate?: boolean
   /** True when a random column can't yield enough unique codes — generation is disabled. */
   blocked?: boolean
   /** Forced-duplicate count from the last generation, or null before generating. */
@@ -764,7 +767,7 @@ export function CodeSourceSection({
               type="button"
               onClick={onGenerate}
               disabled={generating || blocked}
-              className="self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600"
+              className={`self-start rounded-lg bg-blue-600 px-4 py-2 text-label font-medium text-white hover:bg-blue-700 disabled:opacity-50 dark:bg-blue-500 dark:hover:bg-blue-600${pulseGenerate && !generating ? ' animate-pulse ring-2 ring-blue-300 ring-offset-2 motion-reduce:animate-none dark:ring-blue-400 dark:ring-offset-gray-900' : ''}`}
             >
               {generating ? m.codes_generating_progress({ done: formatNumber(progress), total: formatNumber(totalRows) }) : m.codes_generate_csv()}
             </button>
