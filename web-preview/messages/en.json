@@ -207,6 +207,12 @@
 	"common_source_label": "Source",
 	"common_source_file": "Local file",
 	"common_source_url": "URL",
+	"common_source_library": "Gallery",
+	"common_source_camera": "Take photo",
+	"background_library_open": "Choose from gallery",
+	"background_camera_open": "Open camera",
+	"background_library_title": "Image gallery",
+	"background_camera_title": "Take a photo",
 	"common_source_clipboard": "Clipboard",
 	"common_svg_text_warning": "Text inside the SVG is not supported — convert the text to outlines before uploading.",
 

@@ -213,6 +213,12 @@
 	"common_opacity_label": "Transparență (0-1)",
 	"common_source_file": "Fișier local",
 	"common_source_url": "URL",
+	"common_source_library": "Galerie",
+	"common_source_camera": "Fă poză",
+	"background_library_open": "Alege din galerie",
+	"background_camera_open": "Deschide camera",
+	"background_library_title": "Galerie de imagini",
+	"background_camera_title": "Fă o poză",
 	"common_source_clipboard": "Clipboard",
 	"common_svg_text_warning": "Textul din SVG nu este suportat — convertește textul în contururi (outline) înainte de încărcare.",
 

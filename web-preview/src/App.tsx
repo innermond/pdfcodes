@@ -6,7 +6,9 @@ import { CheckboxField, ColorField, FileField, LinkedDimensions, NumberField, Ra
 import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import type { GoogleFontSelection } from './components/GoogleFontPicker'
-import { codeSourceChunk, fontPickerChunk, preloadStep, resultChunk } from './lib/chunks'
+import { assetPoolChunk, cameraChunk, codeSourceChunk, fontPickerChunk, preloadStep, resultChunk } from './lib/chunks'
+import { downloadPoolAsset, type AssetPoolEndpoints, type PoolAsset } from '@shared/assetPool'
+import { isCameraAvailable } from '@shared/camera'
 import { fetchGoogleFont } from './lib/googleFonts'
 import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
@@ -137,6 +139,8 @@ function loadPresetBundle(
 }
 
 // Components only a later step shows — see lib/chunks.ts.
+const AssetPoolOverlay = lazy(() => assetPoolChunk.load().then((mod) => ({ default: mod.AssetPoolOverlay })))
+const CameraOverlay = lazy(() => cameraChunk.load().then((mod) => ({ default: mod.CameraOverlay })))
 const CodeSourceSection = lazy(() => codeSourceChunk.load().then((mod) => ({ default: mod.CodeSourceSection })))
 const GoogleFontPicker = lazy(() => fontPickerChunk.load().then((mod) => ({ default: mod.GoogleFontPicker })))
 const ResultPanel = lazy(() => resultChunk.load().then((mod) => ({ default: mod.ResultPanel })))
@@ -430,7 +434,7 @@ type FontSource = 'google' | 'custom'
 
 type BackgroundSource = 'upload' | 'simple' | 'generate'
 // Where the "Fundal imagine" (generate) source gets its raster image from.
-type GenBgImageSource = 'file' | 'url' | 'clipboard'
+type GenBgImageSource = 'file' | 'url' | 'clipboard' | 'library' | 'camera'
 type ContourSource = 'upload' | 'shape' | 'card'
 type ShapeKind = 'circle' | 'ellipse' | 'rectangle' | 'rounded-rectangle' | 'beveled-rectangle' | 'heart' | 'polygon'
 
@@ -803,7 +807,7 @@ function downloadSymbolFailureCsv(rows: string[]) {
   URL.revokeObjectURL(url)
 }
 
-export default function App({ lightMode, preset }: { lightMode?: boolean; preset?: HostPreset } = {}) {
+export default function App({ lightMode, preset, assetPool }: { lightMode?: boolean; preset?: HostPreset; assetPool?: AssetPoolEndpoints } = {}) {
   const [theme, toggleTheme] = useTheme(lightMode ?? ENV_LIGHT_MODE)
   const [step, setStep] = useState<WizardStepId>('fundal')
   const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
@@ -847,6 +851,10 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   // here. It's a binary/async boundary, not scalar config, so it stays outside BgConfig.
   const [genBgImageFile, setGenBgImageFile] = useState<File | null>(null)
   const [genBgLoading, setGenBgLoading] = useState(false)
+  // Which picture-taking overlay is open over the wizard: the host's image library
+  // ("Galerie") or the device camera ("Fă poză"). Both end in handleGenBgImageChange.
+  const [bgOverlay, setBgOverlay] = useState<'library' | 'camera' | null>(null)
+  const cameraAvailable = useMemo(isCameraAvailable, [])
   // A file is being dragged over the Step-1 clipboard/drop zone (highlight only).
   const [bgPasteZoneDragOver, setBgPasteZoneDragOver] = useState(false)
   // A loaded SVG contains <text> elements, which the size-trimmed svg-wasm build
@@ -2811,6 +2819,25 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
   // Loading a source image resets the shared rotation and prefills the target
   // inputs with the image's own size: an SVG's intrinsic physical size (adopted
   // after the svg→PDF conversion), or a raster's pixel size read at RASTER_DPI.
+  async function handleBgLibraryPick(asset: PoolAsset) {
+    setGenBgLoading(true)
+    setBackgroundError(null)
+    try {
+      handleGenBgImageChange(await downloadPoolAsset(asset))
+      setBgOverlay(null)
+    } catch (err) {
+      setBgOverlay(null)
+      setBackgroundError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGenBgLoading(false)
+    }
+  }
+
+  function handleBgCameraCapture(file: File) {
+    handleGenBgImageChange(file)
+    setBgOverlay(null)
+  }
+
   function handleGenBgImageChange(file: File | null) {
     setGenBgImageFile(file)
     setBgField('bgRotation', 0)
@@ -4281,9 +4308,25 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
                     { value: 'file', label: m.common_source_file() },
                     { value: 'url', label: m.common_source_url() },
                     { value: 'clipboard', label: m.common_source_clipboard() },
+                    ...(assetPool ? [{ value: 'library' as const, label: m.common_source_library() }] : []),
+                    ...(cameraAvailable ? [{ value: 'camera' as const, label: m.common_source_camera() }] : []),
                   ]}
                 />
-                {genBgImageSource === 'file' ? (
+                {genBgImageSource === 'library' || genBgImageSource === 'camera' ? (
+                  <div className="flex items-center gap-inner">
+                    <button
+                      type="button"
+                      onClick={() => setBgOverlay(genBgImageSource)}
+                      disabled={genBgLoading}
+                      className="rounded border border-gray-300 px-3 py-1 text-label font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                    >
+                      {genBgImageSource === 'library' ? m.background_library_open() : m.background_camera_open()}
+                    </button>
+                    {genBgImageFile && (
+                      <span className="min-w-0 truncate text-hint text-gray-500 dark:text-gray-400">{genBgImageFile.name}</span>
+                    )}
+                  </div>
+                ) : genBgImageSource === 'file' ? (
                   <FileField
                     label={m.background_image_label()}
                     accept="image/png,image/jpeg,image/svg+xml,.svg"
@@ -5869,6 +5912,29 @@ export default function App({ lightMode, preset }: { lightMode?: boolean; preset
           )}
         </div>
       </div>
+      {bgOverlay && (
+        <div className="fixed inset-0 z-50">
+          <Suspense fallback={null}>
+            {bgOverlay === 'library' && assetPool ? (
+              <AssetPoolOverlay
+                endpoints={assetPool}
+                target="background"
+                title={m.background_library_title()}
+                busy={genBgLoading}
+                onPick={(asset) => void handleBgLibraryPick(asset)}
+                onClose={() => setBgOverlay(null)}
+              />
+            ) : (
+              <CameraOverlay
+                title={m.background_camera_title()}
+                busy={genBgLoading}
+                onCapture={handleBgCameraCapture}
+                onClose={() => setBgOverlay(null)}
+              />
+            )}
+          </Suspense>
+        </div>
+      )}
     </div>
     </ColorSampleContext.Provider>
   )

@@ -10,6 +10,8 @@
 
 import { lazyChunk, type LazyChunk } from './lazyChunk'
 
+export const assetPoolChunk = lazyChunk(() => import('@shared/AssetPoolOverlay'))
+export const cameraChunk = lazyChunk(() => import('@shared/CameraOverlay'))
 export const codeSourceChunk = lazyChunk(() => import('../components/CodeSourceSection'))
 export const fontPickerChunk = lazyChunk(() => import('../components/GoogleFontPicker'))
 export const resultChunk = lazyChunk(() => import('../components/ResultPanel'))

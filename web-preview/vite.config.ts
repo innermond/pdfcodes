@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { paraglideVitePlugin } from '@inlang/paraglide-js'
@@ -12,6 +12,9 @@ if (!inlangSettings.locales.includes(locale)) {
   throw new Error(`Unknown LOCALE "${locale}" — expected one of: ${inlangSettings.locales.join(', ')}`)
 }
 
+// Code the editors have in common: the ui-common submodule next to this one.
+const shared = decodeURIComponent(new URL('../../ui-common/src', import.meta.url).pathname)
+
 // https://vite.dev/config/
 export default defineConfig({
   // Relative asset URLs so the built `dist/` can be dropped at any path on a
@@ -19,6 +22,10 @@ export default defineConfig({
   // because this is a single page with no client-side router.
   base: './',
   //base: '/etichete/coduri-unice-decupare-contur/',
+  resolve: { alias: { '@shared': shared }, dedupe: ['react', 'react-dom'] },
+  server: { fs: { allow: ['../../..'] } },
+  // ui-common has no test runner of its own; its tests run here, with the app that owns the checkout.
+  test: { include: ['src/**/*.test.{ts,tsx}', '../../ui-common/src/**/*.test.{ts,tsx}'] },
   plugins: [
     react(),
     tailwindcss(),

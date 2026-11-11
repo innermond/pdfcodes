@@ -8,3 +8,5 @@
 // validator the standalone window-global path uses.
 export { default as PdfCodesApp } from './App'
 export { parseHostPreset, type HostPreset } from './lib/hostPreset'
+// The picture library's endpoints, validated the same way bizcard validates them.
+export { parseHostAssetPool, type AssetPoolEndpoints } from '@shared/assetPool'
