@@ -17,6 +17,7 @@ import { readVectorFileFromClipboard, vectorFileFromDataTransfer } from './lib/c
 import { ensureWasmInit, generate_with_options, generate_shape_pdf, generate_polygon_pdf, generate_simple_background_pdf, generate_image_background_pdf } from './lib/wasm'
 import { svgToPdf } from './lib/svgWasm'
 import { useUndoHistory } from './lib/undoHistory'
+import { describePdfCodes } from './lib/agentState'
 import { inspectSvg, isSvgFile, looksLikeSvg, prepareSvgForBackground } from './lib/svgBackground'
 import type { PresetResources } from './lib/presetBundle'
 import { fetchHostPreset, readHostPreset, type HostPreset } from './lib/hostPreset'
@@ -3530,6 +3531,94 @@ export default function App({ lightMode, preset, assetPool }: { lightMode?: bool
       return merged
     }))
   }
+
+  // ---- the shop assistant's door ------------------------------------------------------
+  //
+  // `window.pdfcodesAgent`, which the host's chat widget reads before every message and calls
+  // with the operations the assistant chose. The validator (lib/agentOps.ts) and the step
+  // runner are fetched on the first `apply`, since most visitors never use the assistant;
+  // `read` is synchronous and comes from a small eager module. Every change goes through the
+  // same setters a click uses, so the undo history records it like any other edit. The ref
+  // keeps the effect from re-registering on every edit.
+  const agentRef = useRef<{
+    step: WizardStepId
+    mode: Mode
+    selectedIndex: number | null
+    sampleText: string
+    codeDataMode: CodeDataMode
+    words: WordStyle[]
+    bgConfig: BgConfig
+    contourConfig: ContourConfig
+    styleConfig: StyleConfig
+    undo: () => void
+    redo: () => void
+    updateWord: (index: number, next: Partial<WordStyle>) => void
+    handleBackgroundSourceChange: (source: BackgroundSource) => void
+    handleContourSourceChange: (source: ContourSource) => void
+    handleSampleTextChange: (value: string) => void
+  } | null>(null)
+  agentRef.current = {
+    step, mode, selectedIndex, sampleText, codeDataMode, words, bgConfig, contourConfig, styleConfig,
+    undo, redo, updateWord, handleBackgroundSourceChange, handleContourSourceChange, handleSampleTextChange,
+  }
+  useEffect(() => {
+    const bridge = {
+      read: () => {
+        const s = agentRef.current!
+        return describePdfCodes({
+          step: s.step,
+          mode: s.mode,
+          selectedIndex: s.selectedIndex,
+          textFromFile: s.codeDataMode === 'upload',
+          sampleText: s.sampleText,
+          words: s.words as unknown as Record<string, unknown>[],
+          bgConfig: s.bgConfig as unknown as Record<string, unknown>,
+          contourConfig: s.contourConfig as unknown as Record<string, unknown>,
+          styleConfig: s.styleConfig as unknown as Record<string, unknown>,
+        })
+      },
+      apply: async (ops: unknown) => {
+        const [{ agentActions }, { runAgentSteps }] = await Promise.all([import('./lib/agentOps'), import('./lib/agentRun')])
+        const now = agentRef.current!
+        const { steps, rejected } = agentActions(ops, { wordCount: now.words.length, textFromFile: now.codeDataMode === 'upload' })
+        const { applied, failures } = await runAgentSteps(steps, {
+          patchWord: (index, patch) => agentRef.current!.updateWord(index, patch as Partial<WordStyle>),
+          patchConfig: (target, patch) => {
+            if (target === 'bg') setBgConfig((prev) => ({ ...prev, ...(patch as Partial<BgConfig>) }))
+            else if (target === 'contour') setContourConfig((prev) => ({ ...prev, ...(patch as Partial<ContourConfig>) }))
+            else setStyleConfig((prev) => ({ ...prev, ...(patch as Partial<StyleConfig>) }))
+          },
+          setMode,
+          history: (kind) => agentRef.current![kind](),
+          host: async (source) => {
+            const cur = agentRef.current!
+            switch (source.kind) {
+              case 'background_simple':
+                if (cur.bgConfig.backgroundSource !== 'simple') cur.handleBackgroundSourceChange('simple')
+                return
+              case 'contour_source':
+                if (cur.contourConfig.contourSource !== source.source) cur.handleContourSourceChange(source.source)
+                return
+              case 'sample_text':
+                cur.handleSampleTextChange(source.text)
+                return
+              case 'select_word':
+                setSelectedIndex(source.index)
+                return
+              case 'show_step':
+                setStep(source.step as WizardStepId)
+                return
+            }
+          },
+        })
+        return { applied, rejected: [...rejected, ...failures] }
+      },
+    }
+    window.pdfcodesAgent = bridge
+    return () => {
+      if (window.pdfcodesAgent === bridge) delete window.pdfcodesAgent
+    }
+  }, [])
 
   const selected = selectedIndex !== null ? words[selectedIndex] : null
 

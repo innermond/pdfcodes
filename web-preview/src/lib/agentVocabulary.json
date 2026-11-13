@@ -1,0 +1,82 @@
+{
+  "_about": "The closed lists and bounds both halves of the pdfcodes agent door must agree on. app/Services/Chat/Tools/EditPdfCodesTool.php (validates what the model says) and lib/agentOps.ts (validates what the editor runs) each keep their own copy; agentVocabulary.test.ts and tests/Feature/ChatPdfCodesVocabularyTest.php fail when either drifts from this file. Colours travel as #rrggbb and are stored as CMYK by the editor.",
+  "max_ops": 24,
+  "max_text": 200,
+  "max_words": 12,
+  "steps": ["fundal", "contur", "date", "aspect", "generare"],
+  "modes": ["print", "contour", "both"],
+  "blend_modes": ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"],
+  "contour_sources": ["shape", "card"],
+  "generic_ops": {
+    "set_word": {
+      "target": "word",
+      "params": {
+        "kind": { "prop": "kind", "type": "enum", "values": ["text", "qr", "barcode"] },
+        "font_size_pt": { "prop": "fontSizePt", "type": "number", "min": 1, "max": 400 },
+        "align": { "prop": "align", "type": "enum", "values": ["left", "center", "right", "contour-left", "contour-center", "contour-right"] },
+        "valign": { "prop": "valign", "type": "enum", "values": ["top", "middle", "bottom", "contour-top", "contour-middle", "contour-bottom"] },
+        "x_mm": { "prop": "xMm", "type": "number", "min": -1000, "max": 1000, "nullable": true },
+        "y_mm": { "prop": "yMm", "type": "number", "min": -1000, "max": 1000 },
+        "color": { "prop": "color", "type": "color" },
+        "opacity": { "prop": "opacity", "type": "number", "min": 0, "max": 1 },
+        "blend_mode": { "prop": "blendMode", "type": "enum", "values": ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"] },
+        "rotation_deg": { "prop": "rotationDeg", "type": "number", "min": -360, "max": 360 },
+        "flip_x": { "prop": "flipX", "type": "boolean" },
+        "flip_y": { "prop": "flipY", "type": "boolean" },
+        "char_spacing_pt": { "prop": "charSpacingPt", "type": "number", "min": -20, "max": 100 },
+        "background": { "prop": "background", "type": "color", "nullable": true },
+        "background_width_mm": { "prop": "backgroundWidthMm", "type": "number", "min": 0, "max": 1000, "nullable": true },
+        "background_alpha": { "prop": "backgroundAlpha", "type": "number", "min": 0, "max": 1 },
+        "outline_color": { "prop": "contourColor", "type": "color", "nullable": true },
+        "outline_width_mm": { "prop": "contourWidthMm", "type": "number", "min": 0, "max": 10 },
+        "join_prev": { "prop": "joinPrev", "type": "boolean" },
+        "qr_size_mm": { "prop": "qrSizeMm", "type": "number", "min": 3, "max": 200 },
+        "qr_ecc": { "prop": "qrEcc", "type": "enum", "values": ["L", "M", "Q", "H"] },
+        "symbology": { "prop": "symbology", "type": "enum", "values": ["code128", "code39", "ean13", "ean8"] },
+        "barcode_width_mm": { "prop": "barcodeWidthMm", "type": "number", "min": 5, "max": 300 },
+        "barcode_height_mm": { "prop": "barcodeHeightMm", "type": "number", "min": 3, "max": 200 }
+      }
+    },
+    "set_background": {
+      "target": "bg",
+      "params": {
+        "width_mm": { "prop": "simpleBgWidthMm", "type": "number", "min": 10, "max": 1000 },
+        "height_mm": { "prop": "simpleBgHeightMm", "type": "number", "min": 10, "max": 1000 },
+        "fill_color": { "prop": "simpleBgColor", "type": "color", "nullable": true }
+      }
+    },
+    "set_contour": {
+      "target": "contour",
+      "params": {
+        "shape_kind": { "prop": "shapeKind", "type": "enum", "values": ["circle", "ellipse", "rectangle", "rounded-rectangle", "beveled-rectangle", "heart", "polygon"] },
+        "corner_radius_mm": { "prop": "shapeCornerRadiusMm", "type": "number", "min": 0, "max": 50 },
+        "corner_orientation": { "prop": "shapeCornerOrientation", "type": "enum", "values": ["out", "in"] },
+        "polygon_sides": { "prop": "polygonSides", "type": "number", "min": 3, "max": 24, "integer": true },
+        "polygon_star": { "prop": "polygonStar", "type": "boolean" },
+        "star_inner_ratio": { "prop": "polygonStarInnerRatio", "type": "number", "min": 0, "max": 0.95 },
+        "rectangle_contour": { "prop": "rectangleContour", "type": "boolean" },
+        "offset_x_mm": { "prop": "contourOffsetXMm", "type": "number", "min": -100, "max": 100 },
+        "offset_y_mm": { "prop": "contourOffsetYMm", "type": "number", "min": -100, "max": 100 },
+        "spin_deg": { "prop": "contourSpinDeg", "type": "number", "min": -360, "max": 360 },
+        "redraw_mm": { "prop": "contourRedrawMm", "type": "number", "min": -20, "max": 20 },
+        "contour_opacity": { "prop": "contourOpacity", "type": "number", "min": 0, "max": 1 },
+        "contour_blend_mode": { "prop": "contourBlendMode", "type": "enum", "values": ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"] },
+        "no_self_intersect": { "prop": "contourNoSelfIntersect", "type": "boolean" }
+      }
+    },
+    "set_style": {
+      "target": "style",
+      "params": {
+        "safe_margin_mm": { "prop": "safeMarginMm", "type": "number", "min": 0, "max": 50 },
+        "background_padding_mm": { "prop": "backgroundPaddingMm", "type": "number", "min": 0, "max": 50 },
+        "contour_inset_mm": { "prop": "contourInsetMm", "type": "number", "min": 0, "max": 50 },
+        "min_cut_distance_mm": { "prop": "minCutDistanceMm", "type": "number", "min": 0, "max": 20 },
+        "bleed_mm": { "prop": "bleedMm", "type": "number", "min": 0, "max": 20 },
+        "correct_overflow": { "prop": "correctOverflow", "type": "boolean" },
+        "min_font_size_pt": { "prop": "minFontSizePt", "type": "number", "min": 1, "max": 100 },
+        "overflow_correction_mode": { "prop": "overflowCorrectionMode", "type": "enum", "values": ["per-code", "column"] },
+        "auto_text_color": { "prop": "autoTextColor", "type": "boolean" }
+      }
+    }
+  }
+}
