@@ -21,12 +21,14 @@
 // `alphaWall` is the alpha level (0..255) at/above which a pixel counts as solid
 // (the fill can't pass it); `eps` is the Douglas–Peucker simplification tolerance in
 // pixels. Both default to the values tuned for the uploaded-contour fallback; the
-// PNG-trace contour source exposes them as user sliders.
+// PNG-trace contour source exposes them as user sliders. `smooth` / `simplify` are
+// opt-in refinements (see `refineLoop`): corner-preserving smoothing of the pixel
+// staircase, and a stronger point reduction.
 import { m } from '../paraglide/messages'
 
 export async function computeContourInteriorMaskPath(
   imageUrl: string,
-  opts: { alphaWall?: number; eps?: number } = {},
+  opts: { alphaWall?: number; eps?: number; smooth?: boolean; simplify?: boolean } = {},
 ): Promise<string | null> {
   const ALPHA_WALL = opts.alphaWall ?? 16
   const EPS = opts.eps ?? 1.0
@@ -138,7 +140,7 @@ export async function computeContourInteriorMaskPath(
   const f = (v: number) => +v.toFixed(5)
   let d = ''
   for (const loop of loops) {
-    const simple = simplifyClosed(loop, EPS)
+    const simple = refineLoop(loop, EPS, !!opts.smooth, !!opts.simplify)
     if (simple.length < 3 || polygonArea(simple) < Math.max(2, n * 2e-6)) continue // drop slivers / specks (scales with image size)
     simple.forEach(([x, y], i) => {
       d += `${i === 0 ? 'M' : 'L'}${f(x / w)} ${f(y / h)}`
@@ -146,6 +148,131 @@ export async function computeContourInteriorMaskPath(
     d += 'Z'
   }
   return d || null
+}
+
+/** Minimum Douglas–Peucker tolerance (px) used when the "simplify" option is on. */
+export const SIMPLIFY_MIN_EPS = 1.5
+/** Tolerance (px) used to only drop redundant points when smoothing without simplifying. */
+const SMOOTH_ONLY_EPS = 0.25
+/** Turn angle (degrees, measured over a wide window) above which a vertex is a real corner. */
+const CORNER_ANGLE_DEG = 60
+
+/**
+ * Turns one traced pixel-edge circuit (first point == last point) into the loop that is
+ * emitted. Without `smooth`/`simplify` this is the plain Douglas–Peucker at `eps`.
+ * `smooth` rounds off the staircase (corners are kept sharp), `simplify` reduces the
+ * point count harder (tolerance at least {@link SIMPLIFY_MIN_EPS}).
+ */
+export function refineLoop(
+  loop: Array<[number, number]>,
+  eps: number,
+  smooth: boolean,
+  simplify: boolean,
+): Array<[number, number]> {
+  if (!smooth && !simplify) return simplifyClosed(loop, eps)
+  let pts = loop
+  if (smooth) {
+    pts = smoothClosed(loop, Math.max(1, eps * 1.5))
+    // Smoothed samples sit 1px apart; drop the redundant ones even when not simplifying.
+    return simplifyClosed(pts, simplify ? Math.max(eps, SIMPLIFY_MIN_EPS) : SMOOTH_ONLY_EPS)
+  }
+  return simplifyClosed(pts, Math.max(eps, SIMPLIFY_MIN_EPS))
+}
+
+/**
+ * Corner-preserving smoothing of a closed loop (first point == last point): the ring is
+ * resampled every ~1px, vertices where the outline really turns (angle over a wide window
+ * above {@link CORNER_ANGLE_DEG}) are pinned, and every other sample is replaced by a
+ * Gaussian-weighted average of its neighbours, with the window shrinking towards the
+ * nearest corner so smoothing never crosses one. Returns a closed loop.
+ */
+export function smoothClosed(loop: Array<[number, number]>, sigma: number): Array<[number, number]> {
+  const ring = loop.slice()
+  const first = ring[0]
+  const last = ring[ring.length - 1]
+  if (ring.length > 1 && first[0] === last[0] && first[1] === last[1]) ring.pop()
+  if (ring.length < 8) return loop
+  // Resample at ~1px steps along the perimeter.
+  const m = ring.length
+  const cum: number[] = [0]
+  for (let i = 0; i < m; i++) {
+    const a = ring[i]
+    const b = ring[(i + 1) % m]
+    cum.push(cum[i] + Math.hypot(b[0] - a[0], b[1] - a[1]))
+  }
+  const perimeter = cum[m]
+  const n = Math.max(8, Math.round(perimeter))
+  const step = perimeter / n
+  const xs = new Float64Array(n)
+  const ys = new Float64Array(n)
+  let seg = 0
+  for (let i = 0; i < n; i++) {
+    const t = i * step
+    while (seg < m - 1 && cum[seg + 1] < t) seg++
+    const a = ring[seg]
+    const b = ring[(seg + 1) % m]
+    const span = cum[seg + 1] - cum[seg]
+    const u = span > 0 ? (t - cum[seg]) / span : 0
+    xs[i] = a[0] + (b[0] - a[0]) * u
+    ys[i] = a[1] + (b[1] - a[1]) * u
+  }
+  const R = Math.max(1, Math.round(sigma * 3))
+  const K = Math.max(3, R * 2) // corner-detection arm length, in samples
+  // Corner = local turn angle between the chords (i-K → i) and (i → i+K), non-maximum suppressed.
+  const turn = new Float64Array(n)
+  if (n > 2 * K + 2) {
+    for (let i = 0; i < n; i++) {
+      const p = (i - K + n) % n
+      const q = (i + K) % n
+      const ax = xs[i] - xs[p]
+      const ay = ys[i] - ys[p]
+      const bx = xs[q] - xs[i]
+      const by = ys[q] - ys[i]
+      const la = Math.hypot(ax, ay)
+      const lb = Math.hypot(bx, by)
+      if (la === 0 || lb === 0) continue
+      const cos = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (la * lb)))
+      turn[i] = (Math.acos(cos) * 180) / Math.PI
+    }
+  }
+  const corner = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    if (turn[i] < CORNER_ANGLE_DEG) continue
+    let isMax = true
+    for (let k = -K; k <= K && isMax; k++) {
+      const j = (i + k + n) % n
+      if (j !== i && (turn[j] > turn[i] || (turn[j] === turn[i] && k < 0))) isMax = false
+    }
+    if (isMax) corner[i] = 1
+  }
+  // Distance (in samples) to the nearest corner, two circular sweeps.
+  const dist = new Float64Array(n).fill(Infinity)
+  for (let i = 0; i < n; i++) if (corner[i]) dist[i] = 0
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < n; i++) dist[i] = Math.min(dist[i], dist[(i - 1 + n) % n] + 1)
+    for (let i = n - 1; i >= 0; i--) dist[i] = Math.min(dist[i], dist[(i + 1) % n] + 1)
+  }
+  const out: Array<[number, number]> = []
+  for (let i = 0; i < n; i++) {
+    const r = Math.min(R, Math.floor(dist[i]), Math.floor((n - 1) / 2))
+    if (r <= 0) {
+      out.push([xs[i], ys[i]])
+      continue
+    }
+    let sx = 0
+    let sy = 0
+    let sw = 0
+    for (let k = -r; k <= r; k++) {
+      const j = (i + k + n) % n
+      const wgt = Math.exp(-(k * k) / (2 * sigma * sigma))
+      sx += xs[j] * wgt
+      sy += ys[j] * wgt
+      sw += wgt
+    }
+    out.push([sx / sw, sy / sw])
+  }
+  out.push(out[0])
+  return out
 }
 
 // Iterative Douglas–Peucker on a closed loop (first point == last point). Keeps the

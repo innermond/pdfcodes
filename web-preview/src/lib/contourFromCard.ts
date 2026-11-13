@@ -64,12 +64,13 @@ async function alphaOutline(
   flipY: boolean,
   alphaWall: number,
   eps: number,
+  refine: { smooth?: boolean; simplify?: boolean },
 ): Promise<string | null> {
   const probe = await renderPdfBackground(file, page, rotation, 1, flipX, flipY)
   const maxSidePt = Math.max(probe.widthPt, probe.heightPt)
   const scale = maxSidePt > 0 ? Math.max(2, Math.min(8, 2400 / maxSidePt)) : 4
   const hires = await renderPdfBackground(file, page, rotation, scale, flipX, flipY)
-  return computeContourInteriorMaskPath(hires.imageUrl, { alphaWall, eps })
+  return computeContourInteriorMaskPath(hires.imageUrl, { alphaWall, eps, ...refine })
 }
 
 export async function deriveCardOutline(
@@ -80,9 +81,10 @@ export async function deriveCardOutline(
   flipY: boolean,
   alphaWall: number,
   eps: number,
+  refine: { smooth?: boolean; simplify?: boolean } = {},
 ): Promise<{ d: string | null; vector: boolean }> {
   const vec = await vectorOutline(file, page, rotation).catch(() => null)
   if (vec) return { d: vec, vector: true }
-  const alpha = await alphaOutline(file, page, rotation, flipX, flipY, alphaWall, eps).catch(() => null)
+  const alpha = await alphaOutline(file, page, rotation, flipX, flipY, alphaWall, eps, refine).catch(() => null)
   return { d: alpha, vector: false }
 }

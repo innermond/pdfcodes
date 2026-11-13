@@ -204,6 +204,8 @@ interface Preset {
   // `contour` resource): the alpha / smoothing settings to re-trace it on load.
   contourTraceAlpha?: number
   contourTraceSmooth?: number
+  contourSmoothPath?: boolean
+  contourSimplifyPath?: boolean
   shapeKind: ShapeKind
   shapeCornerRadiusMm: number
   shapeCornerOrientation: CornerOrientation
@@ -636,6 +638,10 @@ interface ContourConfig {
   // tolerance (px). Feed `computeContourInteriorMaskPath`'s `alphaWall`/`eps`.
   contourTraceAlpha: number
   contourTraceSmooth: number
+  // Opt-in refinements of the traced outline (PNG trace / Din card): corner-preserving
+  // smoothing of the pixel staircase, and a stronger point reduction. Off by default.
+  contourSmoothPath: boolean
+  contourSimplifyPath: boolean
 }
 const defaultContourConfig: ContourConfig = {
   contourSource: 'upload',
@@ -667,6 +673,8 @@ const defaultContourConfig: ContourConfig = {
   contourNoSelfIntersect: false,
   contourTraceAlpha: 16,
   contourTraceSmooth: 1.0,
+  contourSmoothPath: false,
+  contourSimplifyPath: false,
 }
 
 // Data-step user config, grouped into one object (mirrors BgConfig/ContourConfig).
@@ -890,7 +898,7 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
     polygonStarInnerRatio, polygonStarTipsOnly, polygonStarRefWMm, polygonStarRefHMm, rectangleContour,
     contourOffsetXMm, contourOffsetYMm, contourTrimToPath,
     contourTargetWidthMm, contourTargetHeightMm, contourRotation, contourSpinDeg, contourRedrawMm,
-    contourNoSelfIntersect, contourTraceAlpha, contourTraceSmooth,
+    contourNoSelfIntersect, contourTraceAlpha, contourTraceSmooth, contourSmoothPath, contourSimplifyPath
   } = contourConfig
   // Accepts a plain value or an updater fn (like a raw setState). None of the
   // config fields are functions, so the typeof check safely tells them apart —
@@ -1693,6 +1701,8 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
         const d = await computeContourInteriorMaskPath(url, {
           alphaWall: contourTraceAlpha,
           eps: contourTraceSmooth,
+          smooth: contourSmoothPath,
+          simplify: contourSimplifyPath,
         })
         if (cancelled) return
         if (!d) {
@@ -1758,7 +1768,7 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
       URL.revokeObjectURL(url)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contourTraceImage, contourTraceAlpha, contourTraceSmooth, contourNoSelfIntersect])
+  }, [contourTraceImage, contourTraceAlpha, contourTraceSmooth, contourSmoothPath, contourSimplifyPath, contourNoSelfIntersect])
 
   // "Din card": no contour supplied — derive the cut outline from the card itself
   // (`deriveCardOutline`: outermost vector shapes, else the image's alpha silhouette,
@@ -1779,7 +1789,7 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
         let d: string | null = null
         let vector = false
         if (backgroundFile) {
-          ;({ d, vector } = await deriveCardOutline(backgroundFile, backgroundPageNumber, bgRotation, flipX, flipY, contourTraceAlpha, contourTraceSmooth))
+          ;({ d, vector } = await deriveCardOutline(backgroundFile, backgroundPageNumber, bgRotation, flipX, flipY, contourTraceAlpha, contourTraceSmooth, { smooth: contourSmoothPath, simplify: contourSimplifyPath }))
         }
         if (cancelled) return
         // No shape found (opaque card, solid colour): cut the card rectangle.
@@ -1828,7 +1838,7 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contourSource, background, backgroundFile, backgroundPageNumber, bgRotation, bgFlipX, bgFlipY, backgroundSource, effectiveCardWidthMm, effectiveCardHeightMm, contourTraceAlpha, contourTraceSmooth, contourNoSelfIntersect])
+  }, [contourSource, background, backgroundFile, backgroundPageNumber, bgRotation, bgFlipX, bgFlipY, backgroundSource, effectiveCardWidthMm, effectiveCardHeightMm, contourTraceAlpha, contourTraceSmooth, contourSmoothPath, contourSimplifyPath, contourNoSelfIntersect])
 
   // "Redesenează": equidistant-offset the base contour outline by `contourRedrawMm`
   // and re-emit it as a fresh cut PDF, a preview mask, and a footprint — the same way
@@ -2284,6 +2294,8 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
       contourNoSelfIntersect,
       contourTraceAlpha,
       contourTraceSmooth,
+      contourSmoothPath,
+      contourSimplifyPath,
       shapeKind,
       shapeCornerRadiusMm,
       shapeCornerOrientation,
@@ -2560,6 +2572,8 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
         if (typeof preset.contourNoSelfIntersect === 'boolean') setContourField('contourNoSelfIntersect', preset.contourNoSelfIntersect)
         if (typeof preset.contourTraceAlpha === 'number') setContourField('contourTraceAlpha', preset.contourTraceAlpha)
         if (typeof preset.contourTraceSmooth === 'number') setContourField('contourTraceSmooth', preset.contourTraceSmooth)
+        setContourField('contourSmoothPath', preset.contourSmoothPath === true)
+        setContourField('contourSimplifyPath', preset.contourSimplifyPath === true)
         if (contourFile && (preset.contourSource ?? 'upload') === 'upload') {
           if (isRasterImageFile(contourFile)) {
             // A traced-image contour: re-trace the bundled image with the saved sliders
@@ -2664,6 +2678,8 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
         if (typeof cut.contourNoSelfIntersect === 'boolean') setContourField('contourNoSelfIntersect', cut.contourNoSelfIntersect)
         if (typeof cut.contourTraceAlpha === 'number') setContourField('contourTraceAlpha', cut.contourTraceAlpha)
         if (typeof cut.contourTraceSmooth === 'number') setContourField('contourTraceSmooth', cut.contourTraceSmooth)
+        setContourField('contourSmoothPath', cut.contourSmoothPath === true)
+        setContourField('contourSimplifyPath', cut.contourSimplifyPath === true)
         const trim = cut.contourTrimToPath === true
         setContourField('contourTrimToPath', trim)
 
@@ -4865,6 +4881,19 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
                         />
                       </div>
                     </div>
+                    <CheckboxField
+                      label={m.contour_smooth_path_label()}
+                      checked={contourSmoothPath}
+                      onChange={(v) => setContourField('contourSmoothPath', v)}
+                    />
+                    <CheckboxField
+                      label={m.contour_simplify_path_label()}
+                      checked={contourSimplifyPath}
+                      onChange={(v) => setContourField('contourSimplifyPath', v)}
+                    />
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      {m.contour_refine_path_hint()}
+                    </p>
                     <p className="text-hint text-gray-500 dark:text-gray-400">
                       {m.contour_trace_hint()}
                     </p>
@@ -4874,6 +4903,19 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
             ) : contourSource === 'card' ? (
               <>
                 <p className="text-label text-gray-500 dark:text-gray-400">{m.contour_card_hint()}</p>
+                    <CheckboxField
+                      label={m.contour_smooth_path_label()}
+                      checked={contourSmoothPath}
+                      onChange={(v) => setContourField('contourSmoothPath', v)}
+                    />
+                    <CheckboxField
+                      label={m.contour_simplify_path_label()}
+                      checked={contourSimplifyPath}
+                      onChange={(v) => setContourField('contourSimplifyPath', v)}
+                    />
+                    <p className="text-hint text-gray-500 dark:text-gray-400">
+                      {m.contour_refine_path_hint()}
+                    </p>
                 {!background && (
                   <p className="text-label text-gray-500 dark:text-gray-400">{m.contour_need_card()}</p>
                 )}
