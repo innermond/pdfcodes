@@ -175,6 +175,8 @@
 	"presets_title": "Presets",
 	"presets_load_label": "Load settings (.zip or .json)",
 	"presets_gallery_loaded": "Settings loaded from the gallery: {name}",
+	"cut_models_loaded": "Cut model applied: {name}",
+	"errors_cut_model_without_contour": "Invalid cut model: it carries no contour.",
 	"presets_gallery_dismiss": "Dismiss",
 
 	"wizard_step_background": "Background",

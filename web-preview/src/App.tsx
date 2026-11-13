@@ -809,7 +809,7 @@ function downloadSymbolFailureCsv(rows: string[]) {
   URL.revokeObjectURL(url)
 }
 
-export default function App({ lightMode, preset, assetPool }: { lightMode?: boolean; preset?: HostPreset; assetPool?: AssetPoolEndpoints } = {}) {
+export default function App({ lightMode, preset, cutModel, assetPool }: { lightMode?: boolean; preset?: HostPreset; cutModel?: HostPreset; assetPool?: AssetPoolEndpoints } = {}) {
   const [theme, toggleTheme] = useTheme(lightMode ?? ENV_LIGHT_MODE)
   const [step, setStep] = useState<WizardStepId>('fundal')
   const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === step)
@@ -2446,8 +2446,8 @@ export default function App({ lightMode, preset, assetPool }: { lightMode?: bool
     setPresetNotice(null)
     setFontsError(null)
     setFontsNotice(null)
-    if (!file) return
-    loadPresetBundle(file)
+    if (!file) return Promise.resolve()
+    return loadPresetBundle(file)
       .then(({ preset: rawPreset, background: bgFile, contour: contourFile, csv: csvFile, fonts: bundledFonts }) => {
         const preset = rawPreset as Partial<Preset>
         if (!Array.isArray(preset.words)) {
@@ -2630,6 +2630,69 @@ export default function App({ lightMode, preset, assetPool }: { lightMode?: bool
       })
   }
 
+  // A cut-contour model handed over by the host page (?decupare=). Unlike a full
+  // preset it carries only the contour, so it is applied *over* whatever is already
+  // loaded — background, codes, fonts and layout stay as they are, and only the
+  // contour source, its parameters and its file change. Anything a model leaves
+  // out keeps the current value.
+  function handleApplyCutFile(file: File, notice: string) {
+    setPresetError(null)
+    setPresetNotice(null)
+    loadPresetBundle(file)
+      .then(({ preset: rawCut, contour: contourFile }) => {
+        const cut = rawCut as Partial<Preset>
+        const source: ContourSource =
+          cut.contourSource === 'shape' || cut.contourSource === 'card' ? cut.contourSource : 'upload'
+        if (source === 'upload' && !contourFile) throw new Error(m.errors_cut_model_without_contour())
+
+        // Start from a clean contour, as if the user had switched source by hand.
+        handleContourSourceChange(source)
+        if (cut.shapeKind && SHAPE_OPTIONS.some((o) => o.value === cut.shapeKind)) setContourField('shapeKind', cut.shapeKind)
+        if (typeof cut.shapeCornerRadiusMm === 'number') setContourField('shapeCornerRadiusMm', cut.shapeCornerRadiusMm)
+        if (cut.shapeCornerOrientation === 'in' || cut.shapeCornerOrientation === 'out')
+          setContourField('shapeCornerOrientation', cut.shapeCornerOrientation)
+        if (typeof cut.polygonSides === 'number') setContourField('polygonSides', cut.polygonSides)
+        if (typeof cut.polygonStar === 'boolean') setContourField('polygonStar', cut.polygonStar)
+        if (typeof cut.polygonStarInnerRatio === 'number') {
+          setContourField('polygonStarInnerRatio', cut.polygonStarInnerRatio)
+          starInnerRatioTouchedRef.current = cut.polygonStarInnerRatio > 0
+        }
+        if (typeof cut.polygonStarTipsOnly === 'boolean') setContourField('polygonStarTipsOnly', cut.polygonStarTipsOnly)
+        if (typeof cut.polygonStarRefWMm === 'number') setContourField('polygonStarRefWMm', cut.polygonStarRefWMm)
+        if (typeof cut.polygonStarRefHMm === 'number') setContourField('polygonStarRefHMm', cut.polygonStarRefHMm)
+        if (typeof cut.rectangleContour === 'boolean') setContourField('rectangleContour', cut.rectangleContour)
+        if (typeof cut.contourNoSelfIntersect === 'boolean') setContourField('contourNoSelfIntersect', cut.contourNoSelfIntersect)
+        if (typeof cut.contourTraceAlpha === 'number') setContourField('contourTraceAlpha', cut.contourTraceAlpha)
+        if (typeof cut.contourTraceSmooth === 'number') setContourField('contourTraceSmooth', cut.contourTraceSmooth)
+        const trim = cut.contourTrimToPath === true
+        setContourField('contourTrimToPath', trim)
+
+        if (source === 'upload' && contourFile) {
+          if (isRasterImageFile(contourFile)) {
+            handleContourTraceImageChange(contourFile)
+          } else {
+            const page = typeof cut.contourPageNumber === 'number' ? cut.contourPageNumber : 1
+            setContourTraceImage(null)
+            setContourBackgroundFile(contourFile)
+            setContourField('contourPageNumber', page)
+            renderContourPreview(contourFile, page, 0, trim)
+              .then((bg) => {
+                setContourBackground(bg)
+                setContourPageCount(bg.pageCount)
+                setContourField('contourPageNumber', Math.min(Math.max(1, page), bg.pageCount))
+              })
+              .catch((err) => setContourBackgroundError(err instanceof Error ? err.message : String(err)))
+          }
+        }
+        setPresetNotice({ text: notice, tone: 'ok' })
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err)
+        setPresetError(message)
+        setPresetNotice({ text: message, tone: 'error' })
+      })
+  }
+
   // A preset handed over by the host page (a gallery of saved settings linking
   // here) is downloaded once on mount and restored through the very same path
   // as a hand-picked file, so the user lands on step 1 with everything already
@@ -2645,14 +2708,24 @@ export default function App({ lightMode, preset, assetPool }: { lightMode?: bool
     if (hostPresetLoadedRef.current) return
     hostPresetLoadedRef.current = true
     const hosted = preset ?? readHostPreset()
-    if (!hosted) return
+    const onFetchError = (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err)
+      setPresetError(message)
+      setPresetNotice({ text: message, tone: 'error' })
+    }
+    // A full preset first, then a cut model over it: both in one link is allowed, and the
+    // contour must land on the loaded job, not be wiped by it.
+    const applyCut = () => {
+      if (!cutModel) return
+      fetchHostPreset(cutModel)
+        .then((file) => handleApplyCutFile(file, m.cut_models_loaded({ name: cutModel.name ?? file.name })))
+        .catch(onFetchError)
+    }
+    if (!hosted) { applyCut(); return }
     fetchHostPreset(hosted)
       .then((file) => handleLoadPresetFile(file, m.presets_gallery_loaded({ name: hosted.name ?? file.name })))
-      .catch((err) => {
-        const message = err instanceof Error ? err.message : String(err)
-        setPresetError(message)
-        setPresetNotice({ text: message, tone: 'error' })
-      })
+      .then(applyCut)
+      .catch(onFetchError)
     // Runs once on mount; `handleLoadPresetFile` only closes over state setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

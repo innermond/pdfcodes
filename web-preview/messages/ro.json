@@ -182,6 +182,8 @@
 	"presets_title": "Presetări",
 	"presets_load_label": "Încarcă setări (.zip sau .json)",
 	"presets_gallery_loaded": "Setări încărcate din galerie: {name}",
+	"cut_models_loaded": "Model de decupare aplicat: {name}",
+	"errors_cut_model_without_contour": "Model de decupare invalid: nu conține o decupare.",
 	"presets_gallery_dismiss": "Închide",
 
 	"wizard_step_background": "Fundal",
