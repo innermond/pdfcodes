@@ -59,10 +59,10 @@ function ramSafeZipBytes(): number {
 
 // The OPFS root, but only when the worker-only synchronous write API is present
 // (the fast path that fits the synchronous zip callback). Null otherwise.
-async function getOpfsRoot(): Promise<FileSystemDirectoryHandle | null> {
+async function getOpfsRoot(requireSyncHandle = true): Promise<FileSystemDirectoryHandle | null> {
   try {
     if (!navigator.storage?.getDirectory) return null
-    if (typeof FileSystemFileHandle === 'undefined' || !('createSyncAccessHandle' in FileSystemFileHandle.prototype)) return null
+    if (requireSyncHandle && (typeof FileSystemFileHandle === 'undefined' || !('createSyncAccessHandle' in FileSystemFileHandle.prototype))) return null
     return await navigator.storage.getDirectory()
   } catch {
     return null
@@ -158,7 +158,8 @@ export async function createZipSink(estimateBytes: number): Promise<{ sink: ZipS
 // rather than after finishing one, because a finished archive's Blob is read
 // lazily by the download and must outlive the worker.
 export async function sweepStaleZips(): Promise<void> {
-  const root = await getOpfsRoot()
+  // Deleting needs no sync handle, so this also works on the main thread.
+  const root = await getOpfsRoot(false)
   if (!root) return
   try {
     const dir = root as FileSystemDirectoryHandle & { keys?: () => AsyncIterableIterator<string> }

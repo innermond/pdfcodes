@@ -117,7 +117,9 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
       // released the file.
       const killAndSweep = () => {
         kill()
+        // Termination releases the file lock a little after the fact: retry once.
         setTimeout(() => void sweepStaleZips(), 500)
+        setTimeout(() => void sweepStaleZips(), 3000)
       }
       const timer = setTimeout(killAndSweep, 3000)
       worker.onmessage = (e: MessageEvent) => {
