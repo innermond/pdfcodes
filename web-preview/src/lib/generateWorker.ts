@@ -173,7 +173,9 @@ async function generatePrint(
       ? { ...d.printOptions, backgroundPageStartOffset: rowsDone - batch.length }
       : d.printOptions
     const out = generate_with_options(batch.join('\n'), bg, contourArg, fonts, batchOptions)
-    const pdf = new Uint8Array(out.pdf)
+    let pdf: Uint8Array<ArrayBuffer>
+    try {
+    pdf = new Uint8Array(out.pdf)
     // Read overflow before freeing: count is cumulative, samples deduped in full.
     overflowCount += out.text_overflow_count
     if (out.text_overflow_samples) {
@@ -193,7 +195,10 @@ async function generatePrint(
         }
       }
     }
-    out.free()
+    } finally {
+      // Freed even if reading the output throws, so wasm memory isn't stranded.
+      out.free()
+    }
     batch = []
     batchIndex++
     if (batchIndex === 1) {

@@ -7,10 +7,11 @@ import { type GenerateResult } from './lib/generate'
 import { generateBatched, type BatchProgress, type PrintArtifact } from './lib/generateBatched'
 import type { GoogleFontSelection } from './components/GoogleFontPicker'
 import { assetPoolChunk, cameraChunk, codeSourceChunk, fontPickerChunk, preloadStep, resultChunk } from './lib/chunks'
+import { downloadBlob as sharedDownloadBlob } from '@shared/download'
 import { downloadPoolAsset, type AssetPoolEndpoints, type PoolAsset } from '@shared/assetPool'
 import { isCameraAvailable } from '@shared/camera'
 import { fetchGoogleFont } from './lib/googleFonts'
-import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, type LoadedFont } from './lib/fonts'
+import { DEFAULT_FONT_FAMILY, ensureDefaultFont, fontFamilyForWord, getDefaultFontBytes, loadFontFile, syncDocumentFonts, type LoadedFont } from './lib/fonts'
 import { buildFontFaceCss, copyBlobToClipboard, downloadBlob, rasterizePreview } from './lib/screenshot'
 import { blobToPngFile, imageBlobFromDataTransfer, readImageBlobFromClipboard, SUPPORTED_IMAGE_TYPES } from '@shared/clipboardImage'
 import { readVectorFileFromClipboard, vectorFileFromDataTransfer } from './lib/clipboardImage'
@@ -110,9 +111,12 @@ async function imageHasTransparency(file: File): Promise<boolean> {
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx) { bmp.close(); return false }
-  ctx.drawImage(bmp, 0, 0, w, h)
-  bmp.close()
+  try {
+    if (!ctx) return false
+    ctx.drawImage(bmp, 0, 0, w, h)
+  } finally {
+    bmp.close()
+  }
   const data = ctx.getImageData(0, 0, w, h).data
   for (let i = 3; i < data.length; i += 4) if (data[i] < 250) return true
   return false
@@ -809,12 +813,7 @@ function downloadSymbolFailureCsv(rows: string[]) {
     return `${esc(row)},${esc(reason)}`
   })
   const csv = '\ufeff' + [m.result_symbol_failure_csv_header(), ...body].join('\r\n') + '\r\n'
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'coduri-necodificabile.csv'
-  a.click()
-  URL.revokeObjectURL(url)
+  sharedDownloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), 'coduri-necodificabile.csv')
 }
 
 export default function App({ lightMode, preset, cutModel, assetPool }: { lightMode?: boolean; preset?: HostPreset; cutModel?: HostPreset; assetPool?: AssetPoolEndpoints } = {}) {
@@ -987,6 +986,10 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
   }
   const [words, setWords] = useState<WordStyle[]>(() => resizeWords([], splitWords('', '')))
   const [fonts, setFonts] = useState<(LoadedFont | null)[]>(() => resizeFonts([], words.length))
+  // Drop document font faces no word uses any more (see syncDocumentFonts).
+  useEffect(() => {
+    syncDocumentFonts(fonts.filter((f): f is LoadedFont => f !== null))
+  }, [fonts])
   const [fontSources, setFontSources] = useState<FontSource[]>(() => resizeFontSources([], words.length))
   const [googleFontSelections, setGoogleFontSelections] = useState<(GoogleFontSelection | null)[]>(() =>
     resizeGoogleFontSelections([], words.length),
@@ -1713,7 +1716,7 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
         const img = await createImageBitmap(contourTraceImage)
         const pw = img.width
         const ph = img.height
-        img.close()
+        img.close() // plain reads above cannot throw
         if (cancelled || pw <= 0 || ph <= 0) return
         const d = await computeContourInteriorMaskPath(url, {
           alphaWall: contourTraceAlpha,
@@ -3117,7 +3120,7 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
           // Match the generator's EXIF-oriented decode (see handleGenBgImageChange).
           const bmp = await createImageBitmap(genBgImageFile, { imageOrientation: 'from-image' })
           const aspect = bmp.width / bmp.height
-          if (typeof bmp.close === 'function') bmp.close()
+          bmp.close() // plain reads above cannot throw
           const refW = 100
           const refH = aspect > 0 ? 100 / aspect : 100
           const imageBytes = new Uint8Array(await genBgImageFile.arrayBuffer())

@@ -1,4 +1,5 @@
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from 'fflate'
+import { downloadBlob as sharedDownloadBlob } from '@shared/download'
 import { m } from '../paraglide/messages'
 
 // Settings presets are saved as a .zip bundle containing `settings.json`
@@ -59,12 +60,7 @@ function mimeForExt(name: string, fallback: string): string {
 }
 
 function downloadBlob(filename: string, blob: Blob) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-  URL.revokeObjectURL(url)
+  sharedDownloadBlob(blob, filename)
 }
 
 // Pure, DOM-free zip assembly: turns a preset + its resources into the zip bytes.

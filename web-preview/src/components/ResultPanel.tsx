@@ -82,11 +82,14 @@ export function FileDownload({
     } else {
       void blob.arrayBuffer().then((buf) => {
         if (cancelled) return
-        const entries = unzipSync(new Uint8Array(buf))
-        const firstPdf = Object.keys(entries)
-          .sort()
-          .find((n) => n.toLowerCase().endsWith('.pdf'))
+        const data = new Uint8Array(buf)
+        // Pass 1 lists names without inflating anything; pass 2 inflates only
+        // the first PDF rather than the whole archive.
+        const names: string[] = []
+        unzipSync(data, { filter: (f) => { names.push(f.name); return false } })
+        const firstPdf = names.sort().find((n) => n.toLowerCase().endsWith('.pdf'))
         if (!firstPdf) return
+        const entries = unzipSync(data, { filter: (f) => f.name === firstPdf })
         objectUrl = URL.createObjectURL(new Blob([entries[firstPdf].slice().buffer], { type: 'application/pdf' }))
         setPreviewUrl(objectUrl)
       })
