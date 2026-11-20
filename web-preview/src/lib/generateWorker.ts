@@ -208,6 +208,9 @@ async function generatePrint(
       addEntry(pdf, batchIndex)
     }
     post({ type: 'progress', phase: 'print', rowsDone, totalRows: d.totalRows, batchesDone: batchIndex, wasmBytes: wasmBytes() })
+    // Yield a macrotask so a `cancel` message can be delivered between batches;
+    // the loop's own awaits only yield microtasks, which never run it.
+    await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
   try {

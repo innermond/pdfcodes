@@ -1,5 +1,6 @@
 import type { GenerateResult } from './generate'
 import { m } from '../paraglide/messages'
+import { sweepStaleZips } from './zipSink'
 
 export interface BatchProgress {
   phase: 'print' | 'contour'
@@ -111,7 +112,14 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
       // if it is stuck inside a long synchronous wasm call.
       const prev = worker.onmessage
       const kill = () => worker.terminate()
-      const timer = setTimeout(kill, 3000)
+      // If the worker never got to dispose its OPFS temp ZIP (it was stuck in a
+      // synchronous batch), remove it from here once the terminated worker has
+      // released the file.
+      const killAndSweep = () => {
+        kill()
+        setTimeout(() => void sweepStaleZips(), 500)
+      }
+      const timer = setTimeout(killAndSweep, 3000)
       worker.onmessage = (e: MessageEvent) => {
         if (e.data?.type === 'cancelled' || e.data?.type === 'done' || e.data?.type === 'error') {
           clearTimeout(timer)
