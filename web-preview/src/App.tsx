@@ -1057,6 +1057,17 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
   const [contourResult, setContourResult] = useState<GenerateResult | null>(null)
   const [genProgress, setGenProgress] = useState<BatchProgress | null>(null)
   const cancelGenRef = useRef<(() => void) | null>(null)
+  const cancelColorSampleRef = useRef<(() => void) | null>(null)
+  const codeCsvUrlRef = useRef<string | null>(null)
+  // Unmount: stop a running generation worker, an armed eyedropper and free the CSV URL.
+  useEffect(
+    () => () => {
+      cancelGenRef.current?.()
+      cancelColorSampleRef.current?.()
+      if (codeCsvUrlRef.current) URL.revokeObjectURL(codeCsvUrlRef.current)
+    },
+    [],
+  )
   const [genError, setGenError] = useState<string | null>(null)
   const [genLoading, setGenLoading] = useState(false)
   // A one-card proof ("Mostră"): a single rendered card with the contour over it,
@@ -1116,6 +1127,9 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
   // checks each row against the style count) never rejects a longer row.
   const [uploadedMaxRow, setUploadedMaxRow] = useState('')
   const [codeCsvUrl, setCodeCsvUrl] = useState<string | null>(null)
+  useEffect(() => {
+    codeCsvUrlRef.current = codeCsvUrl
+  }, [codeCsvUrl])
   const [codeCsvProgress, setCodeCsvProgress] = useState<number | null>(null)
   const [codeCsvStale, setCodeCsvStale] = useState(false)
   // Row count edited since the last CSV generation: pulses the Generate CSV button.
@@ -1206,6 +1220,9 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
     // objects even for no-op writes (and async clamps re-write equal values).
     shallowKeys: ['bgConfig', 'contourConfig', 'dataConfig', 'styleConfig', 'pageOptions'],
     restore: applyUndoSnapshot,
+    // Snapshots pin whole Files and preview data URLs (backgrounds, generated
+    // CSV), so keep the ring short to bound retained memory.
+    limit: 20,
   })
 
   // Rows the generated CSV will actually contain, and the largest block a single
@@ -4228,13 +4245,17 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
     const onUp = (ev: PointerEvent) => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
       el.releasePointerCapture(ev.pointerId)
       el.style.cursor = ''
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
   async function requestColorSample(): Promise<string | null> {
+    // Arming twice must not strand the first listeners/promise.
+    cancelColorSampleRef.current?.()
     if (!background || !previewRef.current?.querySelector('svg')) return null
     // Rasterize the background up front so the click samples synchronously.
     let canvas: HTMLCanvasElement
@@ -4250,9 +4271,12 @@ export default function App({ lightMode, preset, cutModel, assetPool }: { lightM
         settled = true
         window.removeEventListener('pointerdown', onPointerDown, true)
         window.removeEventListener('keydown', onKeyDown, true)
+        if (cancelColorSampleRef.current === cancelSampling) cancelColorSampleRef.current = null
         setColorSamplingActive(false)
         resolve(result)
       }
+      const cancelSampling = () => finish(null)
+      cancelColorSampleRef.current = cancelSampling
       function onKeyDown(e: KeyboardEvent) {
         if (e.key === 'Escape') finish(null)
       }

@@ -39,7 +39,9 @@ export async function renderPdfBackground(file: File, pageNumber = 1, rotation =
   // The browser decoder honors an embedded JPEG's EXIF orientation, which a compliant
   // PDF renderer (and our generated output) ignores — so a stray orientation tag would
   // rotate the preview and mismatch the produced PDF. Ignoring EXIF keeps them in sync.
-  const pdf = await pdfjsLib.getDocument({ data, isImageDecoderSupported: false }).promise
+  const task = pdfjsLib.getDocument({ data, isImageDecoderSupported: false })
+  try {
+  const pdf = await task.promise
   const pageCount = pdf.numPages
   const safePage = Math.min(Math.max(1, Math.floor(pageNumber)), pageCount)
   const page = await pdf.getPage(safePage)
@@ -77,10 +79,18 @@ export async function renderPdfBackground(file: File, pageNumber = 1, rotation =
   // result is unchanged.
   await page.render({ canvasContext: ctx, viewport: renderViewport, background: 'rgba(0,0,0,0)', transform }).promise
 
+  page.cleanup()
+  const imageUrl = canvas.toDataURL('image/png')
+  // Release the backing store now rather than whenever the GC gets to it.
+  canvas.width = canvas.height = 0
   return {
-    imageUrl: canvas.toDataURL('image/png'),
+    imageUrl,
     widthPt: baseViewport.width,
     heightPt: baseViewport.height,
     pageCount,
+  }
+  } finally {
+    // Frees the document, fonts and decoded images held in pdf.js's worker.
+    await task.destroy()
   }
 }

@@ -57,7 +57,12 @@ export function GoogleFontPicker({
           .filter((e) => e.isIntersecting)
           .map((e) => (e.target as HTMLElement).dataset.family)
           .filter((f): f is string => !!f)
-        if (seen.length > 0) setVisibleFamilies((prev) => Array.from(new Set([...prev, ...seen])))
+        if (seen.length > 0) {
+          // Capped, most recent last, so the preview stylesheet URL and its
+          // @font-face rules don't grow with every row ever scrolled past.
+          const fresh = new Set(seen)
+          setVisibleFamilies((prev) => [...prev.filter((f) => !fresh.has(f)), ...fresh].slice(-60))
+        }
       },
       { root },
     )

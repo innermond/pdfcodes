@@ -496,11 +496,13 @@ function BackgroundPanOverlay({
     function handleUp(ev: PointerEvent) {
       window.removeEventListener('pointermove', handleMove)
       window.removeEventListener('pointerup', handleUp)
+      window.removeEventListener('pointercancel', handleUp)
       target.releasePointerCapture(ev.pointerId)
     }
 
     window.addEventListener('pointermove', handleMove)
     window.addEventListener('pointerup', handleUp)
+    window.addEventListener('pointercancel', handleUp)
   }
 
   return (

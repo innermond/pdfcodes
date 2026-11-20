@@ -130,6 +130,8 @@ export async function fetchGoogleFont(family: string, style: GoogleFontStyle): P
       return loadFontBytes(buffer, `${family} ${style}.ttf`)
     })()
     fontCache.set(key, promise)
+    // A transient failure must not stick for the rest of the session.
+    promise.catch(() => fontCache.delete(key))
   }
   return promise
 }

@@ -284,7 +284,9 @@ self.onmessage = (e: MessageEvent) => {
     return
   }
   if (msg?.type !== 'start') return
-  run(msg.data as StartData).catch((err) => {
+  run(msg.data as StartData).catch(async (err) => {
+    // A failed run leaves no one holding its archive; don't leave the temp file.
+    await sweepStaleZips().catch(() => {})
     post({ type: 'error', message: err instanceof Error ? err.message : String(err) })
   })
 }

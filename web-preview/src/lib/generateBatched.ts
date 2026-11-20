@@ -59,14 +59,14 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
   const promise = new Promise<BatchResult>((resolve, reject) => {
     rejectPromise = reject
     worker.onmessage = (e: MessageEvent) => {
-      const m = e.data
-      switch (m?.type) {
+      const msg = e.data
+      switch (msg?.type) {
         case 'progress':
-          onProgress?.(m as BatchProgress)
+          onProgress?.(msg as BatchProgress)
           break
         case 'done':
           settled = true
-          resolve({ print: m.print ?? null, contour: m.contour ?? null })
+          resolve({ print: msg.print ?? null, contour: msg.contour ?? null })
           worker.terminate()
           break
         case 'cancelled':
@@ -76,10 +76,16 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
           break
         case 'error':
           settled = true
-          reject(new Error(m.message))
+          reject(new Error(msg.message))
           worker.terminate()
           break
       }
+    }
+    worker.onmessageerror = () => {
+      if (settled) return
+      settled = true
+      reject(new Error(m.errors_generation_worker()))
+      worker.terminate()
     }
     worker.onerror = (e) => {
       if (settled) return
@@ -100,7 +106,19 @@ export function generateBatched(input: BatchInput, onProgress?: (p: BatchProgres
       settled = true
       // Each batch is a synchronous wasm call, so terminating is the only way to
       // stop mid-job; reject so the awaiting caller unblocks.
-      worker.terminate()
+      // Ask first, so the worker can dispose its OPFS temp ZIP when it next
+      // reaches the cancel check; terminate on its ack, or after a grace period
+      // if it is stuck inside a long synchronous wasm call.
+      const prev = worker.onmessage
+      const kill = () => worker.terminate()
+      const timer = setTimeout(kill, 3000)
+      worker.onmessage = (e: MessageEvent) => {
+        if (e.data?.type === 'cancelled' || e.data?.type === 'done' || e.data?.type === 'error') {
+          clearTimeout(timer)
+          kill()
+        } else if (prev) prev.call(worker, e)
+      }
+      worker.postMessage({ type: 'cancel' })
       rejectPromise(new DOMException(m.errors_generation_cancelled(), 'AbortError'))
     },
   }

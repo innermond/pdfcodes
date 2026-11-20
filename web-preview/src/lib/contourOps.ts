@@ -82,8 +82,16 @@ export async function extractContourOps(
   // Ignore embedded-JPEG EXIF orientation (use pdf.js's own decoder, not the browser's
   // ImageDecoder) so the contour operators match the generated output — see the same
   // option in pdfBackground.ts.
-  const pdf = await pdfjsLib.getDocument({ data, isImageDecoderSupported: false }).promise
-  const pageCount = pdf.numPages
+  const task = pdfjsLib.getDocument({ data, isImageDecoderSupported: false })
+  let fnArray: number[]
+  let argsArray: unknown[]
+  let vw: number
+  let vh: number
+  let base: Matrix
+  let pageCount: number
+  try {
+  const pdf = await task.promise
+  pageCount = pdf.numPages
   const safePage = Math.min(Math.max(1, Math.floor(pageNumber)), pageCount)
   const page = await pdf.getPage(safePage)
 
@@ -92,11 +100,16 @@ export async function extractContourOps(
   // user space -> device space and viewport.width/height are the displayed page size.
   const totalRotation = (((page.rotate + rotation) % 360) + 360) % 360
   const viewport = page.getViewport({ scale: 1, rotation: totalRotation })
-  const base = viewport.transform as Matrix
-  const { width: vw, height: vh } = viewport
+  base = viewport.transform as Matrix
+  ;({ width: vw, height: vh } = viewport)
   if (vw <= 0 || vh <= 0) return null
 
-  const { fnArray, argsArray } = await page.getOperatorList()
+  ;({ fnArray, argsArray } = await page.getOperatorList())
+  page.cleanup()
+  } finally {
+    // Frees the document, fonts and decoded images held in pdf.js's worker.
+    await task.destroy()
+  }
 
   // Graphics-state stack: save/restore push/pop the whole state (CTM + paint + stroke
   // style), transform composes onto the CTM, and the color/line ops mutate the top.
